@@ -1,0 +1,19 @@
+{
+	"endOfLine": "crlf",
+	"semi": false,
+	"singleQuote": false,
+	"tabWidth": 2,
+	"bracketSpacing": true,
+	"bracketSameLine": true,
+	"arrowParens": "always",
+	"trailingComma": "es5",
+	"printWidth": 80,
+	"useTabs": true,
+	"objectWrap": "collapse",
+	"plugins": [
+		"prettier-plugin-organize-imports",
+		"prettier-plugin-tailwindcss"
+	],
+	"tailwindFunctions": ["cn", "cva"],
+	"tailwindStylesheet": "@/app/globals.css"
+}

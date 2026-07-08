@@ -1,0 +1,91 @@
+# Stack de produção do Jarvis para Docker Swarm + Portainer.
+#
+# As variáveis ${...} vêm da seção "Environment variables" do stack no Portainer
+# (ou de um .env ao lado deste arquivo). Ver DEPLOY.md e .env.production.example.
+#
+# Storage do login (decisão: 1 réplica + volume/arquivo):
+#   • GPT   → volume jarvis_codex_auth  em /root/.codex  (auth.json)
+#   • Claude→ volume jarvis_claude_auth em /root/.claude (.credentials.json)
+#   • Gemini→ não usa volume: só a env var GOOGLE_SERVICE_ACCOUNT_JSON.
+#
+# Como é volume LOCAL por nó, o serviço roda 1 réplica FIXADA num nó (constraint
+# abaixo) para o login ser sempre o mesmo arquivo. Não escale para 2+ réplicas
+# sem antes migrar o token para o Supabase (senão cada nó teria um login diferente).
+
+version: "3.8"
+
+services:
+  jarvis:
+    image: ${JARVIS_IMAGE:-jarvis:latest}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      HOME: /root
+
+      # Seleção de provider principal (claude | codex | gemini).
+      JARVIS_DEFAULT_PROVIDER: ${JARVIS_DEFAULT_PROVIDER:-claude}
+      CLAUDE_MODEL: ${CLAUDE_MODEL:-sonnet}
+      OPENAI_CODEX_MODEL: ${OPENAI_CODEX_MODEL:-gpt-5-codex}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+
+      # Supabase (o server usa a URL/anon também em runtime; service_role é secreto).
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL}
+
+      # Gemini/Vertex (fallback + embeddings/memória). JSON em UMA linha.
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GOOGLE_VERTEX_LOCATION: ${GOOGLE_VERTEX_LOCATION:-us-central1}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${GOOGLE_SERVICE_ACCOUNT_JSON}
+
+      # GPT via ChatGPT (OAuth, sem API key) — endpoints do fluxo Codex.
+      OPENAI_OAUTH_CLIENT_ID: ${OPENAI_OAUTH_CLIENT_ID}
+      OPENAI_OAUTH_AUTHORIZE_URL: ${OPENAI_OAUTH_AUTHORIZE_URL}
+      OPENAI_OAUTH_TOKEN_URL: ${OPENAI_OAUTH_TOKEN_URL}
+      OPENAI_OAUTH_DEVICE_CODE_URL: ${OPENAI_OAUTH_DEVICE_CODE_URL}
+      OPENAI_OAUTH_REDIRECT_URI: ${OPENAI_OAUTH_REDIRECT_URI}
+      OPENAI_OAUTH_SCOPES: ${OPENAI_OAUTH_SCOPES}
+      OPENAI_OAUTH_ORIGINATOR: ${OPENAI_OAUTH_ORIGINATOR}
+      OPENAI_CODEX_RESPONSES_URL: ${OPENAI_CODEX_RESPONSES_URL}
+
+      # Fontes externas (opcionais).
+      NOTION_CLIENT_ID: ${NOTION_CLIENT_ID}
+      NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET}
+      NOTION_REDIRECT_URI: ${NOTION_REDIRECT_URI}
+
+    volumes:
+      - jarvis_codex_auth:/root/.codex # token OAuth do GPT (persistente)
+      - jarvis_claude_auth:/root/.claude # sessão OAuth do Claude (persistente)
+
+    ports:
+      - "3000:3000" # ponha um reverse proxy (Traefik/nginx) na frente p/ TLS/domínio
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          # Fixa a réplica num nó → o volume local é sempre o mesmo. Ajuste o
+          # hostname (ou use node.role == manager se só há um manager).
+          - node.role == manager
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      update_config:
+        order: stop-first # evita 2 réplicas disputando o mesmo volume no deploy
+
+volumes:
+  jarvis_codex_auth:
+  jarvis_claude_auth:

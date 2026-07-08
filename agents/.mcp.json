@@ -1,0 +1,27 @@
+{
+	"mcpServers": {
+		"supabase": {
+			"type": "http",
+			"url": "https://supabase.cppem.com.br/mcp/setuporion/bd6f6ed8fd"
+		},
+		"shadcn": { "command": "npx", "args": ["shadcn@latest", "mcp"] },
+		"io.github.ChromeDevTools/chrome-devtools-mcp": {
+			"type": "stdio",
+			"command": "npx",
+			"args": [
+				"--registry",
+				"https://registry.npmjs.org",
+				"chrome-devtools-mcp@0.23.0"
+			],
+			"gallery": "https://api.mcp.github.com",
+			"version": "0.23.0"
+		},
+		"microsoft/playwright-mcp": {
+			"type": "stdio",
+			"command": "npx",
+			"args": ["@playwright/mcp@latest"],
+			"gallery": "https://api.mcp.github.com",
+			"version": "0.0.1-seed"
+		}
+	}
+}

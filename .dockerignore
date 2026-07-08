@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+.env*
+!.env.production.example
+npm-debug.log*
+*.log
+dev.log
+dev-localhost.log
+esperados
+rag.example
+supabase/.branches
+supabase/.temp
+.vscode
+.idea
+README*.md
+DEPLOY.md

@@ -1,0 +1,9 @@
+{
+  "language": "pt-BR",
+  "effortLevel": "high",
+  "autoUpdatesChannel": "latest",
+  "theme": "dark",
+  "enabledPlugins": {
+    "chrome-devtools-mcp@claude-plugins-official": true
+  }
+}
