@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(npm --version)",
+      "Bash(npx --version)",
+      "Bash(npx shadcn@latest init --yes)",
+      "Bash(npx shadcn@latest init)",
+      "Bash(npx shadcn@latest --help)",
+      "Bash(npx shadcn@latest init --help)",
+      "Bash(npx tsc *)",
+      "Bash(node node_modules/eslint/bin/eslint.js src/ --max-warnings=0)",
+      "Bash(npx prettier *)",
+      "mcp__supabase__list_tables",
+      "mcp__supabase__get_project_url",
+      "mcp__supabase__execute_sql",
+      "Bash(xargs grep *)",
+      "Bash(npx next *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "mcp__microsoft_playwright-mcp__browser_navigate",
+      "mcp__microsoft_playwright-mcp__browser_take_screenshot",
+      "mcp__microsoft_playwright-mcp__browser_fill_form",
+      "mcp__microsoft_playwright-mcp__browser_click",
+      "mcp__supabase__apply_migration",
+      "mcp__microsoft_playwright-mcp__browser_console_messages"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "supabase"
+  ]
+}
