@@ -31,6 +31,8 @@ import {
   searchDocumentsByDate,
   type DocHit,
 } from "@/lib/ai/retrieval";
+import { formatTasksBlock, isTaskQuery, searchTasks } from "@/lib/ai/tasks";
+import { syncTasksIfStale } from "@/lib/notion/tasks";
 import { chatModel } from "@/lib/ai/vertex";
 import { parseMessage } from "@/lib/chat/attachments";
 import { getAgent, getConversationAgentContext } from "@/lib/db/agents";
@@ -184,10 +186,20 @@ function parseQueryName(text: string): string | null {
 async function buildKnowledge(
   question: string,
   priorUserText?: string,
+  companyId?: string | null,
 ): Promise<string> {
   const keyTerms = extractKeyTerms(question);
   let isoDates = parseQueryDates(question);
   const nameFilter = parseQueryName(question);
+
+  // Tarefas: consulta ESTRUTURADA (não similaridade). Só quando a pergunta é de
+  // tarefa e há empresa — o resultado entra como bloco próprio no contexto.
+  const tasksBlock =
+    companyId && isTaskQuery(question)
+      ? await searchTasks(companyId, question, nameFilter)
+          .then(formatTasksBlock)
+          .catch(() => "")
+      : "";
 
   // Follow-up: "e de Giovana?" (tem nome, mas sem data) herda o intervalo/datas
   // da pergunta anterior. Restrito a esse caso para não colar datas velhas em
@@ -218,6 +230,7 @@ async function buildKnowledge(
   const usefulMemories = memories.filter((m) => !NEGATIVE.test(m.content));
 
   const blocks: string[] = [];
+  if (tasksBlock) blocks.push(tasksBlock);
   if (documents.length) {
     blocks.push(
       "## Fontes da empresa (verdade)\n" +
@@ -421,6 +434,13 @@ export async function POST(req: Request) {
     });
   }
 
+  // Tarefa: mantém o espelho fresco em segundo plano (não bloqueia a resposta;
+  // o próximo turno já vê os dados novos). O primeiro sync ainda é manual/cron.
+  if (ctx.companyId && isTaskQuery(messageText(message))) {
+    const companyId = ctx.companyId;
+    after(() => syncTasksIfStale(companyId));
+  }
+
   // Última fala do usuário (para o follow-up herdar datas do turno anterior).
   const priorUser = [...previous].reverse().find((m) => m.role === "user");
 
@@ -440,6 +460,7 @@ export async function POST(req: Request) {
     buildKnowledge(
       messageText(message),
       priorUser ? messageText(priorUser) : undefined,
+      ctx.companyId,
     ),
   ]);
   // A persona vem PRIMEIRO e domina o comportamento; as regras de formatação do

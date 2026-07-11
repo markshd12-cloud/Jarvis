@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart, type UIMessage } from "ai";
 import { PaperclipIcon } from "lucide-react";
@@ -113,6 +113,13 @@ export function Chat({
 
   const busy = status === "submitted" || status === "streaming";
 
+  // Mantém a conversa ancorada na mensagem mais recente: ao entrar no chat,
+  // enviar uma mensagem ou receber a resposta (streaming atualiza `messages`).
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages, status]);
+
   function handleSend(message: string, files?: FileUIPart[]) {
     setStatusLabel(null);
     sendMessage(
@@ -208,6 +215,8 @@ export function Chat({
             Não foi possível obter a resposta. Tente novamente.
           </div>
         ) : null}
+
+        <div ref={bottomRef} />
       </div>
 
       <div className="sticky bottom-0 mt-6 bg-background pb-4 pt-2">
