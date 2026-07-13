@@ -19,9 +19,9 @@ import {
 export type { BrandMetrics } from "@/lib/marketing/metrics";
 
 /** Presets de período do filtro. `custom` usa `since`/`until` explícitos. */
-export type RangeKey = "7" | "30" | "90" | "mes" | "custom";
+export type RangeKey = "7" | "30" | "mes" | "custom";
 
-const RANGE_KEYS: readonly RangeKey[] = ["7", "30", "90", "mes", "custom"];
+const RANGE_KEYS: readonly RangeKey[] = ["7", "30", "mes", "custom"];
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Filtros vindos da URL (todos opcionais; server component faz o parse). */
@@ -88,7 +88,7 @@ function resolveRange(q: MarketingQuery): {
     return { range, since, until };
   }
   if (range === "mes") return { range, since: startOfMonth(), until: t };
-  const days = range === "7" ? 7 : range === "90" ? 90 : 30;
+  const days = range === "7" ? 7 : 30;
   return { range, since: daysAgo(days - 1), until: t };
 }
 

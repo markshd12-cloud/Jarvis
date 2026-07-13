@@ -54,6 +54,34 @@ function spMidnightUnix(iso: string): number {
   return Math.floor(Date.parse(`${iso}T03:00:00Z`) / 1000);
 }
 
+/**
+ * Série diária de uma métrica de insight (`period=day`) → Map<data, valor>.
+ * A janela `[since, until]` precisa caber em ≤ 30 dias (limite da API). Lança em
+ * erro para o chamador registrar em `errors[]`.
+ */
+async function dailySeries(
+  igId: string,
+  metric: string,
+  since: string,
+  until: string,
+): Promise<Map<string, number>> {
+  const ins = await igGet(`${igId}/insights`, {
+    metric,
+    period: "day",
+    since: String(spMidnightUnix(since)),
+    until: String(spMidnightUnix(until) + 86_400),
+  });
+  const values =
+    (ins.data as { values?: { value?: number; end_time?: string }[] }[])?.[0]
+      ?.values ?? [];
+  const map = new Map<string, number>();
+  for (const v of values) {
+    const date = (v.end_time ?? "").slice(0, 10);
+    if (date) map.set(date, v.value ?? 0);
+  }
+  return map;
+}
+
 export interface InstagramSyncResult {
   accounts: number;
   dailyRows: number;
@@ -72,7 +100,10 @@ export async function syncInstagram(
     throw new Error("META_ACCESS_TOKEN ausente no ambiente.");
 
   const admin = createAdminClient();
-  const lookback = Math.min(30, Math.max(1, Math.trunc(opts.lookbackDays ?? 30)));
+  // A IG Graph API rejeita janelas de insight > 30 dias. Com `until` = hoje + 1
+  // dia (fim do dia), 28 dias de lookback mantém o intervalo em 29 dias — dentro
+  // do limite e ainda cobrindo ~4 semanas de histórico.
+  const lookback = Math.min(28, Math.max(1, Math.trunc(opts.lookbackDays ?? 28)));
   const since = daysAgo(lookback);
   const until = today();
   const errors: string[] = [];
@@ -88,36 +119,44 @@ export async function syncInstagram(
       });
       const followers = (node.followers_count as number | undefined) ?? null;
 
-      // Alcance diário (a métrica mais estável no time series do IG).
-      const byDate = new Map<string, { reach?: number; followers?: number }>();
+      // Alcance diário (métrica estável no time series do IG).
+      let reachMap = new Map<string, number>();
       try {
-        const ins = await igGet(`${igId}/insights`, {
-          metric: "reach",
-          period: "day",
-          since: String(spMidnightUnix(since)),
-          until: String(spMidnightUnix(until) + 86_400),
-        });
-        const values =
-          ((ins.data as { values?: { value?: number; end_time?: string }[] }[])?.[0]
-            ?.values) ?? [];
-        for (const v of values) {
-          const date = (v.end_time ?? "").slice(0, 10);
-          if (date) byDate.set(date, { ...byDate.get(date), reach: v.value ?? 0 });
-        }
+        reachMap = await dailySeries(igId, "reach", since, until);
       } catch (e) {
         errors.push(`${brand} reach: ${msg(e)}`);
       }
 
-      // Snapshot de seguidores no dia de hoje (constrói a curva daqui pra frente).
-      byDate.set(until, { ...byDate.get(until), followers: followers ?? undefined });
+      // Backfill da curva de seguidores: `follower_count` dá o GANHO líquido por
+      // dia (~28 dias). Ancorando no total atual (`followers`) e voltando dia a
+      // dia (total[d-1] = total[d] − ganho[d]) reconstruímos o acumulado passado
+      // — a Graph API não expõe histórico do total diretamente.
+      const cumByDate = new Map<string, number>();
+      try {
+        const gains = await dailySeries(igId, "follower_count", since, until);
+        const dates = [...gains.keys()].sort();
+        if (followers != null && dates.length) {
+          const totalGain = dates.reduce((s, d) => s + (gains.get(d) ?? 0), 0);
+          let running = followers - totalGain; // linha de base antes do 1º dia
+          for (const d of dates) {
+            running += gains.get(d) ?? 0; // total ao FIM do dia d
+            cumByDate.set(d, running);
+          }
+        }
+      } catch (e) {
+        errors.push(`${brand} follower_count: ${msg(e)}`);
+      }
+      // Garante o total absoluto de hoje mesmo se a série não incluir `until`.
+      if (followers != null) cumByDate.set(until, followers);
 
-      const rows = [...byDate.entries()].map(([date, m]) => ({
+      const dateSet = new Set<string>([...cumByDate.keys(), ...reachMap.keys()]);
+      const rows = [...dateSet].map((date) => ({
         provider: "instagram",
         account_id: igId,
         brand,
         date,
-        followers: m.followers ?? null,
-        reach: m.reach ?? null,
+        followers: cumByDate.get(date) ?? null,
+        reach: reachMap.get(date) ?? null,
       }));
       if (rows.length) {
         const { error } = await admin

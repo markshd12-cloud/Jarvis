@@ -46,10 +46,20 @@ export interface BrandMetrics {
   impressions: number;
   clicks: number;
   reach: number;
+  /** Conversões (Fase 1). */
+  leads: number;
+  conversations: number;
+  purchases: number;
+  conversionValue: number;
   /** Derivadas das somas; `null` quando o denominador é zero. */
   ctr: number | null;
   cpc: number | null;
   cpm: number | null;
+  /** Custo por lead (`spend/leads`) e por conversa (`spend/conversations`). */
+  cpl: number | null;
+  costPerConversation: number | null;
+  /** Retorno sobre investimento (`conversionValue/spend`); null sem gasto. */
+  roas: number | null;
 }
 
 export interface MetaMetrics {
@@ -77,6 +87,10 @@ interface Row {
   impressions: number | null;
   clicks: number | null;
   reach: number | null;
+  leads?: number | null;
+  conversations?: number | null;
+  purchases?: number | null;
+  conversion_value?: number | null;
 }
 
 interface Acc {
@@ -84,15 +98,32 @@ interface Acc {
   impressions: number;
   clicks: number;
   reach: number;
+  leads: number;
+  conversations: number;
+  purchases: number;
+  conversionValue: number;
 }
 
-const emptyAcc = (): Acc => ({ spend: 0, impressions: 0, clicks: 0, reach: 0 });
+const emptyAcc = (): Acc => ({
+  spend: 0,
+  impressions: 0,
+  clicks: 0,
+  reach: 0,
+  leads: 0,
+  conversations: 0,
+  purchases: 0,
+  conversionValue: 0,
+});
 
 function add(a: Acc, r: Row): void {
   a.spend += r.spend ?? 0;
   a.impressions += r.impressions ?? 0;
   a.clicks += r.clicks ?? 0;
   a.reach += r.reach ?? 0;
+  a.leads += r.leads ?? 0;
+  a.conversations += r.conversations ?? 0;
+  a.purchases += r.purchases ?? 0;
+  a.conversionValue += r.conversion_value ?? 0;
 }
 
 function finalize(brand: string | null, a: Acc): BrandMetrics {
@@ -102,9 +133,16 @@ function finalize(brand: string | null, a: Acc): BrandMetrics {
     impressions: a.impressions,
     clicks: a.clicks,
     reach: a.reach,
+    leads: a.leads,
+    conversations: a.conversations,
+    purchases: a.purchases,
+    conversionValue: a.conversionValue,
     ctr: a.impressions ? (a.clicks / a.impressions) * 100 : null,
     cpc: a.clicks ? a.spend / a.clicks : null,
     cpm: a.impressions ? (a.spend / a.impressions) * 1000 : null,
+    cpl: a.leads ? a.spend / a.leads : null,
+    costPerConversation: a.conversations ? a.spend / a.conversations : null,
+    roas: a.spend ? a.conversionValue / a.spend : null,
   };
 }
 
@@ -122,7 +160,9 @@ export async function getMetaMetrics(opts: {
   const admin = createAdminClient();
   let query = admin
     .from("marketing_daily_insights")
-    .select("brand, spend, impressions, clicks, reach")
+    .select(
+      "brand, spend, impressions, clicks, reach, leads, conversations, purchases, conversion_value",
+    )
     .eq("provider", "meta_ads")
     .not("brand", "is", null)
     .gte("date", since)

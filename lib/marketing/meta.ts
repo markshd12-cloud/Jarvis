@@ -14,12 +14,20 @@
  */
 import {
   MARKETING_AD_ACCOUNTS,
+  META_ACTION_FIELDS,
+  META_ACTIONS,
   META_ENV,
   META_GRAPH_BASE,
   META_INSIGHT_FIELDS,
 } from "@/lib/marketing/config";
 import { daysAgo, today } from "@/lib/marketing/metrics";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+/** Item de `actions`/`action_values`: contagem (ou valor) por tipo de ação. */
+interface MetaAction {
+  action_type: string;
+  value?: string;
+}
 
 /** Linha diária crua da Insights API (campos numéricos vêm como string). */
 interface MetaInsightRow {
@@ -32,6 +40,16 @@ interface MetaInsightRow {
   ctr?: string;
   cpc?: string;
   cpm?: string;
+  actions?: MetaAction[];
+  action_values?: MetaAction[];
+}
+
+/** Conversões extraídas de um insight (Fase 1). */
+interface Conversions {
+  leads: number;
+  conversations: number;
+  purchases: number;
+  conversion_value: number;
 }
 
 /** Linha pronta para `marketing_daily_insights`. */
@@ -44,6 +62,10 @@ interface InsightRow {
   clicks: number | null;
   reach: number | null;
   conversions: number | null;
+  leads: number | null;
+  conversations: number | null;
+  purchases: number | null;
+  conversion_value: number | null;
   metrics: Record<string, number | null>;
 }
 
@@ -66,6 +88,22 @@ const int = (v: string | undefined): number | null => {
   const n = num(v);
   return n == null ? null : Math.round(n);
 };
+
+/** Soma o `value` de um `action_type` numa lista de ações (0 se ausente). */
+function actionValue(list: MetaAction[] | undefined, type: string): number {
+  const hit = list?.find((a) => a.action_type === type);
+  return hit ? Number(hit.value) || 0 : 0;
+}
+
+/** Extrai leads, conversas (WhatsApp), compras e valor de um insight. */
+function parseConversions(r: MetaInsightRow): Conversions {
+  return {
+    leads: Math.round(actionValue(r.actions, META_ACTIONS.lead)),
+    conversations: Math.round(actionValue(r.actions, META_ACTIONS.conversation)),
+    purchases: Math.round(actionValue(r.actions, META_ACTIONS.purchase)),
+    conversion_value: actionValue(r.action_values, META_ACTIONS.purchase),
+  };
+}
 
 // Janela retroativa padrão por sync (dias). Recaptura atribuições que a Meta
 // ajusta depois; o upsert idempotente evita duplicar as linhas por-marca.
@@ -104,7 +142,7 @@ async function fetchAccountInsights(
     access_token: META_ENV.accessToken,
     level: "account",
     time_increment: "1",
-    fields: META_INSIGHT_FIELDS.join(","),
+    fields: [...META_INSIGHT_FIELDS, ...META_ACTION_FIELDS].join(","),
     time_range: JSON.stringify({ since, until }),
     limit: "500",
   });
@@ -122,6 +160,7 @@ async function fetchAccountInsights(
 
 /** Linha do banco a partir de um insight cru (mantém ctr/cpc/cpm em metrics). */
 function toInsightRow(brand: string, r: MetaInsightRow): InsightRow {
+  const c = parseConversions(r);
   return {
     provider: "meta_ads",
     date: r.date_start,
@@ -130,7 +169,12 @@ function toInsightRow(brand: string, r: MetaInsightRow): InsightRow {
     impressions: int(r.impressions),
     clicks: int(r.clicks),
     reach: int(r.reach),
-    conversions: null,
+    // `conversions` (coluna legada) = total de conversões-chave (leads + conversas).
+    conversions: c.leads + c.conversations,
+    leads: c.leads,
+    conversations: c.conversations,
+    purchases: c.purchases,
+    conversion_value: c.conversion_value,
     metrics: { ctr: num(r.ctr), cpc: num(r.cpc), cpm: num(r.cpm) },
   };
 }
@@ -162,23 +206,41 @@ export async function syncMeta(
   // Agregado geral por dia (soma das marcas). Chave = date.
   const totals = new Map<
     string,
-    { spend: number; impressions: number; clicks: number; reach: number }
+    {
+      spend: number;
+      impressions: number;
+      clicks: number;
+      reach: number;
+      leads: number;
+      conversations: number;
+      purchases: number;
+      conversion_value: number;
+    }
   >();
 
   for (const brand of MARKETING_AD_ACCOUNTS) {
     const insights = await fetchAccountInsights(brand.adAccountId, since, until);
     for (const r of insights) {
       brandRows.push(toInsightRow(brand.label, r));
+      const c = parseConversions(r);
       const t = totals.get(r.date_start) ?? {
         spend: 0,
         impressions: 0,
         clicks: 0,
         reach: 0,
+        leads: 0,
+        conversations: 0,
+        purchases: 0,
+        conversion_value: 0,
       };
       t.spend += num(r.spend) ?? 0;
       t.impressions += int(r.impressions) ?? 0;
       t.clicks += int(r.clicks) ?? 0;
       t.reach += int(r.reach) ?? 0;
+      t.leads += c.leads;
+      t.conversations += c.conversations;
+      t.purchases += c.purchases;
+      t.conversion_value += c.conversion_value;
       totals.set(r.date_start, t);
     }
   }
@@ -192,7 +254,11 @@ export async function syncMeta(
     impressions: t.impressions,
     clicks: t.clicks,
     reach: t.reach,
-    conversions: null,
+    conversions: t.leads + t.conversations,
+    leads: t.leads,
+    conversations: t.conversations,
+    purchases: t.purchases,
+    conversion_value: t.conversion_value,
     metrics: {
       ctr: t.impressions ? (t.clicks / t.impressions) * 100 : null,
       cpc: t.clicks ? t.spend / t.clicks : null,

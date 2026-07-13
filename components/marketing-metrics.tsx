@@ -49,7 +49,6 @@ const CHART_VARS = [
 const RANGE_LABELS: { key: RangeKey; label: string }[] = [
   { key: "7", label: "7 dias" },
   { key: "30", label: "30 dias" },
-  { key: "90", label: "90 dias" },
   { key: "mes", label: "Mês atual" },
 ];
 
@@ -354,6 +353,12 @@ export function MarketingMetrics({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Investimento" value={money(total.spend)}
               cur={total.spend} prev={previous.spend} highlight />
+            <Kpi label="Leads" value={count(total.leads)}
+              cur={total.leads} prev={previous.leads} highlight />
+            <Kpi label="CPL" value={money(total.cpl)}
+              cur={total.cpl ?? 0} prev={previous.cpl ?? 0} goodWhenDown />
+            <Kpi label="Conversas WPP" value={count(total.conversations)}
+              cur={total.conversations} prev={previous.conversations} />
             <Kpi label="Impressões" value={count(total.impressions)}
               cur={total.impressions} prev={previous.impressions} />
             <Kpi label="Cliques" value={count(total.clicks)}
@@ -409,17 +414,18 @@ export function MarketingMetrics({
 function BrandTable({ brands }: { brands: BrandMetrics[] }) {
   return (
     <div className="overflow-x-auto rounded-xl border border-border">
-      <table className="w-full min-w-[640px] text-sm">
+      <table className="w-full min-w-[820px] text-sm">
         <thead>
           <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
             <th className="px-4 py-3 font-medium">Marca</th>
             <th className="px-4 py-3 text-right font-medium">Investimento</th>
-            <th className="px-4 py-3 text-right font-medium">Impressões</th>
+            <th className="px-4 py-3 text-right font-medium">Leads</th>
+            <th className="px-4 py-3 text-right font-medium">CPL</th>
+            <th className="px-4 py-3 text-right font-medium">Conversas</th>
             <th className="px-4 py-3 text-right font-medium">Cliques</th>
             <th className="px-4 py-3 text-right font-medium">Alcance</th>
             <th className="px-4 py-3 text-right font-medium">CTR</th>
             <th className="px-4 py-3 text-right font-medium">CPC</th>
-            <th className="px-4 py-3 text-right font-medium">CPM</th>
           </tr>
         </thead>
         <tbody className="tabular-nums">
@@ -428,12 +434,13 @@ function BrandTable({ brands }: { brands: BrandMetrics[] }) {
               className="border-b border-border last:border-0 hover:bg-muted/40">
               <td className="px-4 py-3 font-medium text-foreground">{b.brand}</td>
               <td className="px-4 py-3 text-right">{money(b.spend)}</td>
-              <td className="px-4 py-3 text-right">{count(b.impressions)}</td>
+              <td className="px-4 py-3 text-right">{count(b.leads)}</td>
+              <td className="px-4 py-3 text-right">{money(b.cpl)}</td>
+              <td className="px-4 py-3 text-right">{count(b.conversations)}</td>
               <td className="px-4 py-3 text-right">{count(b.clicks)}</td>
               <td className="px-4 py-3 text-right">{count(b.reach)}</td>
               <td className="px-4 py-3 text-right">{pct(b.ctr)}</td>
               <td className="px-4 py-3 text-right">{money(b.cpc)}</td>
-              <td className="px-4 py-3 text-right">{money(b.cpm)}</td>
             </tr>
           ))}
         </tbody>

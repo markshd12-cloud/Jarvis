@@ -84,5 +84,18 @@ export const META_INSIGHT_FIELDS = [
   "cpm",
 ] as const;
 
+/**
+ * Campos de AÇÕES (Fase 1 — conversões). Vêm como arrays de
+ * `{ action_type, value }`; parseados em `meta.ts`.
+ */
+export const META_ACTION_FIELDS = ["actions", "action_values"] as const;
+
+/** action_type → conversão de interesse. `purchase` também alimenta o valor. */
+export const META_ACTIONS = {
+  lead: "lead",
+  conversation: "onsite_conversion.messaging_conversation_started_7d",
+  purchase: "purchase",
+} as const;
+
 /** Provedores válidos (chave de marketing_connections). GA4 entra depois. */
 export type MarketingProvider = "meta_ads" | "ga4";

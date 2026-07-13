@@ -55,6 +55,25 @@ services:
       NOTION_CLIENT_SECRET: ${NOTION_CLIENT_SECRET}
       NOTION_REDIRECT_URI: ${NOTION_REDIRECT_URI}
 
+      # Conta Azul — financeiro por empresa (OAuth). Vazio → integração inativa.
+      CONTA_AZUL_CLIENT_ID: ${CONTA_AZUL_CLIENT_ID}
+      CONTA_AZUL_CLIENT_SECRET: ${CONTA_AZUL_CLIENT_SECRET}
+      CONTA_AZUL_REDIRECT_URI: ${CONTA_AZUL_REDIRECT_URI}
+
+      # Marketing — Meta Ads + Instagram orgânico (System User token no ENV, não
+      # OAuth). Sem estes, o Dashboard/sync/chat de marketing ficam vazios.
+      META_ACCESS_TOKEN: ${META_ACCESS_TOKEN}
+      META_APP_ID: ${META_APP_ID}
+      META_APP_SECRET: ${META_APP_SECRET}
+      META_SYNC_LOOKBACK_DAYS: ${META_SYNC_LOOKBACK_DAYS:-30}
+      # Segredo do cron de sync (header x-cron-secret em POST /api/marketing/sync).
+      CRON_SECRET: ${CRON_SECRET}
+
+      # Web Push (notificações). A chave pública já vai inlinada no build; o
+      # servidor precisa da privada + subject em runtime.
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_SUBJECT: ${VAPID_SUBJECT}
+
     volumes:
       - jarvis_codex_auth:/root/.codex # token OAuth do GPT (persistente)
       - jarvis_claude_auth:/root/.claude # sessão OAuth do Claude (persistente)

@@ -26,7 +26,7 @@ import {
 // Termos que indicam pergunta de mídia paga / desempenho de anúncios. "meta"
 // sozinho fica de fora (ambíguo com "meta/objetivo" em PT); exigimos "meta ads".
 const MARKETING_RE =
-  /(invest|gast|tr[aá]fego|an[uú]nci|m[ií]dia\s+paga|meta\s*ads|campanha|impress|clique|\bctr\b|\bcpc\b|\bcpm\b|alcance|aproveitamento)/i;
+  /(invest|gast|tr[aá]fego|an[uú]nci|m[ií]dia\s+paga|meta\s*ads|campanha|impress|clique|\bctr\b|\bcpc\b|\bcpm\b|\bcpl\b|alcance|aproveitamento|\blead|convers|whats|\broas\b)/i;
 
 export function isMarketingQuery(text: string): boolean {
   return MARKETING_RE.test(text);
@@ -106,8 +106,10 @@ function parsePeriodPt(question: string): Period | null {
 function metricLine(name: string, m: BrandMetrics): string {
   const ctr = m.ctr != null ? `, CTR ${m.ctr.toFixed(2)}%` : "";
   const cpc = m.cpc != null ? `, CPC ${brl.format(m.cpc)}` : "";
+  const cpl = m.cpl != null ? ` (CPL ${brl.format(m.cpl)})` : "";
   return (
-    `- ${name}: investimento ${brl.format(m.spend)}, ${int.format(m.impressions)} impressões, ` +
+    `- ${name}: investimento ${brl.format(m.spend)}, ${int.format(m.leads)} leads${cpl}, ` +
+    `${int.format(m.conversations)} conversas WhatsApp, ${int.format(m.impressions)} impressões, ` +
     `${int.format(m.clicks)} cliques, ${int.format(m.reach)} de alcance${ctr}${cpc}`
   );
 }
@@ -182,7 +184,7 @@ export async function buildMarketingBlock(question: string): Promise<string> {
 
   const header =
     `## Meta Ads — mídia paga (fonte de verdade; valores em BRL, fuso de São Paulo; hoje = ${ddmm(until)})\n` +
-    `Use estes números para investimento/gasto em anúncios, tráfego, impressões, cliques, CTR, CPC e alcance. ` +
+    `Use estes números para investimento/gasto em anúncios, tráfego, leads, conversas de WhatsApp, CPL, impressões, cliques, CTR, CPC e alcance. ` +
     `"CPPEM" refere-se a "CPPEM Concursos".`;
 
   const dailySection = daily.length
