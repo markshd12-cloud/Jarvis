@@ -28,12 +28,22 @@ export function MetaConnect({
       const res = await fetch("/api/marketing/sync", { method: "POST" });
       if (!res.ok) throw new Error();
       const data = (await res.json()) as {
-        accounts: number;
-        days: number;
-        upserted: number;
+        meta: { accounts: number; days: number; upserted: number };
+        instagram: {
+          accounts: number;
+          dailyRows: number;
+          media: number;
+          errors: string[];
+        } | null;
       };
+      const ig = data.instagram;
+      const igMsg = !ig
+        ? ""
+        : ig.errors.length
+          ? ` · Instagram: ${ig.accounts} contas, ${ig.media} mídias (${ig.errors.length} erro(s))`
+          : ` · Instagram: ${ig.accounts} contas, ${ig.dailyRows} linhas, ${ig.media} mídias`;
       setResult(
-        `Concluído: ${data.accounts} contas, ${data.days} dias, ${data.upserted} linhas atualizadas.`,
+        `Concluído (Meta Ads): ${data.meta.accounts} contas, ${data.meta.days} dias, ${data.meta.upserted} linhas.${igMsg}`,
       );
     } catch {
       setResult("Falha ao sincronizar. Tente novamente.");

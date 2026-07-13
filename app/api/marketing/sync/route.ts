@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getSessionContext } from "@/lib/db/permissions";
+import { syncInstagram } from "@/lib/marketing/instagram";
 import { syncMeta } from "@/lib/marketing/meta";
 import { can } from "@/lib/permissions";
 
@@ -30,9 +31,20 @@ export async function POST(req: NextRequest) {
   const lookbackDays =
     Number.isFinite(daysParam) && daysParam > 0 ? daysParam : undefined;
 
+  // Instagram orgânico opcional: ?skip=instagram pula (útil se os escopos do
+  // token ainda não cobrem instagram_manage_insights).
+  const skipInstagram = req.nextUrl.searchParams.get("skip") === "instagram";
+
   try {
-    const result = await syncMeta({ lookbackDays });
-    return NextResponse.json(result);
+    const meta = await syncMeta({ lookbackDays });
+    // O IG roda isolado: se falhar (escopo/permissão), não invalida o Meta Ads.
+    const instagram = skipInstagram
+      ? null
+      : await syncInstagram({ lookbackDays }).catch((error) => {
+          console.error("[marketing] sync Instagram falhou", error);
+          return { accounts: 0, dailyRows: 0, media: 0, errors: [String(error)] };
+        });
+    return NextResponse.json({ meta, instagram });
   } catch (error) {
     console.error("[marketing] sync Meta falhou", error);
     return new Response("Falha ao sincronizar", { status: 500 });

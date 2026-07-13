@@ -4,8 +4,10 @@ import { redirect } from "next/navigation";
 import { getSessionContext } from "@/lib/db/permissions";
 import { can, landingHref } from "@/lib/permissions";
 import { getMarketingDashboard } from "@/lib/marketing/dashboard";
+import { getInstagramOverview } from "@/lib/marketing/social";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
+import { InstagramMetrics } from "@/components/instagram-metrics";
 
 export const metadata: Metadata = {
   title: "Dashboard | Jarvis",
@@ -29,14 +31,20 @@ export default async function DashboardPage({
     redirect(landingHref(ctx) ?? "/sem-acesso");
 
   const sp = await searchParams;
-  const marketing = canMarketing
-    ? await getMarketingDashboard({
-        range: one(sp.range),
-        since: one(sp.since),
-        until: one(sp.until),
-        brand: one(sp.brand),
-      })
-    : null;
+  const brand = one(sp.brand);
+  // Meta Ads (pago) e Instagram (orgânico) compartilham o filtro de marca e são
+  // buscados em paralelo. O IG não usa período (snapshot de seguidores + posts).
+  const [marketing, instagram] = canMarketing
+    ? await Promise.all([
+        getMarketingDashboard({
+          range: one(sp.range),
+          since: one(sp.since),
+          until: one(sp.until),
+          brand,
+        }),
+        getInstagramOverview({ brand }),
+      ])
+    : [null, null];
   const allBrands = MARKETING_AD_ACCOUNTS.map((a) => a.label);
 
   return (
@@ -53,6 +61,13 @@ export default async function DashboardPage({
 
           {marketing ? (
             <MarketingMetrics data={marketing} allBrands={allBrands} />
+          ) : null}
+
+          {instagram ? (
+            <>
+              <hr className="border-border" />
+              <InstagramMetrics data={instagram} />
+            </>
           ) : null}
         </div>
       </section>
