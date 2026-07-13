@@ -33,6 +33,17 @@ export const FEATURES: Feature[] = [
     sidebar: true,
   },
   {
+    // Marketing (Meta Ads) — dados GLOBAIS: quem tem a permissão vê todas as
+    // marcas (Colégio, CPPEM, Unicive, Everton), independentemente da empresa.
+    // O painel vive DENTRO do /dashboard (não é item de menu próprio); a chave
+    // continua na matriz de roles como permissão.
+    key: "marketing",
+    label: "Marketing",
+    href: "/dashboard",
+    actions: ["ver", "gerenciar"],
+    sidebar: false,
+  },
+  {
     // Fontes externas (Notion, Drive, …). Vive em Configurações › Conexões —
     // não é item de menu lateral, mas continua na matriz de permissões.
     key: "conhecimento",
@@ -89,5 +100,8 @@ export function canManageCompany(ctx: AccessContext): boolean {
 export function landingHref(ctx: AccessContext): string | null {
   if (ctx.isSuperadmin) return "/dashboard";
   const first = FEATURES.find((f) => f.sidebar && can(ctx, f.key));
-  return first?.href ?? null;
+  if (first) return first.href;
+  // Marketing não é item de menu, mas seu painel abre no /dashboard.
+  if (can(ctx, "marketing")) return "/dashboard";
+  return null;
 }

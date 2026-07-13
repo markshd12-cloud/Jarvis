@@ -9,6 +9,7 @@ import {
 } from "@/app/(app)/configuracoes/actions";
 import { ChatGptConnect } from "@/components/chatgpt-connect";
 import { ContaAzulConnect } from "@/components/contaazul-connect";
+import { MetaConnect } from "@/components/meta-connect";
 import { NotionConnect } from "@/components/notion-connect";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -21,7 +22,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import ThemeToggle from "@/components/switch-07";
-import type { ContaAzulStatus, NotionStatus } from "@/lib/db/connections";
+import type {
+  ContaAzulStatus,
+  MarketingStatus,
+  NotionStatus,
+} from "@/lib/db/connections";
 import { cn } from "@/lib/utils";
 
 export interface ProfileSettings {
@@ -42,8 +47,15 @@ export function SettingsDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   initialSettings: ProfileSettings;
-  /** `null` esconde a seção Conexões (usuário sem a permissão `conhecimento`). */
-  connections: { notion: NotionStatus; contaAzul: ContaAzulStatus } | null;
+  /**
+   * `null` esconde a seção Conexões (usuário sem `conhecimento` nem `marketing`).
+   * Cada card é `null` quando falta a permissão correspondente.
+   */
+  connections: {
+    notion: NotionStatus | null;
+    contaAzul: ContaAzulStatus | null;
+    marketing: MarketingStatus | null;
+  } | null;
 }) {
   const [section, setSection] = useState<SectionId>("geral");
 
@@ -82,6 +94,7 @@ export function SettingsDialog({
           <ConnectionsSection
             notion={connections.notion}
             contaAzul={connections.contaAzul}
+            marketing={connections.marketing}
           />
         ) : (
           <GeneralSection initialSettings={initialSettings} />
@@ -174,9 +187,11 @@ function GeneralSection({
 function ConnectionsSection({
   notion,
   contaAzul,
+  marketing,
 }: {
-  notion: NotionStatus;
-  contaAzul: ContaAzulStatus;
+  notion: NotionStatus | null;
+  contaAzul: ContaAzulStatus | null;
+  marketing: MarketingStatus | null;
 }) {
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
@@ -194,23 +209,38 @@ function ConnectionsSection({
             <ChatGptConnect />
           </div>
 
-          <div className="rounded-xl border border-border bg-card p-5">
-            <h3 className="mb-3 text-base font-medium">Notion</h3>
-            <NotionConnect
-              connected={notion.connected}
-              workspaceName={notion.workspaceName}
-              lastSyncedAt={notion.lastSyncedAt}
-            />
-          </div>
+          {notion ? (
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-3 text-base font-medium">Notion</h3>
+              <NotionConnect
+                connected={notion.connected}
+                workspaceName={notion.workspaceName}
+                lastSyncedAt={notion.lastSyncedAt}
+              />
+            </div>
+          ) : null}
 
-          <div className="rounded-xl border border-border bg-card p-5">
-            <h3 className="mb-3 text-base font-medium">Conta Azul</h3>
-            <ContaAzulConnect
-              connected={contaAzul.connected}
-              accountName={contaAzul.accountName}
-              lastSyncedAt={contaAzul.lastSyncedAt}
-            />
-          </div>
+          {contaAzul ? (
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-3 text-base font-medium">Conta Azul</h3>
+              <ContaAzulConnect
+                connected={contaAzul.connected}
+                accountName={contaAzul.accountName}
+                lastSyncedAt={contaAzul.lastSyncedAt}
+              />
+            </div>
+          ) : null}
+
+          {marketing ? (
+            <div className="rounded-xl border border-border bg-card p-5">
+              <h3 className="mb-3 text-base font-medium">Meta Ads</h3>
+              <MetaConnect
+                connected={marketing.connected}
+                accountName={marketing.accountName}
+                lastSyncedAt={marketing.lastSyncedAt}
+              />
+            </div>
+          ) : null}
 
           <ComingSoonConnection
             name="Google Drive"

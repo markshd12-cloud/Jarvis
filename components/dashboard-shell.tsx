@@ -12,7 +12,11 @@ import {
 } from "lucide-react";
 
 import { signOut } from "@/app/login/actions";
-import type { ContaAzulStatus, NotionStatus } from "@/lib/db/connections";
+import type {
+  ContaAzulStatus,
+  MarketingStatus,
+  NotionStatus,
+} from "@/lib/db/connections";
 import { type AccessContext, can } from "@/lib/permissions";
 import { JarvisMark } from "@/components/brand/jarvis-logo";
 import {
@@ -85,8 +89,16 @@ export function DashboardShell({
   user: { email: string };
   access: AccessContext;
   profileSettings: ProfileSettings;
-  /** `null` quando o usuário não pode ver Conexões (sem `conhecimento`). */
-  connections: { notion: NotionStatus; contaAzul: ContaAzulStatus } | null;
+  /**
+   * `null` quando o usuário não tem nenhuma permissão de Conexões. Cada card é
+   * `null` quando falta a permissão específica (Notion/Conta Azul → `conhecimento`;
+   * Meta Ads → `marketing`).
+   */
+  connections: {
+    notion: NotionStatus | null;
+    contaAzul: ContaAzulStatus | null;
+    marketing: MarketingStatus | null;
+  } | null;
   children: React.ReactNode;
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);

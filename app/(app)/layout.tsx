@@ -1,7 +1,11 @@
 import { redirect } from "next/navigation";
 
 import { DashboardShell } from "@/components/dashboard-shell";
-import { getContaAzulStatus, getNotionStatus } from "@/lib/db/connections";
+import {
+  getContaAzulStatus,
+  getMarketingStatus,
+  getNotionStatus,
+} from "@/lib/db/connections";
 import { getSessionContext } from "@/lib/db/permissions";
 import { getProfileSettings } from "@/lib/db/profile";
 import { can } from "@/lib/permissions";
@@ -27,15 +31,20 @@ export default async function AppLayout({
     getSessionContext(),
   ]);
 
-  // Conexões (Notion, Conta Azul, Drive, …) vivem em Configurações e são gated
-  // por `conhecimento`.
+  // Conexões vivem em Configurações. Notion/Conta Azul são gated por
+  // `conhecimento`; o Meta Ads (marketing GLOBAL) por `marketing:gerenciar`.
+  // A aba aparece se o usuário tiver qualquer uma das permissões; cada card só
+  // é montado quando a permissão correspondente existe.
   const canConnections = can(ctx, "conhecimento");
-  const connections = canConnections
-    ? {
-        notion: await getNotionStatus(),
-        contaAzul: await getContaAzulStatus(),
-      }
-    : null;
+  const canMarketing = can(ctx, "marketing", "gerenciar");
+  const connections =
+    canConnections || canMarketing
+      ? {
+          notion: canConnections ? await getNotionStatus() : null,
+          contaAzul: canConnections ? await getContaAzulStatus() : null,
+          marketing: canMarketing ? await getMarketingStatus() : null,
+        }
+      : null;
 
   return (
     <DashboardShell

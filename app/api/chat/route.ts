@@ -24,6 +24,10 @@ import {
   prefersGpt,
   stripGptKeyword,
 } from "@/lib/ai/image-intent";
+import {
+  buildMarketingBlock,
+  isMarketingQuery,
+} from "@/lib/ai/marketing-context";
 import { distillMemories } from "@/lib/ai/memory";
 import { PRINCIPAL_PROVIDER } from "@/lib/ai/provider";
 import {
@@ -187,6 +191,7 @@ async function buildKnowledge(
   question: string,
   priorUserText?: string,
   companyId?: string | null,
+  canMarketing = false,
 ): Promise<string> {
   const keyTerms = extractKeyTerms(question);
   let isoDates = parseQueryDates(question);
@@ -199,6 +204,13 @@ async function buildKnowledge(
       ? await searchTasks(companyId, question, nameFilter)
           .then(formatTasksBlock)
           .catch(() => "")
+      : "";
+
+  // Marketing (Meta Ads): dados ESTRUTURADOS e GLOBAIS (mesma fonte do Dashboard).
+  // Só quando a pergunta é de mídia paga e o usuário tem a permissão `marketing`.
+  const marketingBlock =
+    canMarketing && isMarketingQuery(question)
+      ? await buildMarketingBlock(question).catch(() => "")
       : "";
 
   // Follow-up: "e de Giovana?" (tem nome, mas sem data) herda o intervalo/datas
@@ -231,6 +243,7 @@ async function buildKnowledge(
 
   const blocks: string[] = [];
   if (tasksBlock) blocks.push(tasksBlock);
+  if (marketingBlock) blocks.push(marketingBlock);
   if (documents.length) {
     blocks.push(
       "## Fontes da empresa (verdade)\n" +
@@ -461,6 +474,7 @@ export async function POST(req: Request) {
       messageText(message),
       priorUser ? messageText(priorUser) : undefined,
       ctx.companyId,
+      can(ctx, "marketing"),
     ),
   ]);
   // A persona vem PRIMEIRO e domina o comportamento; as regras de formatação do
