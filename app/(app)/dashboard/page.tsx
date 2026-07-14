@@ -3,11 +3,14 @@ import { redirect } from "next/navigation";
 
 import { getSessionContext } from "@/lib/db/permissions";
 import { can, landingHref } from "@/lib/permissions";
+import { getCompanyId } from "@/lib/db/company";
 import { getMarketingDashboard } from "@/lib/marketing/dashboard";
 import { getInstagramOverview } from "@/lib/marketing/social";
+import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
 import { InstagramMetrics } from "@/components/instagram-metrics";
+import { ContaAzulMetrics } from "@/components/contaazul-metrics";
 
 export const metadata: Metadata = {
   title: "Dashboard | Jarvis",
@@ -27,25 +30,42 @@ export default async function DashboardPage({
   const ctx = await getSessionContext();
   const canDashboard = can(ctx, "dashboard");
   const canMarketing = can(ctx, "marketing");
-  if (!canDashboard && !canMarketing)
+  const canFinanceiro = can(ctx, "financeiro");
+  if (!canDashboard && !canMarketing && !canFinanceiro)
     redirect(landingHref(ctx) ?? "/sem-acesso");
 
   const sp = await searchParams;
   const brand = one(sp.brand);
   // Meta Ads (pago) e Instagram (orgânico) compartilham o filtro de marca e são
   // buscados em paralelo. O IG não usa período (snapshot de seguidores + posts).
-  const [marketing, instagram] = canMarketing
-    ? await Promise.all([
-        getMarketingDashboard({
+  // Conta Azul (financeiro) entra pela permissão `dashboard`, com seu próprio
+  // período (`ca`); nunca lança (degrada para estado "desconectado").
+  const [marketing, instagram, contaAzul] = await Promise.all([
+    canMarketing
+      ? getMarketingDashboard({
           range: one(sp.range),
           since: one(sp.since),
           until: one(sp.until),
           brand,
-        }),
-        getInstagramOverview({ brand }),
-      ])
-    : [null, null];
+        })
+      : Promise.resolve(null),
+    canMarketing ? getInstagramOverview({ brand }) : Promise.resolve(null),
+    canFinanceiro
+      ? getCompanyId().then((companyId) =>
+          getContaAzulDashboard(companyId, { range: one(sp.ca) }),
+        )
+      : Promise.resolve(null),
+  ]);
   const allBrands = MARKETING_AD_ACCOUNTS.map((a) => a.label);
+
+  // Params atuais (string) para os filtros do painel Conta Azul preservarem estado.
+  const currentParams: Record<string, string | undefined> = {
+    ca: one(sp.ca),
+    range: one(sp.range),
+    since: one(sp.since),
+    until: one(sp.until),
+    brand,
+  };
 
   return (
     <main>
@@ -54,13 +74,19 @@ export default async function DashboardPage({
           <div className="flex flex-col gap-1">
             <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
             <p className="text-muted-foreground">
-              Visão de pessoas, vendas e financeiro. Conecte a Conta Azul em
-              Configurações → Conexões para começar.
+              Visão de pessoas, vendas e financeiro.
             </p>
           </div>
 
+          {contaAzul ? (
+            <ContaAzulMetrics data={contaAzul} currentParams={currentParams} />
+          ) : null}
+
           {marketing ? (
-            <MarketingMetrics data={marketing} allBrands={allBrands} />
+            <>
+              {contaAzul ? <hr className="border-border" /> : null}
+              <MarketingMetrics data={marketing} allBrands={allBrands} />
+            </>
           ) : null}
 
           {instagram ? (

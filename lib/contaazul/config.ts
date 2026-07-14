@@ -54,20 +54,31 @@ export interface ContaAzulResource {
   confidence: "alta" | "media";
 }
 
+// Paths validados AO VIVO contra a API v2 de produção (empresa CPPEM) em
+// 2026-07-14 — todos retornam 200. Cadastros e vendas usam o sufixo `/busca`
+// (padrão `/{recurso}/busca`); financeiro usa a árvore `/financeiro/*`.
 export const CONTA_AZUL_RESOURCES = {
-  pessoas: { group: "cadastros", path: "/pessoas", confidence: "alta" },
-  produtos: { group: "cadastros", path: "/produtos", confidence: "media" },
-  servicos: { group: "cadastros", path: "/servicos", confidence: "alta" },
+  pessoas: { group: "cadastros", path: "/pessoa", confidence: "alta" },
+  produtos: { group: "cadastros", path: "/produtos", confidence: "alta" },
+  servicos: { group: "cadastros", path: "/servico", confidence: "alta" },
 
-  vendas: { group: "vendas", path: "/sales", confidence: "alta" },
-  vendaItens: { group: "vendas", path: "/sales/{id}/items", confidence: "alta" },
+  vendas: { group: "vendas", path: "/venda/busca", confidence: "alta" },
 
   categorias: { group: "financeiro", path: "/categorias", confidence: "alta" },
-  contasAPagar: { group: "financeiro", path: null, confidence: "media" },
-  contasAReceber: { group: "financeiro", path: null, confidence: "media" },
-  contasFinanceiras: { group: "financeiro", path: null, confidence: "media" },
-  parcelas: { group: "financeiro", path: null, confidence: "media" },
-  centrosDeCusto: { group: "financeiro", path: null, confidence: "media" },
+  categoriasDre: { group: "financeiro", path: "/financeiro/categorias-dre", confidence: "alta" },
+  // Eventos financeiros exigem `data_vencimento_de` (+ `data_vencimento_ate`).
+  contasAPagar: {
+    group: "financeiro",
+    path: "/financeiro/eventos-financeiros/contas-a-pagar/buscar",
+    confidence: "alta",
+  },
+  contasAReceber: {
+    group: "financeiro",
+    path: "/financeiro/eventos-financeiros/contas-a-receber/buscar",
+    confidence: "alta",
+  },
+  contasFinanceiras: { group: "financeiro", path: "/conta-financeira", confidence: "alta" },
+  centrosDeCusto: { group: "financeiro", path: "/centro-de-custo", confidence: "alta" },
 } satisfies Record<string, ContaAzulResource>;
 
 /** Não existe endpoint de fluxo de caixa: compor a partir dos recursos financeiros. */
