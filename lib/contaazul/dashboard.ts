@@ -393,6 +393,8 @@ export async function getContaAzulDashboard(
       vendasAprovadas: vendas.vendasAprovadas,
     };
   } catch (err) {
+    // Erro fica visível nos logs do container (antes era engolido silenciosamente).
+    console.error("[contaazul] getContaAzulDashboard falhou:", err);
     const notice =
       err instanceof ContaAzulError && err.kind === "no-connection"
         ? "Conta Azul ainda não conectada. Conecte em Configurações → Conexões."

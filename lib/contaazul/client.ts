@@ -39,6 +39,26 @@ interface TokenRow {
 /** Folga (ms) para renovar antes da expiração real e evitar 401 na borda. */
 const SKEW_MS = 60_000;
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Throttle GLOBAL de saída para a API v2. A Conta Azul aplica um "spike arrest"
+ * de 10 req/s (429 `SpikeArrestViolation`); espaçamos os INÍCIOS de requisição
+ * em ~130ms (~7,7 req/s) para ficar abaixo do teto, mesmo com várias paginações
+ * concorrentes (contas-a-receber + contas-a-pagar em paralelo). Como o JS é
+ * single-thread, atualizar `throttleAt` de forma síncrona antes do await já
+ * escalona chamadas concorrentes sem colisão.
+ */
+const MIN_GAP_MS = 130;
+let throttleAt = 0;
+async function throttle(): Promise<void> {
+  const now = Date.now();
+  const start = Math.max(now, throttleAt + MIN_GAP_MS);
+  throttleAt = start;
+  const wait = start - now;
+  if (wait > 0) await sleep(wait);
+}
+
 function basicAuth(): string {
   return Buffer.from(
     `${CONTA_AZUL_ENV.clientId}:${CONTA_AZUL_ENV.clientSecret}`,
@@ -150,11 +170,13 @@ export async function caGet<T = unknown>(
 ): Promise<T> {
   const url = buildUrl(path, params);
 
-  const call = async (token: string) =>
-    fetch(url, {
+  const call = async (token: string) => {
+    await throttle();
+    return fetch(url, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       cache: "no-store",
     });
+  };
 
   let token = await getFreshToken(companyId);
   let res = await call(token);
@@ -171,6 +193,12 @@ export async function caGet<T = unknown>(
       token = await refresh(companyId, data.refresh_token);
       res = await call(token);
     }
+  }
+
+  // 429 (spike arrest): a janela é de 1s → espera >1s e retenta (backoff leve).
+  for (let tentativa = 0; res.status === 429 && tentativa < 4; tentativa++) {
+    await sleep(1100 + tentativa * 400);
+    res = await call(token);
   }
 
   if (!res.ok) {
