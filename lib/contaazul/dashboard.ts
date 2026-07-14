@@ -336,11 +336,73 @@ function desconectado(
   };
 }
 
+// ------------------------------ Cache (SWR) --------------------------------
+
+interface CacheEntry {
+  data: ContaAzulDashboard;
+  at: number;
+  refreshing: boolean;
+}
+/** Cache por processo (server standalone, 1 réplica no Swarm). */
+const dashboardCache = new Map<string, CacheEntry>();
+/** Janela "fresca": serve direto sem recalcular. */
+const TTL_MS = (Number(process.env.CONTA_AZUL_CACHE_TTL_SECONDS) || 600) * 1000;
+/** Teto do "velho servível": além disso, recalcula bloqueando. */
+const MAX_AGE_MS = Math.max(TTL_MS * 6, 60 * 60 * 1000);
+
 /**
- * Painel financeiro da Conta Azul para a empresa/período. Requer `companyId`
- * (resolvido na página). Nunca lança: erros viram estado "desconectado" com aviso.
+ * Painel financeiro da Conta Azul (CACHEADO) para a empresa/período. Envolve o
+ * cálculo real com stale-while-revalidate: dentro do TTL serve o cache; passado
+ * o TTL mas dentro do teto, serve o valor VELHO na hora e dispara um refresh em
+ * segundo plano; só bloqueia recalculando em miss (ou cache muito velho). Isso
+ * derruba o Dashboard de ~5s (38 chamadas throttled à API) para instantâneo.
+ * Só resultados CONECTADOS entram no cache — erro/desconectado nunca poluem.
  */
 export async function getContaAzulDashboard(
+  companyId: string | null,
+  q: ContaAzulQuery = {},
+): Promise<ContaAzulDashboard> {
+  // Sem empresa não há o que cachear (retorna "desconectado" direto).
+  if (!companyId) return computeContaAzulDashboard(companyId, q);
+
+  const key = `${companyId}:${resolveRange(q).range}`;
+  const now = Date.now();
+  const hit = dashboardCache.get(key);
+
+  if (hit) {
+    const age = now - hit.at;
+    if (age < TTL_MS) return hit.data; // fresco
+    if (age < MAX_AGE_MS) {
+      // Velho porém servível: refresh em background (só um por vez) e serve o velho.
+      if (!hit.refreshing) {
+        hit.refreshing = true;
+        void computeContaAzulDashboard(companyId, q)
+          .then((fresh) => {
+            if (fresh.connected) {
+              dashboardCache.set(key, { data: fresh, at: Date.now(), refreshing: false });
+            } else {
+              hit.refreshing = false;
+            }
+          })
+          .catch(() => {
+            hit.refreshing = false;
+          });
+      }
+      return hit.data;
+    }
+  }
+
+  // Miss (ou muito velho): calcula na hora e cacheia se conectado.
+  const fresh = await computeContaAzulDashboard(companyId, q);
+  if (fresh.connected) dashboardCache.set(key, { data: fresh, at: now, refreshing: false });
+  return fresh;
+}
+
+/**
+ * Cálculo real (SEM cache) do painel financeiro. Requer `companyId` (resolvido
+ * na página). Nunca lança: erros viram estado "desconectado" com aviso.
+ */
+async function computeContaAzulDashboard(
   companyId: string | null,
   q: ContaAzulQuery = {},
 ): Promise<ContaAzulDashboard> {
