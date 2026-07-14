@@ -1,6 +1,6 @@
+import { InteractiveLineChart } from "@/components/charts/interactive-line";
 import type {
   IgBrandFollowers,
-  IgFollowersPoint,
   IgMedia,
   InstagramOverview,
 } from "@/lib/marketing/social";
@@ -64,62 +64,6 @@ function Kpi({
         {value}
       </p>
     </div>
-  );
-}
-
-/** Curva de crescimento de seguidores (SVG). Precisa de ≥ 2 pontos. */
-function GrowthChart({ series }: { series: IgFollowersPoint[] }) {
-  const W = 640;
-  const H = 180;
-  const PAD = 10;
-  const n = series.length;
-  const vals = series.map((p) => p.followers);
-  const min = Math.min(...vals);
-  const max = Math.max(...vals);
-  const span = Math.max(1, max - min);
-  const x = (i: number) => (n <= 1 ? W / 2 : (i / (n - 1)) * W);
-  // Escala com folga para a linha não colar nas bordas.
-  const y = (v: number) => H - PAD - ((v - min) / span) * (H - 2 * PAD);
-  const line = vals
-    .map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
-    .join(" ");
-  const area = `${line} L${W},${H} L0,${H} Z`;
-
-  return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      className="w-full"
-      role="img"
-      aria-label="Crescimento de seguidores por dia"
-    >
-      <defs>
-        <linearGradient id="iggrowth" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="var(--brand)" stopOpacity="0.28" />
-          <stop offset="1" stopColor="var(--brand)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line
-          key={f}
-          x1="0"
-          y1={H * f}
-          x2={W}
-          y2={H * f}
-          stroke="var(--border)"
-          strokeWidth="1"
-        />
-      ))}
-      <path d={area} fill="url(#iggrowth)" />
-      <path
-        d={line}
-        fill="none"
-        stroke="var(--brand)"
-        strokeWidth="2.5"
-        strokeLinejoin="round"
-        strokeLinecap="round"
-      />
-      <circle cx={x(n - 1)} cy={y(vals[n - 1])} r="4" fill="var(--brand)" />
-    </svg>
   );
 }
 
@@ -240,7 +184,16 @@ export function InstagramMetrics({ data }: { data: InstagramOverview }) {
               </div>
               {series.length >= 2 ? (
                 <>
-                  <GrowthChart series={series} />
+                  <InteractiveLineChart
+                    points={series.map((p) => ({
+                      label: ddmm(p.date),
+                      values: { followers: p.followers },
+                    }))}
+                    series={[
+                      { key: "followers", label: "Seguidores", color: "var(--brand)", area: true, baseline: "min", format: "int" },
+                    ]}
+                    ariaLabel="Crescimento de seguidores por dia"
+                  />
                   <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
                     <span>{ddmm(series[0].date)}</span>
                     <span>{ddmm(series[series.length - 1].date)}</span>

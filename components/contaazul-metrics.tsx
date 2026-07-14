@@ -1,11 +1,12 @@
 import Link from "next/link";
 
+import { InteractiveBarsChart } from "@/components/charts/interactive-bars";
+import { InteractiveDonutRing } from "@/components/charts/interactive-donut";
 import type {
   CaRangeKey,
   CategoriaValor,
   ContaAzulDashboard,
   DreLinha,
-  MonthPoint,
 } from "@/lib/contaazul/dashboard";
 
 /**
@@ -124,47 +125,6 @@ function Kpi({
   );
 }
 
-/** Barras mensais agrupadas: recebido (verde) vs. pago (vermelho suave). */
-function FluxoChart({ series }: { series: MonthPoint[] }) {
-  const W = 640;
-  const H = 200;
-  const PAD_B = 22;
-  const PAD_T = 8;
-  const n = series.length;
-  const max = Math.max(1, ...series.map((p) => Math.max(p.receita, p.despesa)));
-  const slot = n ? W / n : W;
-  const barW = Math.min(26, slot * 0.36);
-  const y = (v: number) => H - PAD_B - (v / max) * (H - PAD_B - PAD_T);
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
-      aria-label="Fluxo de caixa mensal: recebido vs. pago">
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line key={f} x1="0" y1={PAD_T + (H - PAD_B - PAD_T) * f} x2={W}
-          y2={PAD_T + (H - PAD_B - PAD_T) * f}
-          stroke="var(--border)" strokeWidth="1" />
-      ))}
-      {series.map((p, i) => {
-        const cx = i * slot + slot / 2;
-        return (
-          <g key={p.month}>
-            <rect x={cx - barW - 1} y={y(p.receita)} width={barW}
-              height={Math.max(0, H - PAD_B - y(p.receita))} rx="2"
-              fill="var(--brand)" />
-            <rect x={cx + 1} y={y(p.despesa)} width={barW}
-              height={Math.max(0, H - PAD_B - y(p.despesa))} rx="2"
-              fill="var(--chart-4)" opacity="0.85" />
-            <text x={cx} y={H - 6} textAnchor="middle"
-              className="fill-muted-foreground" fontSize="10">
-              {mesLabel(p.month)}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
-
 /** Donut (conic-gradient) de composição por categoria. */
 function CategoriaDonut({
   itens,
@@ -174,16 +134,10 @@ function CategoriaDonut({
   centerLabel: string;
 }) {
   const total = itens.reduce((s, c) => s + c.valor, 0);
-  let acc = 0;
-  const stops: string[] = [];
-  const legend = itens.map((c, i) => {
-    const color = CHART_VARS[i % CHART_VARS.length];
-    const share = total ? (c.valor / total) * 100 : 0;
-    const from = acc;
-    acc += share;
-    stops.push(`${color} ${from.toFixed(2)}% ${acc.toFixed(2)}%`);
-    return { ...c, color, share };
-  });
+  const legend = itens.map((c, i) => ({
+    ...c,
+    color: CHART_VARS[i % CHART_VARS.length],
+  }));
 
   if (!itens.length) {
     return <p className="text-sm text-muted-foreground">Sem dados no período.</p>;
@@ -191,21 +145,22 @@ function CategoriaDonut({
 
   return (
     <div className="flex items-center gap-5">
-      <div
-        className="relative grid h-28 w-28 flex-none place-items-center rounded-full"
-        style={{ background: `conic-gradient(${stops.join(", ")})` }}
+      <InteractiveDonutRing
+        items={legend.map((l) => ({
+          label: l.nome,
+          value: l.valor,
+          color: l.color,
+        }))}
       >
-        <div className="grid h-[70px] w-[70px] place-items-center rounded-full bg-card text-center">
-          <div>
-            <p className="text-[11px] font-semibold tabular-nums leading-tight">
-              {brlCompact.format(total)}
-            </p>
-            <p className="mt-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
-              {centerLabel}
-            </p>
-          </div>
+        <div>
+          <p className="text-[11px] font-semibold tabular-nums leading-tight">
+            {brlCompact.format(total)}
+          </p>
+          <p className="mt-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+            {centerLabel}
+          </p>
         </div>
-      </div>
+      </InteractiveDonutRing>
       <ul className="flex flex-col gap-1.5 text-sm">
         {legend.map((l) => (
           <li key={l.nome} className="flex items-center gap-2">
@@ -348,7 +303,17 @@ export function ContaAzulMetrics({
                 </div>
               </div>
               {data.fluxo.length ? (
-                <FluxoChart series={data.fluxo} />
+                <InteractiveBarsChart
+                  groups={data.fluxo.map((p) => ({
+                    label: mesLabel(p.month),
+                    values: { receita: p.receita, despesa: p.despesa },
+                  }))}
+                  bars={[
+                    { key: "receita", color: "var(--brand)", label: "Recebido" },
+                    { key: "despesa", color: "var(--chart-4)", label: "Pago" },
+                  ]}
+                  ariaLabel="Fluxo de caixa mensal: recebido vs. pago"
+                />
               ) : (
                 <p className="py-8 text-center text-sm text-muted-foreground">
                   Sem movimentação no período.

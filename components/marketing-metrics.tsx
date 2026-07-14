@@ -1,8 +1,9 @@
 import Link from "next/link";
 
+import { InteractiveDonutRing } from "@/components/charts/interactive-donut";
+import { InteractiveLineChart } from "@/components/charts/interactive-line";
 import type {
   BrandMetrics,
-  DailyPoint,
   MarketingDashboard,
   RangeKey,
 } from "@/lib/marketing/dashboard";
@@ -174,56 +175,7 @@ function Kpi({
   );
 }
 
-/** Área de investimento + linha de cliques a partir da série diária real. */
-function TrendChart({ series }: { series: DailyPoint[] }) {
-  const W = 640;
-  const H = 190;
-  const PAD = 8;
-  const n = series.length;
-  const spends = series.map((p) => p.spend);
-  const clicks = series.map((p) => p.clicks);
-  const maxS = Math.max(1, ...spends);
-  const maxC = Math.max(1, ...clicks);
-  const x = (i: number) => (n <= 1 ? W / 2 : (i / (n - 1)) * W);
-  const yS = (v: number) => H - PAD - (v / maxS) * (H - 2 * PAD);
-  const yC = (v: number) => H - PAD - (v / maxC) * (H - 2 * PAD);
-  const path = (arr: number[], y: (v: number) => number) =>
-    arr
-      .map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`)
-      .join(" ");
-  const spendLine = path(spends, yS);
-  const clickLine = path(clicks, yC);
-  const area = `${spendLine} L${W},${H} L0,${H} Z`;
-
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img"
-      aria-label="Investimento e cliques por dia">
-      <defs>
-        <linearGradient id="trendfill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="var(--brand)" stopOpacity="0.28" />
-          <stop offset="1" stopColor="var(--brand)" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      {[0.25, 0.5, 0.75].map((f) => (
-        <line key={f} x1="0" y1={H * f} x2={W} y2={H * f}
-          stroke="var(--border)" strokeWidth="1" />
-      ))}
-      <path d={area} fill="url(#trendfill)" />
-      <path d={spendLine} fill="none" stroke="var(--brand)" strokeWidth="2.5"
-        strokeLinejoin="round" strokeLinecap="round" />
-      <path d={clickLine} fill="none" stroke="var(--chart-3)" strokeWidth="2"
-        strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4 3" />
-      {n > 0 ? (
-        <>
-          <circle cx={x(n - 1)} cy={yS(spends[n - 1])} r="4" fill="var(--brand)" />
-          <circle cx={x(n - 1)} cy={yC(clicks[n - 1])} r="3.5" fill="var(--chart-3)" />
-        </>
-      ) : null}
-    </svg>
-  );
-}
-
-/** Donut (pizza) do investimento por marca via conic-gradient. */
+/** Donut (pizza) do investimento por marca — anel interativo + legenda. */
 function SpendDonut({
   brands,
   total,
@@ -231,42 +183,32 @@ function SpendDonut({
   brands: BrandMetrics[];
   total: number;
 }) {
-  let acc = 0;
-  const stops: string[] = [];
-  const legend: { name: string; value: number; color: string; pctv: number }[] =
-    [];
-  brands.forEach((b, i) => {
-    const color = CHART_VARS[i % CHART_VARS.length];
-    const share = total ? (b.spend / total) * 100 : 0;
-    const from = acc;
-    acc += share;
-    stops.push(`${color} ${from.toFixed(2)}% ${acc.toFixed(2)}%`);
-    legend.push({
-      name: b.brand ?? "?",
-      value: b.spend,
-      color,
-      pctv: share,
-    });
-  });
+  const legend = brands.map((b, i) => ({
+    name: b.brand ?? "?",
+    value: b.spend,
+    color: CHART_VARS[i % CHART_VARS.length],
+    pctv: total ? (b.spend / total) * 100 : 0,
+  }));
   const top = legend[0];
 
   return (
     <div className="flex items-center gap-5">
-      <div
-        className="relative grid h-28 w-28 flex-none place-items-center rounded-full"
-        style={{ background: `conic-gradient(${stops.join(", ")})` }}
+      <InteractiveDonutRing
+        items={legend.map((l) => ({
+          label: l.name,
+          value: l.value,
+          color: l.color,
+        }))}
       >
-        <div className="grid h-[70px] w-[70px] place-items-center rounded-full bg-card text-center">
-          <div>
-            <p className="text-sm font-semibold tabular-nums leading-none">
-              {top ? `${Math.round(top.pctv)}%` : "—"}
-            </p>
-            <p className="mt-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
-              {top?.name.split(" ")[0] ?? ""}
-            </p>
-          </div>
+        <div>
+          <p className="text-sm font-semibold tabular-nums leading-none">
+            {top ? `${Math.round(top.pctv)}%` : "—"}
+          </p>
+          <p className="mt-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+            {top?.name.split(" ")[0] ?? ""}
+          </p>
         </div>
-      </div>
+      </InteractiveDonutRing>
       <ul className="flex flex-col gap-2 text-sm">
         {legend.map((l) => (
           <li key={l.name} className="flex items-center gap-2">
@@ -389,7 +331,17 @@ export function MarketingMetrics({
                   </span>
                 </div>
               </div>
-              <TrendChart series={series} />
+              <InteractiveLineChart
+                points={series.map((p) => ({
+                  label: ddmmyyyy(p.date),
+                  values: { spend: p.spend, clicks: p.clicks },
+                }))}
+                series={[
+                  { key: "spend", label: "Investimento", color: "var(--brand)", area: true, format: "brl" },
+                  { key: "clicks", label: "Cliques", color: "var(--chart-3)", dashed: true, format: "int" },
+                ]}
+                ariaLabel="Investimento e cliques por dia"
+              />
               <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
                 <span>{series.length ? ddmmyyyy(series[0].date) : ""}</span>
                 <span>{series.length ? ddmmyyyy(series[series.length - 1].date) : ""}</span>
