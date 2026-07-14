@@ -15,7 +15,7 @@ const serviceAccount = rawServiceAccount
   : { client_email: "", private_key: "" };
 
 export const vertex = createVertex({
-  project: process.env.GOOGLE_CLOUD_PROJECT!,
+  project: process.env.GOOGLE_CLOUD_PROJECT ?? "build-placeholder",
   location: process.env.GOOGLE_VERTEX_LOCATION ?? "us-central1",
   googleAuthOptions: {
     credentials: {

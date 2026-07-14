@@ -4,6 +4,7 @@ import { useActionState, useState } from "react";
 import { PlugIcon, SettingsIcon } from "lucide-react";
 
 import {
+  changeOwnPassword,
   saveProfileSettings,
   type SettingsState,
 } from "@/app/(app)/configuracoes/actions";
@@ -104,8 +105,22 @@ export function SettingsDialog({
   );
 }
 
-/** Aba "Geral": preferências pessoais do usuário (nome, instruções, tema). */
+/** Aba "Geral": preferências pessoais do usuário (nome, instruções, tema, senha). */
 function GeneralSection({
+  initialSettings,
+}: {
+  initialSettings: ProfileSettings;
+}) {
+  return (
+    <div className="flex flex-1 flex-col overflow-y-auto">
+      <ProfileForm initialSettings={initialSettings} />
+      <PasswordForm />
+    </div>
+  );
+}
+
+/** Preferências pessoais (nome, instruções, tema). */
+function ProfileForm({
   initialSettings,
 }: {
   initialSettings: ProfileSettings;
@@ -116,7 +131,7 @@ function GeneralSection({
   );
 
   return (
-    <form action={formAction} className="flex flex-1 flex-col overflow-y-auto">
+    <form action={formAction} className="flex flex-col">
       <div className="flex flex-1 flex-col gap-6 p-6">
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold tracking-tight">Geral</h2>
@@ -177,6 +192,70 @@ function GeneralSection({
         )}
         <Button type="submit" disabled={pending}>
           {pending ? "Salvando..." : "Salvar"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** Redefinir a própria senha (não depende de e-mail/SMTP). */
+function PasswordForm() {
+  const [state, formAction, pending] = useActionState(
+    changeOwnPassword,
+    initialState,
+  );
+
+  return (
+    <form action={formAction} className="flex flex-col border-t border-border">
+      <div className="flex flex-col gap-6 p-6">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-tight">Redefinir senha</h2>
+          <p className="text-sm text-muted-foreground">
+            Defina uma nova senha para a sua conta.
+          </p>
+        </div>
+
+        <FieldGroup>
+          <Field>
+            <FieldLabel htmlFor="new-password">Nova senha</FieldLabel>
+            <Input
+              id="new-password"
+              name="password"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Pelo menos 8 caracteres"
+              minLength={8}
+            />
+          </Field>
+
+          <Field>
+            <FieldLabel htmlFor="confirm-password">Confirmar nova senha</FieldLabel>
+            <Input
+              id="confirm-password"
+              name="confirm"
+              type="password"
+              autoComplete="new-password"
+              placeholder="Repita a nova senha"
+              minLength={8}
+            />
+          </Field>
+        </FieldGroup>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 border-t border-border bg-muted/50 p-4">
+        {state.error ? (
+          <FieldDescription className="text-destructive">
+            {state.error}
+          </FieldDescription>
+        ) : state.message ? (
+          <FieldDescription className="text-primary">
+            {state.message}
+          </FieldDescription>
+        ) : (
+          <span />
+        )}
+        <Button type="submit" disabled={pending}>
+          {pending ? "Salvando..." : "Redefinir senha"}
         </Button>
       </div>
     </form>
