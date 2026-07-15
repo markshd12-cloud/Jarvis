@@ -6,6 +6,7 @@ import type { FileUIPart } from "ai";
 import {
   ArrowUpIcon,
   CircleStopIcon,
+  GlobeIcon,
   LoaderIcon,
   MicIcon,
   PaperclipIcon,
@@ -99,6 +100,8 @@ export function AiChatInput({
   agents = [],
   activeAgent = null,
   onSelectAgent,
+  webSearch = false,
+  onToggleWebSearch,
 }: {
   onSend?: (message: string, files?: FileUIPart[]) => void;
   placeholder?: string;
@@ -107,6 +110,8 @@ export function AiChatInput({
   agents?: AgentOption[];
   activeAgent?: AgentOption | null;
   onSelectAgent?: (agent: AgentOption | null) => void;
+  webSearch?: boolean;
+  onToggleWebSearch?: () => void;
 }) {
   const [value, setValue] = useState("");
   // Menu de "/" para escolher um agente (estilo Claude).
@@ -539,6 +544,25 @@ export function AiChatInput({
               ) : (
                 <MicIcon />
               )}
+            </Button>
+
+            {/* Busca web: quando ligado, responde da web ignorando as fontes internas. */}
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={webSearch ? "Busca na web ligada" : "Buscar na web"}
+              aria-pressed={webSearch}
+              title="Buscar na web (ignora as fontes internas)"
+              disabled={disabled}
+              onClick={() => onToggleWebSearch?.()}
+              className={
+                webSearch
+                  ? "bg-primary/15 text-primary hover:bg-primary/25"
+                  : undefined
+              }
+            >
+              <GlobeIcon />
             </Button>
           </div>
 

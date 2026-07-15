@@ -344,6 +344,46 @@ async function* principalWithGeminiFallback(params: {
   for await (const delta of result.textStream) yield { type: "text", delta };
 }
 
+/** System do modo busca web: o modelo DEVE usar a WebSearch (o botão foi ligado
+ *  de propósito), sem amarrar ao contexto interno. */
+const WEB_SEARCH_SYSTEM =
+  "Você é o Jarvis, assistente corporativo. O usuário ativou a BUSCA NA WEB para " +
+  "esta pergunta: use SEMPRE a ferramenta WebSearch para pesquisar na internet e " +
+  "responda baseando-se APENAS nos resultados encontrados. Responda em Português do " +
+  "Brasil, de forma clara e objetiva, e cite as fontes (títulos e/ou links) ao final. " +
+  "Se a busca não retornar nada útil, diga que não encontrou. Não prefixe seu próprio " +
+  "nome nem comente sobre o sistema. Markdown.";
+
+/**
+ * Modo BUSCA WEB (botão do chat): responde direto da web via ferramenta WebSearch
+ * do Claude, ignorando o Notion e demais fontes internas. Nunca lança — em falha,
+ * degrada com uma mensagem curta. Timeout maior: buscas encadeadas passam de 120s.
+ */
+async function* streamWebSearch(params: {
+  question: string;
+  signal?: AbortSignal;
+}): AsyncGenerator<ClaudeChunk> {
+  yield { type: "status", label: "Pesquisando na web…" };
+  try {
+    for await (const chunk of streamClaudeText({
+      system: WEB_SEARCH_SYSTEM,
+      prompt: params.question,
+      allowWebSearch: true,
+      timeoutMs: 180_000,
+      signal: params.signal,
+    })) {
+      yield chunk;
+    }
+  } catch (error) {
+    console.error("[chat] busca web falhou:", error);
+    yield {
+      type: "text",
+      delta:
+        "Não consegui completar a busca na web agora. Tente novamente em instantes.",
+    };
+  }
+}
+
 /** Alt de markdown seguro: sem quebras, sem colchetes que quebrem o `![...]`. */
 function toAltText(prompt: string): string {
   return prompt.replace(/[\[\]\r\n]+/g, " ").trim().slice(0, 120);
@@ -433,8 +473,13 @@ export async function POST(req: Request) {
     id,
     message,
     agentId,
-  }: { id: string; message: UIMessage; agentId?: string | null } =
-    await req.json();
+    webSearch,
+  }: {
+    id: string;
+    message: UIMessage;
+    agentId?: string | null;
+    webSearch?: boolean;
+  } = await req.json();
 
   // Histórico persistido + a nova mensagem do usuário.
   const previous = await loadConversation(id);
@@ -481,13 +526,17 @@ export async function POST(req: Request) {
   const [agentCtx, projectCtx, knowledge] = await Promise.all([
     agentCtxPromise,
     getConversationProjectContext(id),
-    buildKnowledge(
-      messageText(message),
-      priorUser ? messageText(priorUser) : undefined,
-      ctx.companyId,
-      can(ctx, "marketing"),
-      can(ctx, "financeiro"),
-    ),
+    // Modo busca web (botão ligado): pula TODO o contexto interno (Notion,
+    // financeiro, marketing, tarefas) — a resposta vem só da web.
+    webSearch
+      ? Promise.resolve("")
+      : buildKnowledge(
+          messageText(message),
+          priorUser ? messageText(priorUser) : undefined,
+          ctx.companyId,
+          can(ctx, "marketing"),
+          can(ctx, "financeiro"),
+        ),
   ]);
   // A persona vem PRIMEIRO e domina o comportamento; as regras de formatação do
   // BASE_SYSTEM seguem valendo. O RAG da empresa continua injetado.
@@ -521,13 +570,22 @@ export async function POST(req: Request) {
         let started = false;
         let text = "";
 
-        for await (const chunk of principalWithGeminiFallback({
-          system,
-          prompt: renderTranscript(messages),
-          messages,
-          images,
-          signal: req.signal,
-        })) {
+        // Botão de busca web ligado → resposta direta da web (só no Claude, que
+        // tem a ferramenta WebSearch). Caso contrário, caminho normal.
+        const source =
+          webSearch && PRINCIPAL_PROVIDER === "claude"
+            ? streamWebSearch({
+                question: messageText(message),
+                signal: req.signal,
+              })
+            : principalWithGeminiFallback({
+                system,
+                prompt: renderTranscript(messages),
+                messages,
+                images,
+                signal: req.signal,
+              });
+        for await (const chunk of source) {
           if (chunk.type === "status") {
             // Transiente: alimenta o feedback ao vivo, não vira parte da mensagem.
             writer.write({

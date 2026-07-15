@@ -31,6 +31,23 @@ export const CONTA_AZUL_ENV = {
   redirectUri: process.env.CONTA_AZUL_REDIRECT_URI ?? "",
 } as const;
 
+/**
+ * Origem PÚBLICA do app para montar os redirects do OAuth.
+ *
+ * Atrás do proxy (Cloudflare → Swarm) o `req.url` das rotas resolve para o
+ * endereço INTERNO do container (`http://0.0.0.0:3000`), gerando redirects
+ * quebrados após o callback. O `redirect_uri` registrado já é a URL pública
+ * canônica por ambiente (localhost no dev, jarvis em prod), então derivamos a
+ * origem dele. Fallback: `req.url` (dev sem env configurado).
+ */
+export function contaAzulRedirect(path: string, req: { url: string }): URL {
+  try {
+    return new URL(path, new URL(CONTA_AZUL_ENV.redirectUri).origin);
+  } catch {
+    return new URL(path, req.url);
+  }
+}
+
 export const CONTA_AZUL_PAGINATION = {
   pageParam: "pagina",
   sizeParam: "tamanho_pagina",

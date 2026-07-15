@@ -162,6 +162,8 @@ export interface StreamClaudeOptions {
   signal?: AbortSignal;
   /** Timeout total em ms. Default 120s. */
   timeoutMs?: number;
+  /** Libera SÓ a ferramenta WebSearch (usada no modo de busca web do chat). */
+  allowWebSearch?: boolean;
 }
 
 /**
@@ -220,7 +222,16 @@ export async function* streamClaudeText(
     // imagem: chat de texto puro, todas as ferramentas desligadas.
     ...(images.length
       ? ["--allowedTools", winQuote("Read(./**)")]
-      : ["--disallowed-tools", ...DISALLOWED_TOOLS]),
+      : opts.allowWebSearch
+        ? // Modo busca web: libera SÓ a WebSearch; as demais seguem negadas
+          // (belt-and-suspenders com o --disallowed-tools).
+          [
+            "--allowedTools",
+            "WebSearch",
+            "--disallowed-tools",
+            ...DISALLOWED_TOOLS.filter((t) => t !== "WebSearch"),
+          ]
+        : ["--disallowed-tools", ...DISALLOWED_TOOLS]),
   ];
 
   const command = resolveClaudeCommand();

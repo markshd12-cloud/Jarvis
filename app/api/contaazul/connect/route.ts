@@ -1,6 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { CONTA_AZUL_ENV, CONTA_AZUL_OAUTH } from "@/lib/contaazul/config";
+import {
+  CONTA_AZUL_ENV,
+  CONTA_AZUL_OAUTH,
+  contaAzulRedirect,
+} from "@/lib/contaazul/config";
 import { createClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -10,12 +14,12 @@ export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const { data } = await supabase.auth.getClaims();
   if (!data?.claims) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    return NextResponse.redirect(contaAzulRedirect("/login", req));
   }
 
   if (!CONTA_AZUL_ENV.clientId || !CONTA_AZUL_ENV.redirectUri) {
     // Credenciais ainda não configuradas no .env.local.
-    return NextResponse.redirect(new URL("/dashboard?contaazul=config", req.url));
+    return NextResponse.redirect(contaAzulRedirect("/dashboard?contaazul=config", req));
   }
 
   // Anti-CSRF: state aleatório guardado em cookie httpOnly e validado no callback.

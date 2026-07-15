@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getCompanyId } from "@/lib/db/company";
-import { CONTA_AZUL_ENV, CONTA_AZUL_OAUTH } from "@/lib/contaazul/config";
+import {
+  CONTA_AZUL_ENV,
+  CONTA_AZUL_OAUTH,
+  contaAzulRedirect,
+} from "@/lib/contaazul/config";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { createClient } from "@/lib/supabase/server";
 
@@ -11,7 +15,7 @@ function back(req: NextRequest, status: string) {
   // Conexões vivem em Configurações (modal, sem rota própria) — volta ao
   // dashboard; o status fica visível ao reabrir Configurações.
   const res = NextResponse.redirect(
-    new URL(`/dashboard?contaazul=${status}`, req.url),
+    contaAzulRedirect(`/dashboard?contaazul=${status}`, req),
   );
   res.cookies.delete("contaazul_oauth_state");
   return res;
@@ -22,7 +26,7 @@ export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const { data } = await supabase.auth.getClaims();
   if (!data?.claims) {
-    return NextResponse.redirect(new URL("/login", req.url));
+    return NextResponse.redirect(contaAzulRedirect("/login", req));
   }
 
   const url = new URL(req.url);

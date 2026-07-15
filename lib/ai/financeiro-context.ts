@@ -13,6 +13,7 @@ import "server-only";
 
 import { caGet } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
+import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
 
 // Termos que indicam pergunta financeira (receita/despesa/caixa/etc.).
 const FINANCE_RE =
@@ -52,6 +53,17 @@ function addDays(iso: string, days: number): string {
   const d = new Date(`${iso}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+const MESES = [
+  "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+  "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+];
+
+/** 'AAAA-MM' → 'junho/2026'. */
+function nomeMes(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  return `${MESES[(m - 1) % 12]}/${y}`;
 }
 
 interface Totais {
@@ -104,35 +116,46 @@ async function janela(companyId: string, de: string, ate: string) {
  */
 export async function buildFinanceiroBlock(companyId: string): Promise<string> {
   const hoje = spToday();
-  const inicioMes = `${hoje.slice(0, 7)}-01`;
+  const mesAtual = hoje.slice(0, 7);
 
-  const [dia, mes, aberto] = await Promise.all([
-    janela(companyId, hoje, hoje), // hoje
-    janela(companyId, inicioMes, hoje), // mês corrente até hoje
+  const [dia, aberto, dash] = await Promise.all([
+    janela(companyId, hoje, hoje), // hoje (recebido/pago do dia)
     janela(companyId, addDays(hoje, -365), addDays(hoje, 365)), // aberto ±12m
+    // Série mensal dos últimos 6 meses — reusa o dashboard (JÁ cacheado em prod).
+    getContaAzulDashboard(companyId, { range: "6m" }).catch(() => null),
   ]);
 
   const header =
     `## Conta Azul — financeiro (fonte de verdade; valores em BRL, fuso de São Paulo; hoje = ${hoje})\n` +
     `Use SEMPRE estes números para receita, despesa, faturamento, a receber, a pagar, vencidos e resultado. ` +
-    `Não use o Notion nem estime esses valores — se a pergunta for financeira, responda com base neste bloco.`;
+    `Não use o Notion nem estime esses valores. Para períodos ("últimos 2 meses", "junho", "mês passado", "trimestre"), ` +
+    `selecione/some as linhas da tabela mensal abaixo.`;
 
   const secHoje =
     `\n\n### Hoje (${hoje})\n` +
     `- Recebido hoje: ${brl.format(dia.r.pago)}\n` +
     `- Pago hoje: ${brl.format(dia.p.pago)}`;
 
-  const resultadoMes = mes.r.pago - mes.p.pago;
-  const secMes =
-    `\n\n### Mês corrente (${inicioMes} a ${hoje})\n` +
-    `- Faturamento recebido: ${brl.format(mes.r.pago)}\n` +
-    `- Despesa paga: ${brl.format(mes.p.pago)}\n` +
-    `- Resultado (recebido − pago): ${brl.format(resultadoMes)}`;
+  let secMensal = "";
+  if (dash?.connected && dash.fluxo.length) {
+    const linhas = dash.fluxo
+      .map((p) => {
+        const parcial = p.month === mesAtual ? " — PARCIAL (mês em curso)" : "";
+        return (
+          `- ${nomeMes(p.month)}: recebido ${brl.format(p.receita)}, ` +
+          `despesa ${brl.format(p.despesa)}, ` +
+          `resultado ${brl.format(p.receita - p.despesa)}${parcial}`
+        );
+      })
+      .join("\n");
+    secMensal =
+      `\n\n### Faturamento mês a mês (últimos 6 meses; recebido = pago que entrou no mês, despesa = pago no mês)\n${linhas}`;
+  }
 
   const secAberto =
     `\n\n### Posição em aberto (vencimentos de ${addDays(hoje, -365)} a ${addDays(hoje, 365)})\n` +
     `- A receber (em aberto): ${brl.format(aberto.r.aberto)} — sendo ${brl.format(aberto.r.vencido)} vencido\n` +
     `- A pagar (em aberto): ${brl.format(aberto.p.aberto)} — sendo ${brl.format(aberto.p.vencido)} vencido`;
 
-  return header + secHoje + secMes + secAberto;
+  return header + secHoje + secMensal + secAberto;
 }

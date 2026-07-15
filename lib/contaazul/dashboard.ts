@@ -450,36 +450,59 @@ function desconectado(
 
 // ------------------------------ Cache (SWR) --------------------------------
 
-interface CacheEntry {
-  data: ContaAzulDashboard;
-  at: number;
-  refreshing: boolean;
-}
-/** Cache por processo (server standalone, 1 réplica no Swarm). */
-const dashboardCache = new Map<string, CacheEntry>();
 /** Janela "fresca": serve direto sem recalcular. */
 const TTL_MS = (Number(process.env.CONTA_AZUL_CACHE_TTL_SECONDS) || 600) * 1000;
 /** Teto do "velho servível": além disso, recalcula bloqueando. */
 const MAX_AGE_MS = Math.max(TTL_MS * 6, 60 * 60 * 1000);
 
+interface RawEventos {
+  receber: Awaited<ReturnType<typeof buscarEventos>>;
+  pagar: Awaited<ReturnType<typeof buscarEventos>>;
+  vendas: Awaited<ReturnType<typeof topClientes>>;
+}
+interface RawCacheEntry {
+  data: RawEventos;
+  at: number;
+  refreshing: boolean;
+}
 /**
- * Painel financeiro da Conta Azul (CACHEADO) para a empresa/período. Envolve o
- * cálculo real com stale-while-revalidate: dentro do TTL serve o cache; passado
- * o TTL mas dentro do teto, serve o valor VELHO na hora e dispara um refresh em
- * segundo plano; só bloqueia recalculando em miss (ou cache muito velho). Isso
- * derruba o Dashboard de ~5s (38 chamadas throttled à API) para instantâneo.
- * Só resultados CONECTADOS entram no cache — erro/desconectado nunca poluem.
+ * Cache por processo dos EVENTOS BRUTOS (receber/pagar/vendas) por empresa+período.
+ * A chave NÃO inclui a categoria: o filtro `cat` é só um recorte em memória dos
+ * mesmos itens (ver computeContaAzulDashboard). Assim, trocar de categoria (clicar
+ * numa fatia do donut) reaproveita o cache e responde na hora, em vez de refazer a
+ * busca paginada (~5s, dezenas de chamadas throttled à API) a cada categoria.
+ * (server standalone, 1 réplica no Swarm.)
  */
-export async function getContaAzulDashboard(
-  companyId: string | null,
-  q: ContaAzulQuery = {},
-): Promise<ContaAzulDashboard> {
-  // Sem empresa não há o que cachear (retorna "desconectado" direto).
-  if (!companyId) return computeContaAzulDashboard(companyId, q);
+const rawCache = new Map<string, RawCacheEntry>();
 
-  const key = `${companyId}:${resolveRange(q).range}:${(q.cat ?? "").trim()}`;
+/** Busca crua (paginada) dos eventos do período. Lança em erro de API. */
+async function fetchRawEventos(
+  companyId: string,
+  since: string,
+  until: string,
+): Promise<RawEventos> {
+  const [receber, pagar, vendas] = await Promise.all([
+    buscarEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, since, until),
+    buscarEventos(companyId, CONTA_AZUL_RESOURCES.contasAPagar.path!, since, until),
+    topClientes(companyId),
+  ]);
+  return { receber, pagar, vendas };
+}
+
+/**
+ * Eventos brutos com stale-while-revalidate (chave empresa:período, sem `cat`):
+ * dentro do TTL serve o cache; passado o TTL mas dentro do teto, serve o VELHO na
+ * hora e dispara refresh em background; só bloqueia em miss (ou muito velho).
+ */
+async function getRawEventosCached(
+  companyId: string,
+  range: string,
+  since: string,
+  until: string,
+): Promise<RawEventos> {
+  const key = `${companyId}:${range}`;
   const now = Date.now();
-  const hit = dashboardCache.get(key);
+  const hit = rawCache.get(key);
 
   if (hit) {
     const age = now - hit.at;
@@ -488,13 +511,9 @@ export async function getContaAzulDashboard(
       // Velho porém servível: refresh em background (só um por vez) e serve o velho.
       if (!hit.refreshing) {
         hit.refreshing = true;
-        void computeContaAzulDashboard(companyId, q)
+        void fetchRawEventos(companyId, since, until)
           .then((fresh) => {
-            if (fresh.connected) {
-              dashboardCache.set(key, { data: fresh, at: Date.now(), refreshing: false });
-            } else {
-              hit.refreshing = false;
-            }
+            rawCache.set(key, { data: fresh, at: Date.now(), refreshing: false });
           })
           .catch(() => {
             hit.refreshing = false;
@@ -504,10 +523,24 @@ export async function getContaAzulDashboard(
     }
   }
 
-  // Miss (ou muito velho): calcula na hora e cacheia se conectado.
-  const fresh = await computeContaAzulDashboard(companyId, q);
-  if (fresh.connected) dashboardCache.set(key, { data: fresh, at: now, refreshing: false });
+  // Miss (ou muito velho): busca na hora e cacheia.
+  const fresh = await fetchRawEventos(companyId, since, until);
+  rawCache.set(key, { data: fresh, at: now, refreshing: false });
   return fresh;
+}
+
+/**
+ * Painel financeiro da Conta Azul para a empresa/período. O trabalho caro (busca
+ * paginada na API) é cacheado por empresa+período em `getRawEventosCached`; aqui só
+ * recortamos por categoria e agregamos em memória — então filtrar por categoria é
+ * instantâneo depois que o período está aquecido. Nunca lança (degrada para
+ * "desconectado"); erro/desconectado nunca entram no cache de eventos.
+ */
+export async function getContaAzulDashboard(
+  companyId: string | null,
+  q: ContaAzulQuery = {},
+): Promise<ContaAzulDashboard> {
+  return computeContaAzulDashboard(companyId, q);
 }
 
 /**
@@ -525,11 +558,14 @@ async function computeContaAzulDashboard(
   }
 
   try {
-    const [receber, pagar, vendas] = await Promise.all([
-      buscarEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, since, until),
-      buscarEventos(companyId, CONTA_AZUL_RESOURCES.contasAPagar.path!, since, until),
-      topClientes(companyId),
-    ]);
+    // Eventos brutos cacheados por empresa+período (chave sem `cat`): trocar de
+    // categoria reaproveita esta busca em vez de refazer a paginação na API.
+    const { receber, pagar, vendas } = await getRawEventosCached(
+      companyId,
+      range,
+      since,
+      until,
+    );
 
     // Filtro por categoria: recorta os itens JÁ paginados (mesmo passe, sem
     // chamadas extras à API → não fura o spike arrest de 10 req/s).

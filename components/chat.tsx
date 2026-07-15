@@ -78,6 +78,9 @@ export function Chat({
 
   // Agente ativo da conversa (escolhido pelo menu "/"). Vai no body por envio.
   const [activeAgent, setActiveAgent] = useState<AgentOption | null>(initialAgent);
+  // Botão de busca web: quando ligado, o servidor ignora o Notion/fontes internas
+  // e responde direto da web. Persiste entre envios (igual ChatGPT).
+  const [webSearch, setWebSearch] = useState(false);
 
   // Sorteada no client (após montar) para não divergir da renderização do servidor.
   const [greeting, setGreeting] = useState(GREETINGS_GENERIC[0]);
@@ -96,8 +99,9 @@ export function Chat({
           body: {
             id,
             message: messages[messages.length - 1],
-            // agentId chega via sendMessage(..., { body }) no handleSend.
+            // agentId/webSearch chegam via sendMessage(..., { body }) no handleSend.
             agentId: (body as { agentId?: string | null })?.agentId ?? null,
+            webSearch: (body as { webSearch?: boolean })?.webSearch ?? false,
           },
         };
       },
@@ -124,7 +128,7 @@ export function Chat({
     setStatusLabel(null);
     sendMessage(
       { text: message, files },
-      { body: { agentId: activeAgent?.id ?? null } },
+      { body: { agentId: activeAgent?.id ?? null, webSearch } },
     );
   }
 
@@ -148,6 +152,8 @@ export function Chat({
           agents={agents}
           activeAgent={activeAgent}
           onSelectAgent={setActiveAgent}
+          webSearch={webSearch}
+          onToggleWebSearch={() => setWebSearch((v) => !v)}
         />
       </div>
     );
@@ -227,6 +233,8 @@ export function Chat({
           agents={agents}
           activeAgent={activeAgent}
           onSelectAgent={setActiveAgent}
+          webSearch={webSearch}
+          onToggleWebSearch={() => setWebSearch((v) => !v)}
         />
       </div>
     </div>
