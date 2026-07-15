@@ -25,6 +25,10 @@ import {
   stripGptKeyword,
 } from "@/lib/ai/image-intent";
 import {
+  buildFinanceiroBlock,
+  isFinancialQuery,
+} from "@/lib/ai/financeiro-context";
+import {
   buildMarketingBlock,
   isMarketingQuery,
 } from "@/lib/ai/marketing-context";
@@ -192,6 +196,7 @@ async function buildKnowledge(
   priorUserText?: string,
   companyId?: string | null,
   canMarketing = false,
+  canFinanceiro = false,
 ): Promise<string> {
   const keyTerms = extractKeyTerms(question);
   let isoDates = parseQueryDates(question);
@@ -211,6 +216,11 @@ async function buildKnowledge(
   const marketingBlock =
     canMarketing && isMarketingQuery(question)
       ? await buildMarketingBlock(question).catch(() => "")
+      : "";
+
+  const financeiroBlock =
+    companyId && canFinanceiro && isFinancialQuery(question)
+      ? await buildFinanceiroBlock(companyId).catch(() => "")
       : "";
 
   // Follow-up: "e de Giovana?" (tem nome, mas sem data) herda o intervalo/datas
@@ -244,6 +254,7 @@ async function buildKnowledge(
   const blocks: string[] = [];
   if (tasksBlock) blocks.push(tasksBlock);
   if (marketingBlock) blocks.push(marketingBlock);
+  if (financeiroBlock) blocks.push(financeiroBlock);
   if (documents.length) {
     blocks.push(
       "## Fontes da empresa (verdade)\n" +
@@ -475,6 +486,7 @@ export async function POST(req: Request) {
       priorUser ? messageText(priorUser) : undefined,
       ctx.companyId,
       can(ctx, "marketing"),
+      can(ctx, "financeiro"),
     ),
   ]);
   // A persona vem PRIMEIRO e domina o comportamento; as regras de formatação do
