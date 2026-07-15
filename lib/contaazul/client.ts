@@ -65,20 +65,31 @@ function basicAuth(): string {
   ).toString("base64");
 }
 
-/** Renova o access_token via refresh_token e persiste o novo par no DB. */
-async function refresh(companyId: string, refreshToken: string): Promise<string> {
-  const res = await fetch(CONTA_AZUL_OAUTH.tokenUrl, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basicAuth()}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    }),
-    cache: "no-store",
-  });
+/**
+ * Renova o access_token via refresh_token e persiste o novo par no DB.
+ * Retenta em 429 — o endpoint de auth (Cognito) também aplica rate limit;
+ * sob rajada de chamadas o refresh estourava e derrubava o painel.
+ */
+async function doRefresh(companyId: string, refreshToken: string): Promise<string> {
+  const call = () =>
+    fetch(CONTA_AZUL_OAUTH.tokenUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth()}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
+      }),
+      cache: "no-store",
+    });
+
+  let res = await call();
+  for (let tentativa = 0; res.status === 429 && tentativa < 4; tentativa++) {
+    await sleep(1100 + tentativa * 500);
+    res = await call();
+  }
 
   if (!res.ok) {
     throw new ContaAzulError(
@@ -115,6 +126,25 @@ async function refresh(companyId: string, refreshToken: string): Promise<string>
     .eq("company_id", companyId);
 
   return token.access_token;
+}
+
+/**
+ * Deduplica refreshes concorrentes (single-flight) por empresa. Quando o token
+ * expira e várias requisições paralelas (contas-a-receber + contas-a-pagar em
+ * lotes) disparam refresh ao mesmo tempo, só UM POST é feito — as demais
+ * aguardam a mesma promise. Evita o 429 do Cognito e a invalidação em cascata
+ * do refresh_token (que é rotacionado a cada refresh). 1 réplica → Map de
+ * processo basta.
+ */
+const inFlightRefresh = new Map<string, Promise<string>>();
+function refresh(companyId: string, refreshToken: string): Promise<string> {
+  const existing = inFlightRefresh.get(companyId);
+  if (existing) return existing;
+  const p = doRefresh(companyId, refreshToken).finally(() => {
+    inFlightRefresh.delete(companyId);
+  });
+  inFlightRefresh.set(companyId, p);
+  return p;
 }
 
 /** Lê a conexão da empresa; renova o token se estiver expirado (ou quase). */

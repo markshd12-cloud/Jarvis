@@ -7,6 +7,7 @@
  * arcos transparentes captura o hover de cada fatia → realce sutil + tooltip.
  * Nenhuma mudança de pixel no estado de repouso; nenhuma dependência externa.
  */
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { ReactNode } from "react";
 
@@ -46,10 +47,15 @@ function arc(f0: number, f1: number): string {
 export function InteractiveDonutRing({
   items,
   children,
+  hrefs,
 }: {
   items: DonutItem[];
   children: ReactNode;
+  /** Se presente (alinhado a `items`), clicar na fatia navega para o href
+   *  correspondente — reusa os filtros por `searchParam` do dashboard. */
+  hrefs?: string[];
 }) {
+  const router = useRouter();
   const [hi, setHi] = useState<number | null>(null);
   const total = items.reduce((s, i) => s + i.value, 0);
 
@@ -88,9 +94,14 @@ export function InteractiveDonutRing({
               key={s.label}
               d={arc(s.f0, s.f1)}
               fill="transparent"
-              className="cursor-pointer"
+              className={hrefs?.[i] ? "cursor-pointer" : "cursor-default"}
               onMouseEnter={() => setHi(i)}
               onMouseLeave={() => setHi(null)}
+              onClick={
+                hrefs?.[i]
+                  ? () => router.push(hrefs[i], { scroll: false })
+                  : undefined
+              }
             />
           ))}
           {hovered ? (

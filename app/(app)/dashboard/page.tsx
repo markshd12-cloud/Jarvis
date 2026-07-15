@@ -52,7 +52,10 @@ export default async function DashboardPage({
     canMarketing ? getInstagramOverview({ brand }) : Promise.resolve(null),
     canFinanceiro
       ? getCompanyId().then((companyId) =>
-          getContaAzulDashboard(companyId, { range: one(sp.ca) }),
+          getContaAzulDashboard(companyId, {
+            range: one(sp.ca),
+            cat: one(sp.cacat),
+          }),
         )
       : Promise.resolve(null),
   ]);
@@ -61,6 +64,7 @@ export default async function DashboardPage({
   // Params atuais (string) para os filtros do painel Conta Azul preservarem estado.
   const currentParams: Record<string, string | undefined> = {
     ca: one(sp.ca),
+    cacat: one(sp.cacat),
     range: one(sp.range),
     since: one(sp.since),
     until: one(sp.until),

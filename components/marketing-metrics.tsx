@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { InteractiveDonutRing } from "@/components/charts/interactive-donut";
 import { InteractiveLineChart } from "@/components/charts/interactive-line";
+import { MarketingDateRange } from "@/components/marketing-date-range";
 import type {
   BrandMetrics,
   MarketingDashboard,
@@ -91,6 +92,7 @@ function Chip({
   return (
     <Link
       href={href}
+      scroll={false}
       className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
         active
           ? activeCls
@@ -175,13 +177,18 @@ function Kpi({
   );
 }
 
-/** Donut (pizza) do investimento por marca — anel interativo + legenda. */
+/** Donut (pizza) do investimento por marca — anel + legenda clicáveis (filtram
+ *  o dashboard pela marca; clicar na marca ativa remove o filtro). */
 function SpendDonut({
   brands,
   total,
+  sel,
+  brand,
 }: {
   brands: BrandMetrics[];
   total: number;
+  sel: Selection;
+  brand: string | null;
 }) {
   const legend = brands.map((b, i) => ({
     name: b.brand ?? "?",
@@ -190,6 +197,8 @@ function SpendDonut({
     pctv: total ? (b.spend / total) * 100 : 0,
   }));
   const top = legend[0];
+  const hrefFor = (name: string) =>
+    buildHref(sel, { brand: brand === name ? null : name });
 
   return (
     <div className="flex items-center gap-5">
@@ -199,6 +208,7 @@ function SpendDonut({
           value: l.value,
           color: l.color,
         }))}
+        hrefs={legend.map((l) => hrefFor(l.name))}
       >
         <div>
           <p className="text-sm font-semibold tabular-nums leading-none">
@@ -209,15 +219,30 @@ function SpendDonut({
           </p>
         </div>
       </InteractiveDonutRing>
-      <ul className="flex flex-col gap-2 text-sm">
-        {legend.map((l) => (
-          <li key={l.name} className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 flex-none rounded-sm"
-              style={{ background: l.color }} />
-            <span className="text-muted-foreground">{l.name}</span>
-            <span className="tabular-nums font-medium">{brlCompact.format(l.value)}</span>
-          </li>
-        ))}
+      <ul className="flex flex-col gap-1 text-sm">
+        {legend.map((l) => {
+          const active = brand === l.name;
+          return (
+            <li key={l.name}>
+              <Link
+                href={hrefFor(l.name)}
+                scroll={false}
+                className={`-mx-1 flex items-center gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-muted/60 ${
+                  active ? "bg-muted/50" : ""
+                }`}
+              >
+                <span className="h-2.5 w-2.5 flex-none rounded-sm"
+                  style={{ background: l.color }} />
+                <span className={active ? "text-foreground" : "text-muted-foreground"}>
+                  {l.name}
+                </span>
+                <span className="ml-auto tabular-nums font-medium">
+                  {brlCompact.format(l.value)}
+                </span>
+              </Link>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -252,24 +277,12 @@ export function MarketingMetrics({
             {label}
           </Chip>
         ))}
-        <form method="get" action="/dashboard"
-          className="flex flex-wrap items-center gap-2">
-          <input type="hidden" name="range" value="custom" />
-          {brand ? <input type="hidden" name="brand" value={brand} /> : null}
-          <input type="date" name="since" defaultValue={since} max={until}
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm" />
-          <span className="text-sm text-muted-foreground">a</span>
-          <input type="date" name="until" defaultValue={until}
-            className="rounded-md border border-border bg-card px-2 py-1 text-sm" />
-          <button type="submit"
-            className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
-              range === "custom"
-                ? "border-transparent bg-foreground text-background"
-                : "border-border text-muted-foreground hover:bg-muted/60"
-            }`}>
-            Aplicar
-          </button>
-        </form>
+        <MarketingDateRange
+          key={`${since}-${until}`}
+          since={since}
+          until={until}
+          isCustom={range === "custom"}
+        />
       </div>
 
       {/* Filtro de marca */}
@@ -316,20 +329,10 @@ export function MarketingMetrics({
           {/* Tendência + Pizza */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr]">
             <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3 flex items-baseline justify-between gap-3">
+              <div className="mb-3 flex items-baseline gap-3">
                 <h3 className="text-sm font-semibold tracking-tight">
                   Investimento por dia
                 </h3>
-                <div className="flex gap-4 text-xs text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: "var(--brand)" }} />
-                    Investimento
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: "var(--chart-3)" }} />
-                    Cliques
-                  </span>
-                </div>
               </div>
               <InteractiveLineChart
                 points={series.map((p) => ({
@@ -341,6 +344,7 @@ export function MarketingMetrics({
                   { key: "clicks", label: "Cliques", color: "var(--chart-3)", dashed: true, format: "int" },
                 ]}
                 ariaLabel="Investimento e cliques por dia"
+                legend
               />
               <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
                 <span>{series.length ? ddmmyyyy(series[0].date) : ""}</span>
@@ -352,7 +356,7 @@ export function MarketingMetrics({
               <h3 className="mb-4 text-sm font-semibold tracking-tight">
                 Investimento por marca
               </h3>
-              <SpendDonut brands={brands} total={total.spend} />
+              <SpendDonut brands={brands} total={total.spend} sel={sel} brand={brand} />
             </div>
           </div>
 

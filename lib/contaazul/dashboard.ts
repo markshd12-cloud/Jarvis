@@ -62,9 +62,14 @@ export interface ContaAzulDashboard {
   range: CaRangeKey;
   since: string;
   until: string;
+  /** Categoria em foco (filtro ativo) ou null. */
+  cat: string | null;
   lastSyncedAt: string | null;
   kpis: ContaAzulKpis;
   fluxo: MonthPoint[];
+  /** Detalhe por mês (drill-down): top categorias de recebido e pago.
+   *  Alinhado a `fluxo` pela ordem dos meses. Compacto (pré-computado). */
+  fluxoDetalhe: FluxoMes[];
   receitaPorCategoria: CategoriaValor[];
   despesaPorCategoria: CategoriaValor[];
   dre: DreLinha[];
@@ -72,8 +77,16 @@ export interface ContaAzulDashboard {
   vendasAprovadas: number | null;
 }
 
+export interface FluxoMes {
+  month: string;
+  receita: CategoriaValor[];
+  despesa: CategoriaValor[];
+}
+
 export interface ContaAzulQuery {
   range?: string;
+  /** Filtra todo o painel por uma categoria (nome exato). */
+  cat?: string;
 }
 
 // ----------------------------- Datas (fuso SP) -----------------------------
@@ -250,6 +263,103 @@ function fluxoMensal(
   return [...meses.values()].sort((a, b) => a.month.localeCompare(b.month));
 }
 
+/**
+ * Detalhe do fluxo por mês (drill-down): top-5 categorias de recebido e pago,
+ * por `item.pago` (mesma base das barras). Alinhado à lista de `meses`.
+ * Compacto — cabe no payload sem peso (≤ ~10 objetos por mês).
+ */
+function fluxoDetalhado(
+  receber: EventoItem[],
+  pagar: EventoItem[],
+  meses: string[],
+): FluxoMes[] {
+  const agrupaPorMes = (itens: EventoItem[]) => {
+    const m = new Map<string, Map<string, number>>();
+    for (const it of itens) {
+      const mes = mesDoItem(it);
+      if (!mes) continue;
+      const cat = categoriaNome(it);
+      const porCat = m.get(mes) ?? new Map<string, number>();
+      porCat.set(cat, (porCat.get(cat) ?? 0) + num(it.pago));
+      m.set(mes, porCat);
+    }
+    return m;
+  };
+  const top5 = (porCat: Map<string, number> | undefined): CategoriaValor[] =>
+    porCat
+      ? [...porCat.entries()]
+          .map(([nome, valor]) => ({ nome, valor }))
+          .filter((c) => c.valor > 0)
+          .sort((a, b) => b.valor - a.valor)
+          .slice(0, 5)
+      : [];
+  const r = agrupaPorMes(receber);
+  const p = agrupaPorMes(pagar);
+  return meses.map((month) => ({
+    month,
+    receita: top5(r.get(month)),
+    despesa: top5(p.get(month)),
+  }));
+}
+
+/** KPIs a partir dos `totais` agregados da API (caminho sem filtro). */
+function kpisDosTotais(
+  receberT: EventoTotais,
+  pagarT: EventoTotais,
+): ContaAzulKpis {
+  const rPago = valorDe(receberT.pago);
+  const rAberto = valorDe(receberT.aberto);
+  const pPago = valorDe(pagarT.pago);
+  const pAberto = valorDe(pagarT.aberto);
+  return {
+    receitaRecebida: rPago,
+    receitaAberta: rAberto,
+    receitaVencida: valorDe(receberT.vencido),
+    despesaPaga: pPago,
+    despesaAberta: pAberto,
+    despesaVencida: valorDe(pagarT.vencido),
+    resultado: rPago - pPago,
+    saldoPrevisto: rPago + rAberto - (pPago + pAberto),
+  };
+}
+
+/**
+ * KPIs recalculados a partir dos ITENS (caminho filtrado por categoria).
+ * `aberto` = tudo não pago; `vencido` = não pago com vencimento anterior a hoje.
+ */
+function kpisDosItens(
+  receber: EventoItem[],
+  pagar: EventoItem[],
+  hojeIso: string,
+): ContaAzulKpis {
+  const agg = (itens: EventoItem[]) => {
+    let pago = 0;
+    let aberto = 0;
+    let vencido = 0;
+    for (const it of itens) {
+      pago += num(it.pago);
+      const naoPago = num(it.nao_pago);
+      aberto += naoPago;
+      if (naoPago > 0 && it.data_vencimento && it.data_vencimento < hojeIso) {
+        vencido += naoPago;
+      }
+    }
+    return { pago, aberto, vencido };
+  };
+  const r = agg(receber);
+  const p = agg(pagar);
+  return {
+    receitaRecebida: r.pago,
+    receitaAberta: r.aberto,
+    receitaVencida: r.vencido,
+    despesaPaga: p.pago,
+    despesaAberta: p.aberto,
+    despesaVencida: p.vencido,
+    resultado: r.pago - p.pago,
+    saldoPrevisto: r.pago + r.aberto - (p.pago + p.aberto),
+  };
+}
+
 /** DRE simplificado (cascata): receita → grupos de despesa → resultado. */
 function montarDre(
   receitaRecebida: number,
@@ -316,6 +426,7 @@ function desconectado(
     range,
     since,
     until,
+    cat: null,
     lastSyncedAt: null,
     kpis: {
       receitaRecebida: 0,
@@ -328,6 +439,7 @@ function desconectado(
       saldoPrevisto: 0,
     },
     fluxo: [],
+    fluxoDetalhe: [],
     receitaPorCategoria: [],
     despesaPorCategoria: [],
     dre: [],
@@ -365,7 +477,7 @@ export async function getContaAzulDashboard(
   // Sem empresa não há o que cachear (retorna "desconectado" direto).
   if (!companyId) return computeContaAzulDashboard(companyId, q);
 
-  const key = `${companyId}:${resolveRange(q).range}`;
+  const key = `${companyId}:${resolveRange(q).range}:${(q.cat ?? "").trim()}`;
   const now = Date.now();
   const hit = dashboardCache.get(key);
 
@@ -419,22 +531,25 @@ async function computeContaAzulDashboard(
       topClientes(companyId),
     ]);
 
-    const kpis: ContaAzulKpis = {
-      receitaRecebida: valorDe(receber.totais.pago),
-      receitaAberta: valorDe(receber.totais.aberto),
-      receitaVencida: valorDe(receber.totais.vencido),
-      despesaPaga: valorDe(pagar.totais.pago),
-      despesaAberta: valorDe(pagar.totais.aberto),
-      despesaVencida: valorDe(pagar.totais.vencido),
-      resultado: valorDe(receber.totais.pago) - valorDe(pagar.totais.pago),
-      saldoPrevisto:
-        valorDe(receber.totais.pago) +
-        valorDe(receber.totais.aberto) -
-        (valorDe(pagar.totais.pago) + valorDe(pagar.totais.aberto)),
-    };
+    // Filtro por categoria: recorta os itens JÁ paginados (mesmo passe, sem
+    // chamadas extras à API → não fura o spike arrest de 10 req/s).
+    const cat = (q.cat ?? "").trim() || null;
+    const receberItens = cat
+      ? receber.itens.filter((i) => categoriaNome(i) === cat)
+      : receber.itens;
+    const pagarItens = cat
+      ? pagar.itens.filter((i) => categoriaNome(i) === cat)
+      : pagar.itens;
 
-    const receitaPorCategoria = porCategoria(receber.itens);
-    const despesaPorCategoria = porCategoria(pagar.itens);
+    // Sem filtro: KPIs vêm dos `totais` agregados da API (autoritativos).
+    // Com filtro: recalculados dos itens (o `totais` cobre todas as categorias).
+    const kpis = cat
+      ? kpisDosItens(receberItens, pagarItens, until)
+      : kpisDosTotais(receber.totais, pagar.totais);
+
+    const fluxo = fluxoMensal(receberItens, pagarItens, since, until);
+    const receitaPorCategoria = porCategoria(receberItens);
+    const despesaPorCategoria = porCategoria(pagarItens);
 
     // Marca a sincronização (não bloqueia a resposta em caso de falha).
     void markSynced(companyId).catch(() => {});
@@ -445,9 +560,15 @@ async function computeContaAzulDashboard(
       range,
       since,
       until,
+      cat,
       lastSyncedAt: new Date().toISOString(),
       kpis,
-      fluxo: fluxoMensal(receber.itens, pagar.itens, since, until),
+      fluxo,
+      fluxoDetalhe: fluxoDetalhado(
+        receberItens,
+        pagarItens,
+        fluxo.map((f) => f.month),
+      ),
       receitaPorCategoria,
       despesaPorCategoria,
       dre: montarDre(kpis.receitaRecebida, despesaPorCategoria),

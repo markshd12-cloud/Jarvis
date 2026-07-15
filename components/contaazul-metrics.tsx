@@ -68,6 +68,32 @@ function buildHref(
   return qs ? `/dashboard?${qs}` : "/dashboard";
 }
 
+/** Href geral preservando params; overrides com null/"" removem o param. */
+function hrefWith(
+  current: Record<string, string | undefined>,
+  overrides: Record<string, string | null>,
+): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(current)) {
+    if (v) p.set(k, v);
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v == null || v === "") p.delete(k);
+    else p.set(k, v);
+  }
+  if (p.get("ca") === "6m") p.delete("ca"); // mantém o default implícito
+  const qs = p.toString();
+  return qs ? `/dashboard?${qs}` : "/dashboard";
+}
+
+/** Toggle do filtro de categoria (clicar na categoria ativa remove o filtro). */
+function catHref(
+  current: Record<string, string | undefined>,
+  nome: string,
+): string {
+  return hrefWith(current, { cacat: current.cacat === nome ? null : nome });
+}
+
 function Chip({
   href,
   active,
@@ -80,6 +106,7 @@ function Chip({
   return (
     <Link
       href={href}
+      scroll={false}
       className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
         active
           ? "border-transparent bg-foreground text-background"
@@ -125,18 +152,25 @@ function Kpi({
   );
 }
 
-/** Donut (conic-gradient) de composição por categoria. */
+/** Donut de composição por categoria. Fatias e legenda são clicáveis e filtram
+ *  todo o painel pela categoria (clicar na ativa remove). "Outros" (bucket de
+ *  cauda) não é clicável, pois não corresponde a uma categoria real. */
 function CategoriaDonut({
   itens,
   centerLabel,
+  current,
+  activeCat,
 }: {
   itens: CategoriaValor[];
   centerLabel: string;
+  current: Record<string, string | undefined>;
+  activeCat: string | null;
 }) {
   const total = itens.reduce((s, c) => s + c.valor, 0);
   const legend = itens.map((c, i) => ({
     ...c,
     color: CHART_VARS[i % CHART_VARS.length],
+    clickable: c.nome !== "Outros",
   }));
 
   if (!itens.length) {
@@ -151,6 +185,7 @@ function CategoriaDonut({
           value: l.valor,
           color: l.color,
         }))}
+        hrefs={legend.map((l) => (l.clickable ? catHref(current, l.nome) : ""))}
       >
         <div>
           <p className="text-[11px] font-semibold tabular-nums leading-tight">
@@ -161,19 +196,41 @@ function CategoriaDonut({
           </p>
         </div>
       </InteractiveDonutRing>
-      <ul className="flex flex-col gap-1.5 text-sm">
-        {legend.map((l) => (
-          <li key={l.nome} className="flex items-center gap-2">
-            <span className="h-2.5 w-2.5 flex-none rounded-sm"
-              style={{ background: l.color }} />
-            <span className="max-w-[150px] truncate text-muted-foreground">
-              {l.nome}
-            </span>
-            <span className="ml-auto tabular-nums font-medium">
-              {brlCompact.format(l.valor)}
-            </span>
-          </li>
-        ))}
+      <ul className="flex flex-col gap-1 text-sm">
+        {legend.map((l) => {
+          const active = activeCat === l.nome;
+          const inner = (
+            <>
+              <span className="h-2.5 w-2.5 flex-none rounded-sm"
+                style={{ background: l.color }} />
+              <span className={`max-w-[150px] truncate ${active ? "text-foreground" : "text-muted-foreground"}`}>
+                {l.nome}
+              </span>
+              <span className="ml-auto tabular-nums font-medium">
+                {brlCompact.format(l.valor)}
+              </span>
+            </>
+          );
+          return (
+            <li key={l.nome}>
+              {l.clickable ? (
+                <Link
+                  href={catHref(current, l.nome)}
+                  scroll={false}
+                  className={`-mx-1 flex items-center gap-2 rounded-md px-1 py-0.5 transition-colors hover:bg-muted/60 ${
+                    active ? "bg-muted/50" : ""
+                  }`}
+                >
+                  {inner}
+                </Link>
+              ) : (
+                <div className="-mx-1 flex items-center gap-2 px-1 py-0.5">
+                  {inner}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -257,6 +314,22 @@ export function ContaAzulMetrics({
         ))}
       </div>
 
+      {/* Filtro de categoria ativo */}
+      {data.cat ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Filtrando por categoria:</span>
+          <Link
+            href={hrefWith(currentParams, { cacat: null })}
+            scroll={false}
+            className="inline-flex items-center gap-1.5 rounded-full border border-transparent bg-foreground px-3 py-1 text-sm text-background transition-opacity hover:opacity-80"
+          >
+            {data.cat}
+            <span aria-hidden className="text-background/70">✕</span>
+            <span className="sr-only">remover filtro de categoria</span>
+          </Link>
+        </div>
+      ) : null}
+
       {!data.connected ? (
         <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
           {data.notice ??
@@ -287,20 +360,10 @@ export function ContaAzulMetrics({
           {/* Fluxo de caixa + DRE */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.4fr_1fr]">
             <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3 flex items-baseline justify-between gap-3">
+              <div className="mb-3 flex items-baseline gap-3">
                 <h3 className="text-sm font-semibold tracking-tight">
                   Fluxo de caixa mensal
                 </h3>
-                <div className="flex gap-4 text-xs text-muted-foreground">
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: "var(--brand)" }} />
-                    Recebido
-                  </span>
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="h-2 w-2 rounded-sm" style={{ background: "var(--chart-4)" }} />
-                    Pago
-                  </span>
-                </div>
               </div>
               {data.fluxo.length ? (
                 <InteractiveBarsChart
@@ -313,6 +376,30 @@ export function ContaAzulMetrics({
                     { key: "despesa", color: "var(--chart-4)", label: "Pago" },
                   ]}
                   ariaLabel="Fluxo de caixa mensal: recebido vs. pago"
+                  legend
+                  details={data.fluxo.map((_, i) => {
+                    const d = data.fluxoDetalhe[i];
+                    return {
+                      sections: [
+                        {
+                          title: "Recebido",
+                          rows: (d?.receita ?? []).map((c) => ({
+                            label: c.nome,
+                            value: brl.format(c.valor),
+                            color: "var(--brand)",
+                          })),
+                        },
+                        {
+                          title: "Pago",
+                          rows: (d?.despesa ?? []).map((c) => ({
+                            label: c.nome,
+                            value: brl.format(c.valor),
+                            color: "var(--chart-4)",
+                          })),
+                        },
+                      ],
+                    };
+                  })}
                 />
               ) : (
                 <p className="py-8 text-center text-sm text-muted-foreground">
@@ -339,13 +426,23 @@ export function ContaAzulMetrics({
               <h3 className="mb-4 text-sm font-semibold tracking-tight">
                 Receita por categoria
               </h3>
-              <CategoriaDonut itens={data.receitaPorCategoria} centerLabel="Receita" />
+              <CategoriaDonut
+                itens={data.receitaPorCategoria}
+                centerLabel="Receita"
+                current={currentParams}
+                activeCat={data.cat}
+              />
             </div>
             <div className="rounded-xl border border-border bg-card p-4">
               <h3 className="mb-4 text-sm font-semibold tracking-tight">
                 Despesa por categoria
               </h3>
-              <CategoriaDonut itens={data.despesaPorCategoria} centerLabel="Despesa" />
+              <CategoriaDonut
+                itens={data.despesaPorCategoria}
+                centerLabel="Despesa"
+                current={currentParams}
+                activeCat={data.cat}
+              />
             </div>
           </div>
 
