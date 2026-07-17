@@ -11,6 +11,7 @@ import {
   IconCoin,
   IconRepeat,
   IconShoppingCart,
+  IconTargetArrow,
   IconUsers,
 } from "@tabler/icons-react";
 
@@ -27,7 +28,10 @@ import type { DreResult } from "@/lib/contaazul/dre";
 import { CadastrosPanel } from "@/components/financeiro/cadastros-panel";
 import { ColaboradoresPanel } from "@/components/financeiro/colaboradores-panel";
 import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
+import { DreConfigPanel } from "@/components/financeiro/dre-config-panel";
 import { DreTable } from "@/components/financeiro/dre-table";
+import { FluxoCaixaPanel } from "@/components/financeiro/fluxo-caixa-panel";
+import { OrcamentoPanel } from "@/components/financeiro/orcamento-panel";
 import { ReceitaPanel } from "@/components/financeiro/receita-panel";
 import { RecorrenciasPanel } from "@/components/financeiro/recorrencias-panel";
 
@@ -45,6 +49,7 @@ type TabKey =
   | "cadastros"
   | "colaboradores"
   | "recorrencias"
+  | "orcamento"
   | "receita";
 
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
@@ -52,10 +57,11 @@ const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode }[] =
   [
     { key: "dre", label: "DRE", ready: true, icon: <IconReportMoney className={iconCls} /> },
-    { key: "caixa", label: "Fluxo de Caixa", ready: false, icon: <IconChartLine className={iconCls} /> },
+    { key: "caixa", label: "Fluxo de Caixa", ready: true, icon: <IconChartLine className={iconCls} /> },
     { key: "centro", label: "% Centro de Custo", ready: false, icon: <IconChartPie className={iconCls} /> },
     { key: "pagar", label: "Contas a Pagar", ready: true, icon: <IconReceipt2 className={iconCls} /> },
     { key: "recorrencias", label: "Recorrências", ready: true, icon: <IconRepeat className={iconCls} /> },
+    { key: "orcamento", label: "Orçamento & Limite", ready: true, icon: <IconTargetArrow className={iconCls} /> },
     { key: "receita", label: "Receita", ready: true, icon: <IconCoin className={iconCls} /> },
     { key: "vendas", label: "Vendas e Faturar", ready: false, icon: <IconShoppingCart className={iconCls} /> },
     { key: "cadastros", label: "Categorias & Centros", ready: true, icon: <IconCategory className={iconCls} /> },
@@ -92,6 +98,8 @@ export function FinanceiroShell() {
   const [bu, setBu] = useState(BUS[0]);
   const [dre, setDre] = useState<DreResult | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bump p/ recarregar o DRE após importar/mudar cutover (Passo 11).
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     if (active !== "dre") return;
@@ -107,14 +115,23 @@ export function FinanceiroShell() {
       })
       .catch(() => {
         if (!cancel) {
-          setDre({ connected: false, competencia, receitaBruta: 0, rows: [], semMapeamento: 0, atualizadoAte: null });
+          setDre({
+            connected: false,
+            competencia,
+            receitaBruta: 0,
+            rows: [],
+            semMapeamento: 0,
+            atualizadoAte: null,
+            despesaFonte: "contaazul",
+            cutover: null,
+          });
           setLoading(false);
         }
       });
     return () => {
       cancel = true;
     };
-  }, [competencia, active]);
+  }, [competencia, active, reloadKey]);
 
   const dockItems = TABS.map((tab) => ({
     title: tab.ready ? tab.label : `${tab.label} (em breve)`,
@@ -172,11 +189,17 @@ export function FinanceiroShell() {
             ) : null}
           </div>
 
+          <DreConfigPanel
+            competencia={competencia}
+            onChanged={() => setReloadKey((k) => k + 1)}
+          />
+
           <DreTable
             rows={dre?.rows ?? []}
             loading={loading}
             connected={dre?.connected ?? true}
             atualizadoAte={dre?.atualizadoAte ?? null}
+            despesaFonte={dre?.despesaFonte ?? "contaazul"}
           />
         </section>
       ) : null}
@@ -187,7 +210,11 @@ export function FinanceiroShell() {
 
       {active === "pagar" ? <ContasPagarPanel /> : null}
 
+      {active === "caixa" ? <FluxoCaixaPanel /> : null}
+
       {active === "recorrencias" ? <RecorrenciasPanel /> : null}
+
+      {active === "orcamento" ? <OrcamentoPanel /> : null}
 
       {active === "receita" ? <ReceitaPanel /> : null}
     </div>

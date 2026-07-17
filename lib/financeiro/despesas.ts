@@ -359,3 +359,66 @@ export async function listParcelas(
     };
   });
 }
+
+// --------------------------- Trava anti-duplicata --------------------------- //
+
+export interface DuplicataCandidata {
+  id: string;
+  descricao: string;
+  fonte: string; // 'manual' | 'ca_import'
+  valor_total: number;
+  data_vencimento: string;
+  ca_evento_id: string | null;
+}
+
+const duplicataSchema = z.object({
+  categoria_id: z.string().uuid("categoria obrigatória"),
+  valor_total: z.coerce.number().nonnegative(),
+  data_vencimento: dateSchema,
+});
+
+/**
+ * Candidatos a DUPLICATA de uma nova despesa manual: mesma categoria, mesmo
+ * valor (±1 centavo) e alguma parcela vencendo em ±3 dias. Não bloqueia nada — a
+ * UI avisa antes de criar, pra não recriar à mão o que já veio do import do CA
+ * (que é a defesa dura contra double-count no DRE cortado). Best-effort.
+ */
+export async function checarDuplicatas(
+  companyId: string,
+  input: { categoria_id: string; valor_total: number; data_vencimento: string },
+): Promise<DuplicataCandidata[]> {
+  const v = duplicataSchema.parse(input);
+  const base = new Date(`${v.data_vencimento}T00:00:00Z`).getTime();
+  const de = new Date(base - 3 * 864e5).toISOString().slice(0, 10);
+  const ate = new Date(base + 3 * 864e5).toISOString().slice(0, 10);
+  const tol = 0.01;
+
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_despesas")
+    .select(
+      "id, descricao, fonte, valor_total, ca_evento_id, fin_parcelas!inner ( data_vencimento )",
+    )
+    .eq("company_id", companyId)
+    .eq("categoria_id", v.categoria_id)
+    .eq("cancelada", false)
+    .gte("valor_total", v.valor_total - tol)
+    .lte("valor_total", v.valor_total + tol)
+    .gte("fin_parcelas.data_vencimento", de)
+    .lte("fin_parcelas.data_vencimento", ate);
+  if (error) throw new Error(`checarDuplicatas: ${error.message}`);
+
+  const out: DuplicataCandidata[] = [];
+  for (const r of data ?? []) {
+    const parcelas = (r.fin_parcelas ?? []) as { data_vencimento: string }[];
+    out.push({
+      id: r.id as string,
+      descricao: r.descricao as string,
+      fonte: (r.fonte as string | null) ?? "manual",
+      valor_total: Number(r.valor_total),
+      data_vencimento: parcelas[0]?.data_vencimento ?? v.data_vencimento,
+      ca_evento_id: (r.ca_evento_id as string | null) ?? null,
+    });
+  }
+  return out;
+}

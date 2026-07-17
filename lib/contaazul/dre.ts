@@ -16,6 +16,8 @@ import "server-only";
 
 import { caGet } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
+import { getCutoverCompetencia } from "@/lib/financeiro/dre-config";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 // ----------------------------- Tipos da API --------------------------------
 
@@ -82,6 +84,10 @@ export interface DreResult {
    * então isto alimenta o selo "dados da CA até …" no DRE. `null` sem dados.
    */
   atualizadoAte: string | null;
+  /** Fonte da DESPESA nesta competência: 'jarvis' (≥ cutover) ou 'contaazul'. */
+  despesaFonte: "contaazul" | "jarvis";
+  /** Competência de cutover configurada (AAAA-MM), ou null se tudo vem do CA. */
+  cutover: string | null;
   aviso?: string;
 }
 
@@ -131,6 +137,98 @@ async function fetchEventos(
   return out;
 }
 
+/**
+ * Despesa por categoria financeira do CA na competência, lida do Conta Azul ao
+ * vivo (contas-a-pagar). Retorna a soma por `ca_categoria_id` + os carimbos de
+ * frescor. Usada quando a competência é ANTERIOR ao cutover (ou sem cutover) e
+ * pela reconciliação. Preserva o sinal do CA (o motor do DRE subtrai a magnitude).
+ */
+export async function despesaCaPorCategoria(
+  companyId: string,
+  competencia: string,
+): Promise<{ mapa: Map<string, number>; carimbos: string[] }> {
+  const de = firstDay(ymAddMonths(competencia, -2));
+  const ate = lastDay(ymAddMonths(competencia, 3));
+  const pagar = await fetchEventos(
+    companyId,
+    CONTA_AZUL_RESOURCES.contasAPagar.path!,
+    de,
+    ate,
+  );
+  const mapa = new Map<string, number>();
+  const carimbos: string[] = [];
+  for (const e of pagar) {
+    const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+    if (ym !== competencia) continue;
+    const id = e.categorias?.[0]?.id;
+    if (!id) continue;
+    mapa.set(id, (mapa.get(id) ?? 0) + num(e.total));
+    const c = e.data_alteracao ?? e.data_emissao ?? e.data_vencimento ?? "";
+    if (c) carimbos.push(c);
+  }
+  return { mapa, carimbos };
+}
+
+/**
+ * Despesa por categoria financeira na competência, lida das NOSSAS parcelas
+ * (fin_parcelas → fin_despesas → fin_categorias.ca_categoria_id). Base do DRE v2
+ * pós-cutover e da reconciliação. Usa `valor_previsto` (o comprometido do mês,
+ * equivalente ao `total` do evento do CA). Ignora parcela/despesa cancelada.
+ * Categoria própria (sem par no CA) não casa com nenhuma linha → vira semMapeamento.
+ */
+export async function despesaJarvisPorCategoria(
+  companyId: string,
+  competencia: string,
+): Promise<{ mapa: Map<string, number>; carimbos: string[] }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_parcelas")
+    .select(
+      "valor_previsto, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
+    )
+    .eq("company_id", companyId)
+    .gte("data_competencia", firstDay(competencia))
+    .lte("data_competencia", lastDay(competencia))
+    .neq("status", "cancelada")
+    .eq("fin_despesas.cancelada", false);
+  if (error) throw new Error(`despesaJarvisPorCategoria: ${error.message}`);
+  const mapa = new Map<string, number>();
+  for (const r of data ?? []) {
+    const desp = r.fin_despesas as unknown as {
+      fin_categorias?: { ca_categoria_id?: string | null } | null;
+    };
+    const caId = desp?.fin_categorias?.ca_categoria_id ?? null;
+    if (!caId) continue;
+    mapa.set(caId, (mapa.get(caId) ?? 0) + num(r.valor_previsto));
+  }
+  return { mapa, carimbos: [] };
+}
+
+/**
+ * Despesa do CA agrupada por COMPETÊNCIA (AAAA-MM), numa faixa de vencimento —
+ * UMA leitura paginada só (barato) p/ conferir vários meses de uma vez. Soma
+ * crua (o consumidor compara com o Jarvis). Usada pela reconciliação de período.
+ */
+export async function despesaCaPorMes(
+  companyId: string,
+  deVenc: string,
+  ateVenc: string,
+): Promise<Map<string, number>> {
+  const pagar = await fetchEventos(
+    companyId,
+    CONTA_AZUL_RESOURCES.contasAPagar.path!,
+    deVenc,
+    ateVenc,
+  );
+  const mapa = new Map<string, number>();
+  for (const e of pagar) {
+    const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+    if (!ym) continue;
+    mapa.set(ym, (mapa.get(ym) ?? 0) + num(e.total));
+  }
+  return mapa;
+}
+
 // ------------------------------- Cálculo -----------------------------------
 
 async function computeDre(
@@ -144,6 +242,8 @@ async function computeDre(
     rows: [],
     semMapeamento: 0,
     atualizadoAte: null,
+    despesaFonte: "contaazul",
+    cutover: null,
   };
   try {
     // A API de eventos só filtra por `data_vencimento`, mas o DRE é por
@@ -153,34 +253,44 @@ async function computeDre(
     // diferença vem do atraso de propagação da API, não da janela. Ver docs.)
     const de = firstDay(ymAddMonths(competencia, -2));
     const ate = lastDay(ymAddMonths(competencia, 3));
-    const [struct, receber, pagar] = await Promise.all([
+
+    // Estrutura + receita SEMPRE do CA ao vivo (a receita reconcilia 100%, ver
+    // Passo 10). A DESPESA vem do CA (< cutover) ou das nossas parcelas (≥ cutover):
+    // o cutover isola o risco na despesa — que estamos migrando — sem big-bang. Sem
+    // cutover, ou tabela ainda não migrada, `getCutoverCompetencia` devolve null →
+    // tudo do CA (fallback = comportamento de hoje).
+    const cutover = await getCutoverCompetencia(companyId);
+    const usaJarvis = cutover != null && competencia >= cutover;
+    const [struct, receber, despesa] = await Promise.all([
       caGet<DreStructResp>(companyId, CONTA_AZUL_RESOURCES.categoriasDre.path!),
       fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, de, ate),
-      fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAPagar.path!, de, ate),
+      usaJarvis
+        ? despesaJarvisPorCategoria(companyId, competencia)
+        : despesaCaPorCategoria(companyId, competencia),
     ]);
 
     // Valor (com sinal) por categoria financeira, só na competência pedida.
+    // Receita: +total (recebíveis recentes vêm sem `data_competencia` → caímos p/
+    // `data_vencimento`, igual ao relatório do CA). Despesa: −magnitude da fonte.
     const valorPorCat = new Map<string, number>();
-    const acumular = (evs: EventoDre[], sinal: number) => {
-      for (const e of evs) {
-        // Recebíveis recentes chegam da API sem `data_competencia`; o relatório
-        // do CA (e nosso dashboard) caem para `data_vencimento` nesse caso.
-        const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
-        if (ym !== competencia) continue;
-        const id = e.categorias?.[0]?.id;
-        if (!id) continue;
-        valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + num(e.total) * sinal);
-      }
-    };
-    acumular(receber, +1);
-    acumular(pagar, -1);
+    for (const e of receber) {
+      const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+      if (ym !== competencia) continue;
+      const id = e.categorias?.[0]?.id;
+      if (!id) continue;
+      valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + num(e.total));
+    }
+    for (const [id, mag] of despesa.mapa) {
+      valorPorCat.set(id, (valorPorCat.get(id) ?? 0) - mag);
+    }
 
     // Carimbo de frescor: o lançamento mais recente que a API expôs neste fetch.
     // A API da CA é eventualmente consistente (ver docs/financas-modulo.md, seção
-    // "Atraso da API"), por isso expomos isto na tela em vez de fingir tempo-real.
-    const carimbos = [...receber, ...pagar]
-      .map((e) => e.data_alteracao ?? e.data_emissao ?? e.data_vencimento ?? "")
-      .filter((d) => d);
+    // "Atraso da API"). Pós-cutover a despesa é nossa e não carrega carimbo do CA.
+    const carimbos = [
+      ...receber.map((e) => e.data_alteracao ?? e.data_emissao ?? e.data_vencimento ?? ""),
+      ...despesa.carimbos,
+    ].filter((d) => d);
     const atualizadoAte = carimbos.length
       ? carimbos.reduce((a, b) => (a > b ? a : b))
       : null;
@@ -267,6 +377,8 @@ async function computeDre(
       rows,
       semMapeamento,
       atualizadoAte,
+      despesaFonte: usaJarvis ? "jarvis" : "contaazul",
+      cutover,
       aviso:
         Math.abs(semMapeamento) > 0.005
           ? "Há lançamentos sem categoria mapeada no DRE (não somados às linhas)."
@@ -293,4 +405,14 @@ export async function getDre(
   const data = await computeDre(companyId, competencia);
   if (data.connected) cache.set(key, { at: Date.now(), data });
   return data;
+}
+
+/**
+ * Limpa o cache do DRE. Chamar após mudar o cutover ou importar despesa, pra que
+ * a virada apareça na hora (sem esperar o TTL). Sem `companyId` limpa tudo.
+ */
+export function invalidateDre(companyId?: string): void {
+  if (!companyId) return cache.clear();
+  for (const key of [...cache.keys()])
+    if (key.startsWith(`${companyId}:`)) cache.delete(key);
 }

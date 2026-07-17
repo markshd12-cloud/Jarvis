@@ -52,11 +52,14 @@ export function DreTable({
   loading,
   connected = true,
   atualizadoAte,
+  despesaFonte = "contaazul",
 }: {
   rows: DreRow[];
   loading?: boolean;
   connected?: boolean;
   atualizadoAte?: string | null;
+  /** Fonte da despesa nesta competência (Passo 11): 'jarvis' pós-cutover. */
+  despesaFonte?: "contaazul" | "jarvis";
 }) {
   // Grupos expandidos (por código). 03 (Custos) começa aberto, como na referência.
   const [open, setOpen] = useState<Set<string>>(new Set(["03"]));
@@ -87,9 +90,18 @@ export function DreTable({
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
-      {carimbo ? (
-        <div className="border-b border-border bg-muted/30 px-4 py-1.5 text-right text-[11px] text-muted-foreground">
-          Dados da Conta Azul até {carimbo}
+      {carimbo || despesaFonte === "jarvis" ? (
+        <div className="flex items-center gap-2 border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] text-muted-foreground">
+          <span
+            className={
+              despesaFonte === "jarvis"
+                ? "rounded bg-emerald-500/10 px-1.5 py-0.5 font-medium text-emerald-600 dark:text-emerald-400"
+                : "rounded bg-muted px-1.5 py-0.5 font-medium"
+            }
+          >
+            Despesa: {despesaFonte === "jarvis" ? "Jarvis (nossas parcelas)" : "Conta Azul"}
+          </span>
+          <span className="ml-auto">Receita da Conta Azul{carimbo ? ` até ${carimbo}` : ""}</span>
         </div>
       ) : null}
       <div className="grid grid-cols-[1fr_9rem_6rem] items-center gap-2 border-b border-border bg-muted/50 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">

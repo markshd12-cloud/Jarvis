@@ -166,3 +166,42 @@ export interface ParcelaRow {
   metodo_pagamento: string | null;
   situacao: SituacaoParcela;
 }
+
+/** Meta orçamentária por categoria × BU × competência (Passo 9). bu null = "todas". */
+export interface FinOrcamento {
+  id: string;
+  company_id: string;
+  categoria_id: string;
+  bu_id: string | null;
+  competencia: string;
+  valor_orcado: number;
+  valor_limite: number | null;
+  ativo: boolean;
+  created_at: string;
+}
+
+/**
+ * Linha do comparativo Orçado × Previsto × Realizado × Limite numa competência.
+ * Previsto = Σ das parcelas lançadas; Realizado = Σ das pagas. Os dois flags
+ * derivam na leitura (não materializam `fin_alertas` — isso é do Dashboard TV).
+ */
+export interface OrcamentoLinha {
+  id: string | null; // id do fin_orcamentos, se já existe meta pra (categoria, bu)
+  categoria_id: string;
+  bu_id: string | null;
+  competencia: string;
+  orcado: number;
+  limite: number | null;
+  previsto: number;
+  realizado: number;
+  previstoExcede: boolean; // previsto > orçado (pré-alerta)
+  limiteEstourado: boolean; // realizado > limite (estouro)
+}
+
+/** Linha da sugestão de previsão (média mensal do custo histórico). */
+export interface OrcamentoSugestaoLinha {
+  categoria_id: string;
+  bu_id: string | null;
+  sugerido: number;
+  mesesComDado: number; // em quantos dos N meses houve lançamento (confiança)
+}

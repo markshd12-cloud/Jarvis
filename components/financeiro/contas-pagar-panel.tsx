@@ -607,6 +607,10 @@ function DespesaForm({
   );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Candidatos a duplicata (mesma categoria/valor/venc) achados antes de criar.
+  const [dupCandidatos, setDupCandidatos] = useState<
+    { descricao: string; fonte: string }[] | null
+  >(null);
 
   const gerar = () => {
     const total = cents(Number(valorTotal) || 0);
@@ -636,7 +640,7 @@ function DespesaForm({
   const totalCents = cents(Number(valorTotal) || 0);
   const bate = linhas.length > 0 && somaCents === totalCents;
 
-  const submit = async () => {
+  const submit = async (forcar = false) => {
     setBusy(true);
     setErr(null);
     try {
@@ -646,6 +650,23 @@ function DespesaForm({
         throw new Error(
           `Soma das parcelas (${brl.format(somaCents / 100)}) ≠ total (${brl.format(totalCents / 100)}).`,
         );
+      // Antes de CRIAR: checa duplicata — não recria à mão o que veio do import
+      // do CA (defesa contra double-count no DRE cortado). Editar não checa.
+      if (!editando && !forcar) {
+        const qs = new URLSearchParams({
+          categoria_id: categoriaId,
+          valor: String(Number(valorTotal) || 0),
+          vencimento: linhas[0]?.data_vencimento ?? primVenc,
+        });
+        const dup = await fetch(`/api/financeiro/despesas/duplicatas?${qs}`).then((r) =>
+          r.json(),
+        );
+        if (Array.isArray(dup.candidatos) && dup.candidatos.length > 0) {
+          setDupCandidatos(dup.candidatos);
+          setBusy(false);
+          return;
+        }
+      }
       const body = {
         descricao,
         observacao: observacao || null,
@@ -881,12 +902,42 @@ function DespesaForm({
           )}
         </div>
 
+        {dupCandidatos && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <p className="font-medium">
+              Já existe despesa parecida ({dupCandidatos.length}) — pode ser a mesma que veio do
+              Conta Azul:
+            </p>
+            <ul className="mt-1 list-disc pl-4">
+              {dupCandidatos.slice(0, 5).map((d, i) => (
+                <li key={i}>
+                  {d.descricao} {d.fonte === "ca_import" ? "· (importada do CA)" : ""}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-1">Revise para não duplicar, ou salve mesmo assim.</p>
+          </div>
+        )}
         {err && <p className="text-xs text-destructive">{err}</p>}
         <DialogFooter>
           <DialogClose render={<Button type="button" variant="outline" />}>Cancelar</DialogClose>
-          <Button type="submit" disabled={busy || !bate}>
-            {busy ? "Salvando…" : editando ? "Salvar alterações" : "Salvar despesa"}
-          </Button>
+          {dupCandidatos ? (
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={busy}
+              onClick={() => {
+                setDupCandidatos(null);
+                void submit(true);
+              }}
+            >
+              {busy ? "Salvando…" : "Salvar mesmo assim"}
+            </Button>
+          ) : (
+            <Button type="submit" disabled={busy || !bate}>
+              {busy ? "Salvando…" : editando ? "Salvar alterações" : "Salvar despesa"}
+            </Button>
+          )}
         </DialogFooter>
       </form>
     </DialogContent>
