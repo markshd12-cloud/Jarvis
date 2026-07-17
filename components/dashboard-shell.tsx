@@ -9,6 +9,7 @@ import {
   LogOutIcon,
   MessagesSquareIcon,
   SettingsIcon,
+  WalletIcon,
 } from "lucide-react";
 
 import { signOut } from "@/app/login/actions";
@@ -61,6 +62,12 @@ const links = [
     href: "/agentes",
     feature: "agentes",
     icon: <BotIcon className="h-5 w-5 shrink-0 text-sidebar-foreground" />,
+  },
+  {
+    label: "Financeiro",
+    href: "/financeiro",
+    feature: "financeiro",
+    icon: <WalletIcon className="h-5 w-5 shrink-0 text-sidebar-foreground" />,
   },
   {
     label: "Personalizar",

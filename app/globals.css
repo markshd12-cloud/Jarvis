@@ -153,6 +153,39 @@
     @apply font-sans;
   }
 
+  /* Scrollbar Jarvis (global, auto-hide): invisível parado; ao rolar, o
+     ScrollbarAutoHide põe `.is-scrolling` no <html> e a barrinha verde fina
+     aparece por ~1s, sumindo depois. Firefox usa scrollbar-*; resto, ::-webkit. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    transition: scrollbar-color 0.3s ease;
+  }
+  html.is-scrolling * {
+    scrollbar-color: color-mix(in oklch, var(--primary) 55%, transparent) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    transition: background-color 0.3s ease;
+  }
+  html.is-scrolling ::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--primary) 55%, transparent);
+  }
+  html.is-scrolling ::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--primary) 80%, transparent);
+  }
+
   /* Estrutura de páginas (ver agents/AGENTS.md):
      main = layout vertical | section = centralização + espaçamento | .sectionbox = largura máxima */
   main {
