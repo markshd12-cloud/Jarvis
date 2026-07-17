@@ -41,7 +41,11 @@ function arc(f0: number, f1: number): string {
   const [ix1, iy1] = polar(R_IN, e);
   const [ix0, iy0] = polar(R_IN, f0);
   const large = span > 0.5 ? 1 : 0;
-  return `M${ox0} ${oy0} A${R_OUT} ${R_OUT} 0 ${large} 1 ${ox1} ${oy1} L${ix1} ${iy1} A${R_IN} ${R_IN} 0 ${large} 0 ${ix0} ${iy0} Z`;
+  // toFixed torna o path DETERMINÍSTICO: sem isso, 1 ULP de diferença no
+  // Math.cos/sin entre o V8 do server e o do browser vaza pra string do `d` e
+  // dispara erro de hidratação. 3 casas = sub-pixel neste SVG de 112px.
+  const n = (v: number) => v.toFixed(3);
+  return `M${n(ox0)} ${n(oy0)} A${R_OUT} ${R_OUT} 0 ${large} 1 ${n(ox1)} ${n(oy1)} L${n(ix1)} ${n(iy1)} A${R_IN} ${R_IN} 0 ${large} 0 ${n(ix0)} ${n(iy0)} Z`;
 }
 
 export function InteractiveDonutRing({
