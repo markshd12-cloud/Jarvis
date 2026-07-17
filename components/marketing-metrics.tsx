@@ -33,6 +33,9 @@ const money = (v: number | null) => (v == null ? "—" : brl.format(v));
 const count = (v: number | null) => (v == null ? "—" : int.format(v));
 const pct = (v: number | null) =>
   v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`;
+// ROAS é um multiplicador (retorno por R$1): 3,5 → "3,5×".
+const mult = (v: number | null) =>
+  v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}×`;
 
 const ddmmyyyy = (iso: string) => {
   const [y, m, d] = iso.split("-");
@@ -308,8 +311,12 @@ export function MarketingMetrics({
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Investimento" value={money(total.spend)}
               cur={total.spend} prev={previous.spend} highlight />
+            <Kpi label="ROAS (vendas)" value={mult(total.roas)}
+              cur={total.roas ?? 0} prev={previous.roas ?? 0} highlight />
+            <Kpi label="CAC (leads)" value={money(total.cac)}
+              cur={total.cac ?? 0} prev={previous.cac ?? 0} goodWhenDown highlight />
             <Kpi label="Leads" value={count(total.leads)}
-              cur={total.leads} prev={previous.leads} highlight />
+              cur={total.leads} prev={previous.leads} />
             <Kpi label="CPL" value={money(total.cpl)}
               cur={total.cpl ?? 0} prev={previous.cpl ?? 0} goodWhenDown />
             <Kpi label="Conversas WPP" value={count(total.conversations)}

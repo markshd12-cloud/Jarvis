@@ -58,7 +58,10 @@ export interface BrandMetrics {
   /** Custo por lead (`spend/leads`) e por conversa (`spend/conversations`). */
   cpl: number | null;
   costPerConversation: number | null;
-  /** Retorno sobre investimento (`conversionValue/spend`); null sem gasto. */
+  /** Custo de aquisição por lead (`spend/leads`); null sem leads. Trackeamos leads,
+   *  não compras — CAC usa lead como aquisição. Numericamente = CPL. */
+  cac: number | null;
+  /** ROAS sobre vendas (`conversionValue/spend`, valor de compra); null sem gasto. */
   roas: number | null;
 }
 
@@ -142,6 +145,7 @@ function finalize(brand: string | null, a: Acc): BrandMetrics {
     cpm: a.impressions ? (a.spend / a.impressions) * 1000 : null,
     cpl: a.leads ? a.spend / a.leads : null,
     costPerConversation: a.conversations ? a.spend / a.conversations : null,
+    cac: a.leads ? a.spend / a.leads : null,
     roas: a.spend ? a.conversionValue / a.spend : null,
   };
 }
