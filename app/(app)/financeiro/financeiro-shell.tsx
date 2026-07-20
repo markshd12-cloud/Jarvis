@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import {
+  IconAlertTriangle,
   IconCategory,
   IconChartLine,
   IconChartPie,
@@ -31,6 +32,7 @@ import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
 import { DreConfigPanel } from "@/components/financeiro/dre-config-panel";
 import { DreTable } from "@/components/financeiro/dre-table";
 import { FluxoCaixaPanel } from "@/components/financeiro/fluxo-caixa-panel";
+import { InadimplentesPanel } from "@/components/financeiro/inadimplentes-panel";
 import { OrcamentoPanel } from "@/components/financeiro/orcamento-panel";
 import { ReceitaPanel } from "@/components/financeiro/receita-panel";
 import { RecorrenciasPanel } from "@/components/financeiro/recorrencias-panel";
@@ -50,7 +52,8 @@ type TabKey =
   | "colaboradores"
   | "recorrencias"
   | "orcamento"
-  | "receita";
+  | "receita"
+  | "inadimplentes";
 
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 
@@ -63,6 +66,7 @@ const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode 
     { key: "recorrencias", label: "Recorrências", ready: true, icon: <IconRepeat className={iconCls} /> },
     { key: "orcamento", label: "Orçamento & Limite", ready: true, icon: <IconTargetArrow className={iconCls} /> },
     { key: "receita", label: "Receita", ready: true, icon: <IconCoin className={iconCls} /> },
+    { key: "inadimplentes", label: "Inadimplentes", ready: true, icon: <IconAlertTriangle className={iconCls} /> },
     { key: "vendas", label: "Vendas e Faturar", ready: false, icon: <IconShoppingCart className={iconCls} /> },
     { key: "cadastros", label: "Categorias & Centros", ready: true, icon: <IconCategory className={iconCls} /> },
     { key: "colaboradores", label: "Colaboradores", ready: true, icon: <IconUsers className={iconCls} /> },
@@ -217,6 +221,8 @@ export function FinanceiroShell() {
       {active === "orcamento" ? <OrcamentoPanel /> : null}
 
       {active === "receita" ? <ReceitaPanel /> : null}
+
+      {active === "inadimplentes" ? <InadimplentesPanel /> : null}
     </div>
   );
 }

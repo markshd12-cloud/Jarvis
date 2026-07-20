@@ -14,6 +14,7 @@ import "server-only";
 import { caGet } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
 import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
+import { listarInadimplentes } from "@/lib/financeiro/inadimplentes";
 
 // Termos que indicam pergunta financeira (receita/despesa/caixa/etc.).
 const FINANCE_RE =
@@ -21,6 +22,15 @@ const FINANCE_RE =
 
 export function isFinancialQuery(text: string): boolean {
   return FINANCE_RE.test(text);
+}
+
+// Intenção ESPECÍFICA de inadimplência → puxa a lista por cliente (custa ~10s,
+// então só quando a pergunta pede mesmo: "quem são os inadimplentes", "quem deve").
+const INADIMP_RE =
+  /(inadimpl|caloteir|devend|\bem\s+atraso\b|atrasad[ao]s?|quem\s+(deve|est[áa]\s+deven|n[ãa]o\s+pag)|quanto\s+.*\bdeve\b|clientes?\s+.*vencid)/i;
+
+function isInadimplenciaQuery(text: string): boolean {
+  return INADIMP_RE.test(text);
 }
 
 const brl = new Intl.NumberFormat("pt-BR", {
@@ -114,7 +124,10 @@ async function janela(companyId: string, de: string, ate: string) {
  * Monta o bloco financeiro para o system do chat. Retorna "" em falha (o chat
  * degrada graciosamente). `companyId` é obrigatório (dado é por empresa).
  */
-export async function buildFinanceiroBlock(companyId: string): Promise<string> {
+export async function buildFinanceiroBlock(
+  companyId: string,
+  question?: string,
+): Promise<string> {
   const hoje = spToday();
   const mesAtual = hoje.slice(0, 7);
 
@@ -157,5 +170,29 @@ export async function buildFinanceiroBlock(companyId: string): Promise<string> {
     `- A receber (em aberto): ${brl.format(aberto.r.aberto)} — sendo ${brl.format(aberto.r.vencido)} vencido\n` +
     `- A pagar (em aberto): ${brl.format(aberto.p.aberto)} — sendo ${brl.format(aberto.p.vencido)} vencido`;
 
-  return header + secHoje + secMensal + secAberto;
+  // Inadimplentes por cliente — só quando a pergunta pede (varredura ~10s, cacheada).
+  let secInadimplentes = "";
+  if (question && isInadimplenciaQuery(question)) {
+    const inad = await listarInadimplentes(companyId).catch(() => null);
+    if (inad?.connected && inad.registros > 0) {
+      const linhas = inad.clientes
+        .slice(0, 200)
+        .map(
+          (c) =>
+            `- ${c.cliente}: ${brl.format(c.total)} (${c.itens.length} lançamento(s) vencido(s))`,
+        )
+        .join("\n");
+      secInadimplentes =
+        `\n\n### Inadimplentes (contas a receber VENCIDAS e em aberto — fonte de verdade p/ "quem deve"/"quanto Fulano deve"; hoje = ${hoje})\n` +
+        `Total vencido: ${brl.format(inad.total)} · ${inad.registros} lançamento(s) · ${inad.clientes.length} cliente(s).\n` +
+        `${linhas}` +
+        (inad.clientes.length > 200
+          ? `\n… e mais ${inad.clientes.length - 200} cliente(s).`
+          : "");
+    } else if (inad?.connected) {
+      secInadimplentes = `\n\n### Inadimplentes\nNenhum cliente inadimplente no momento.`;
+    }
+  }
+
+  return header + secHoje + secMensal + secAberto + secInadimplentes;
 }

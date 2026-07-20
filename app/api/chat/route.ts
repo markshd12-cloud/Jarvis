@@ -265,7 +265,7 @@ async function buildKnowledge(
 
   const financeiroBlock =
     companyId && canFinanceiro && isFinancialQuery(question)
-      ? await buildFinanceiroBlock(companyId).catch(() => "")
+      ? await buildFinanceiroBlock(companyId, question).catch(() => "")
       : "";
 
   // Relatórios são texto quase idêntico entre pessoas/dias → a busca vetorial
