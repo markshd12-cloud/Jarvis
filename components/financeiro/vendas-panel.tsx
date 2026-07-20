@@ -143,13 +143,19 @@ export function VendasPanel() {
           <p className="text-xs text-muted-foreground">Total vendido ({ano})</p>
           <p className="text-lg font-semibold tabular-nums">{brl.format(t?.total ?? 0)}</p>
         </div>
-        <div className="rounded-lg border border-border px-3 py-2">
+        <div
+          className="cursor-help rounded-lg border border-border px-3 py-2"
+          title="Vendas com Nota Fiscal já emitida."
+        >
           <p className="text-xs text-muted-foreground">Faturado (NF emitida)</p>
           <p className="text-lg font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
             {brl.format(t?.faturado ?? 0)}
           </p>
         </div>
-        <div className="rounded-lg border border-border px-3 py-2">
+        <div
+          className="cursor-help rounded-lg border border-border px-3 py-2"
+          title="Vendas aprovadas cuja Nota Fiscal ainda NÃO foi emitida — pendentes de faturar. Não confundir com 'a receber' (entrada de dinheiro)."
+        >
           <p className="text-xs text-muted-foreground">A faturar (contas a faturar)</p>
           <p className="text-lg font-semibold tabular-nums text-amber-600 dark:text-amber-400">
             {brl.format(t?.aFaturar ?? 0)}
@@ -190,7 +196,7 @@ export function VendasPanel() {
           ))}
         </div>
 
-        <div className="flex min-w-[200px] flex-1 items-center gap-2 rounded-lg border border-border px-3 py-1.5">
+        <div className="flex min-w-50 flex-1 items-center gap-2 rounded-lg border border-border px-3 py-1.5">
           <IconSearch className="h-4 w-4 text-muted-foreground" />
           <input
             value={busca}
