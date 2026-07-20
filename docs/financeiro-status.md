@@ -68,8 +68,26 @@ Decisão de escopo: o **cutover afeta SÓ a despesa**. A **receita segue do CA a
   (aba `caixa` era `ready:false` → `true`). **Bug pego e corrigido no teste:** PostgREST trunca em 1000
   linhas → adicionada paginação (`pageAll`); sem ela um ano sub-reportava. VALIDADO contra prod: 2026
   paginado = 1.386 parcelas / 3.385 receitas, saídas mensais ~R$230–255k coerentes com o DRE.
-- **Passo 14 · % por Centro de Custo** — tabela centro × valor × %. Depende de 6–7 (**já pode ser feito**).
-- **Passo 15 · Vendas & contas a faturar** — read de `/venda/busca` do CA com filtros. Depende de 2.
+- **Passo 14 · % por Centro de Custo** — ✅ IMPLEMENTADO (2026-07-20), falta commit + deploy.
+  Tabela centro × previsto × realizado × % + barra de distribuição; filtros **Ano** + **Realizado/Previsto**.
+  Arquivos: `lib/financeiro/centros-custo.ts`, `app/api/financeiro/centros-custo/route.ts`,
+  `components/financeiro/centro-custo-panel.tsx`, wiring no shell (aba `centro` `ready:false`→`true`).
+  ⚠️ **DECISÃO/ACHADO:** lê **direto do CA** (`contas-a-pagar/buscar`, campo `centros_de_custo`), NÃO das
+  nossas tabelas — porque (a) o **seed do Passo 2 trouxe o conjunto ERRADO** de centros (`fin_centros_custo`
+  tem gateways/unidades: Pix/ASAAS/Stone/CPPEM CONCURSOS…, não os centros reais) e (b) o **import do Passo 11
+  não mapeia centro** (`import-despesas.ts` sem referência a centro) → todas as `fin_despesas` ficam "Sem
+  centro". Os centros reais (Administrativo 30%, Pedagógico 28%, Marketing 12%, Comercial, Governo, Mercadoria,
+  Tecnologia, Serviços Gerais, Financeiro, Cultura) só existem nos eventos do CA. Validado ao vivo 2026-07-20:
+  realizado 2026 = R$ 1.235.786,90. **Custo do "sem BU":** o CA não tem BU nos eventos; p/ filtrar % por centro
+  por BU, precisaria RE-SEMEAR os centros certos do CA + mapear centro/BU no import (débito do Passo 2/11).
+- **Passo 15 · Vendas & Contas a Faturar** — ✅ IMPLEMENTADO (2026-07-20), falta commit + deploy.
+  Lê `/venda/busca` do CA (âncora fiscal) do ano; separa **FATURADO** (NF emitida) × **A FATURAR** (situação
+  APROVADO). Cards Total/Faturado/A Faturar + filtro Todas/Faturadas/A Faturar + busca cliente + paginação
+  20/50/100/500. Arquivos: `lib/financeiro/vendas.ts`, `app/api/financeiro/vendas/route.ts`,
+  `components/financeiro/vendas-panel.tsx`, wiring no shell (aba `vendas` `ready:false`→`true`). ⚠️ A API do
+  list NÃO expõe vendedor nem categoria financeira (o mock pedia) — só `numero,data,cliente,total,situacao,
+  itens(PRODUCT/SERVICE)`; paginação usa `total_itens` (não `itens_totais`); filtro de data = `data_inicio`+
+  `data_fim`. Validado ao vivo 2026: 3.435 vendas = FATURADO R$ 1.129.155,91 + A FATURAR R$ 135.402,26 (= totais.total R$ 1.264.558,17).
 
 ### Fase 6 — Cadastros complementares (baixa prioridade)
 - **Passo 16 · Clientes** — read de `/pessoa` do CA (read-only).

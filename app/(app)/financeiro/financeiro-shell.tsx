@@ -27,6 +27,7 @@ import { FloatingDock } from "@/components/ui/floating-dock";
 import type { DreResult } from "@/lib/contaazul/dre";
 
 import { CadastrosPanel } from "@/components/financeiro/cadastros-panel";
+import { CentroCustoPanel } from "@/components/financeiro/centro-custo-panel";
 import { ColaboradoresPanel } from "@/components/financeiro/colaboradores-panel";
 import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
 import { DreConfigPanel } from "@/components/financeiro/dre-config-panel";
@@ -36,6 +37,7 @@ import { InadimplentesPanel } from "@/components/financeiro/inadimplentes-panel"
 import { OrcamentoPanel } from "@/components/financeiro/orcamento-panel";
 import { ReceitaPanel } from "@/components/financeiro/receita-panel";
 import { RecorrenciasPanel } from "@/components/financeiro/recorrencias-panel";
+import { VendasPanel } from "@/components/financeiro/vendas-panel";
 
 /**
  * Casca do módulo Financeiro: navegação entre sub-abas via FloatingDock. A aba
@@ -61,13 +63,13 @@ const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode 
   [
     { key: "dre", label: "DRE", ready: true, icon: <IconReportMoney className={iconCls} /> },
     { key: "caixa", label: "Fluxo de Caixa", ready: true, icon: <IconChartLine className={iconCls} /> },
-    { key: "centro", label: "% Centro de Custo", ready: false, icon: <IconChartPie className={iconCls} /> },
+    { key: "centro", label: "% Centro de Custo", ready: true, icon: <IconChartPie className={iconCls} /> },
     { key: "pagar", label: "Contas a Pagar", ready: true, icon: <IconReceipt2 className={iconCls} /> },
     { key: "recorrencias", label: "Recorrências", ready: true, icon: <IconRepeat className={iconCls} /> },
     { key: "orcamento", label: "Orçamento & Limite", ready: true, icon: <IconTargetArrow className={iconCls} /> },
     { key: "receita", label: "Receita", ready: true, icon: <IconCoin className={iconCls} /> },
     { key: "inadimplentes", label: "Inadimplentes", ready: true, icon: <IconAlertTriangle className={iconCls} /> },
-    { key: "vendas", label: "Vendas e Faturar", ready: false, icon: <IconShoppingCart className={iconCls} /> },
+    { key: "vendas", label: "Vendas e Faturar", ready: true, icon: <IconShoppingCart className={iconCls} /> },
     { key: "cadastros", label: "Categorias & Centros", ready: true, icon: <IconCategory className={iconCls} /> },
     { key: "colaboradores", label: "Colaboradores", ready: true, icon: <IconUsers className={iconCls} /> },
   ];
@@ -210,6 +212,8 @@ export function FinanceiroShell() {
 
       {active === "cadastros" ? <CadastrosPanel /> : null}
 
+      {active === "centro" ? <CentroCustoPanel /> : null}
+
       {active === "colaboradores" ? <ColaboradoresPanel /> : null}
 
       {active === "pagar" ? <ContasPagarPanel /> : null}
@@ -223,6 +227,8 @@ export function FinanceiroShell() {
       {active === "receita" ? <ReceitaPanel /> : null}
 
       {active === "inadimplentes" ? <InadimplentesPanel /> : null}
+
+      {active === "vendas" ? <VendasPanel /> : null}
     </div>
   );
 }
