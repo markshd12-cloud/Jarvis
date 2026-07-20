@@ -183,3 +183,62 @@ export async function searchDocumentsByDate(
     score: EXACT_DATE_SCORE,
   }));
 }
+
+const RECENT_REPORTS_MAX = 12; // teto de relatórios recentes por pessoa
+
+/**
+ * Últimos N relatórios de uma PESSOA, do mais recente ao mais antigo, pela coluna
+ * estruturada `report_date`. É o caminho preciso para "últimos 5 relatórios de X"
+ * — imune à diluição da busca vetorial entre milhares de relatórios diários
+ * quase-iguais (o que fazia dias inteiros de uma pessoa "sumirem" da recuperação).
+ */
+export async function searchRecentReportsByPerson(
+  name: string,
+  limit: number,
+): Promise<DocHit[]> {
+  const clean = name.trim();
+  if (!clean) return [];
+
+  const supabase = await createClient();
+
+  // ilike pelo 1º nome corta cedo no banco; o filtro fino (conjunto de palavras)
+  // roda depois em JS, evitando "Mark" casar "Marketing".
+  const first = nameTokens(clean)[0] ?? clean;
+  const { data: allDocs } = await supabase
+    .from("documents")
+    .select("id, title, url, report_date")
+    .eq("source", "notion")
+    .not("report_date", "is", null)
+    .ilike("title", `%${first}%`)
+    .order("report_date", { ascending: false })
+    .limit(200);
+  if (!allDocs?.length) return [];
+
+  const docs = allDocs
+    .filter((d) => titleMatchesName((d.title as string | null) ?? "", clean))
+    .slice(0, Math.min(limit, RECENT_REPORTS_MAX));
+  if (!docs.length) return [];
+
+  const ids = docs.map((d) => d.id as string);
+  const { data: chunkRows } = await supabase
+    .from("document_chunks")
+    .select("document_id, content")
+    .in("document_id", ids);
+
+  const chunksByDoc = new Map<string, string[]>();
+  for (const r of chunkRows ?? []) {
+    const arr = chunksByDoc.get(r.document_id as string) ?? [];
+    arr.push(r.content as string);
+    chunksByDoc.set(r.document_id as string, arr);
+  }
+
+  return docs.map((d) => ({
+    id: d.id as string,
+    title: (d.title as string | null) ?? null,
+    url: (d.url as string | null) ?? null,
+    content: (chunksByDoc.get(d.id as string) ?? [])
+      .join("\n")
+      .slice(0, DATE_PER_DOC_CHARS),
+    score: EXACT_DATE_SCORE,
+  }));
+}

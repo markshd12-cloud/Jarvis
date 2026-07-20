@@ -37,6 +37,7 @@ import { PRINCIPAL_PROVIDER } from "@/lib/ai/provider";
 import {
   searchKnowledge,
   searchDocumentsByDate,
+  searchRecentReportsByPerson,
   type DocHit,
 } from "@/lib/ai/retrieval";
 import { formatTasksBlock, isTaskQuery, searchTasks } from "@/lib/ai/tasks";
@@ -194,6 +195,46 @@ function parseQueryName(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/** A pergunta é sobre relatório(s) de atividades? */
+function isReportQuery(text: string): boolean {
+  return /relat[óo]rios?/i.test(text);
+}
+
+/**
+ * Quantidade pedida em "últimos N relatórios de X". Sem número explícito mas com
+ * "últimos", assume 5. Retorna null quando não é um pedido de "últimos".
+ */
+function parseReportCount(text: string): number | null {
+  const m = /[uú]ltim[oa]s?\s+(\d{1,2})/i.exec(text);
+  if (m) return Math.min(Number(m[1]), 12);
+  return /[uú]ltim[oa]s?\b/i.test(text) ? 5 : null;
+}
+
+/**
+ * Dias soltos num follow-up ("cade os dias 15, 14, 13, 10") sem mês/barra →
+ * 'AAAA-MM-DD' usando o mês/ano de referência (do contexto anterior ou o
+ * corrente). Só dispara com "dia(s)", SEM nenhuma data DD/MM (aí parseQueryDates
+ * já resolve) e com 2+ números (evita casar "os 5 relatórios" como dia 5).
+ */
+function parseBareDays(text: string, refMonth: number, refYear: number): string[] {
+  if (!/\bdias?\b/i.test(text)) return [];
+  if (/\b\d{1,2}[/-]\d{1,2}\b/.test(text)) return [];
+  const days: number[] = [];
+  for (const m of text.matchAll(/\b(\d{1,2})\b/g)) {
+    const day = Number(m[1]);
+    if (day >= 1 && day <= 31) days.push(day);
+  }
+  if (days.length < 2) return [];
+  return [
+    ...new Set(
+      days.map(
+        (d) =>
+          `${refYear}-${String(refMonth).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+      ),
+    ),
+  ];
+}
+
 /** Monta o bloco de conhecimento (RAG) a partir da pergunta atual. */
 async function buildKnowledge(
   question: string,
@@ -204,7 +245,7 @@ async function buildKnowledge(
 ): Promise<string> {
   const keyTerms = extractKeyTerms(question);
   let isoDates = parseQueryDates(question);
-  const nameFilter = parseQueryName(question);
+  let nameFilter = parseQueryName(question);
 
   // Tarefas: consulta ESTRUTURADA (não similaridade). Só quando a pergunta é de
   // tarefa e há empresa — o resultado entra como bloco próprio no contexto.
@@ -227,27 +268,63 @@ async function buildKnowledge(
       ? await buildFinanceiroBlock(companyId).catch(() => "")
       : "";
 
+  // Relatórios são texto quase idêntico entre pessoas/dias → a busca vetorial
+  // dilui e "perde" dias inteiros. Por isso os pedidos de relatório vão por
+  // caminhos ESTRUTURADOS (report_date / título por pessoa), não por similaridade.
+  const reportQuery = isReportQuery(question) || isReportQuery(priorUserText ?? "");
+
+  // Follow-up de relatório sem repetir o nome ("e do dia 16/07", "cade os dias
+  // 15, 14, 13") herda a pessoa em foco do turno anterior.
+  if (!nameFilter && reportQuery && priorUserText) {
+    nameFilter = parseQueryName(priorUserText);
+  }
+
+  // "últimos N relatórios de [pessoa]" (ou "relatórios de X" sem data): busca os
+  // mais recentes DA PESSOA por report_date, decidido só pela pergunta atual —
+  // antes de qualquer herança de data, que atropelaria o "últimos N".
+  const recentCount =
+    reportQuery && nameFilter && !isoDates.length
+      ? (parseReportCount(question) ?? 8)
+      : null;
+
+  // Dias soltos num follow-up de relatório → expande com o mês/ano de referência
+  // (contexto anterior ou corrente). Complementa parseQueryDates (que exige DD/MM).
+  if (reportQuery && !recentCount) {
+    const ref = isoDates[0] ?? parseQueryDates(priorUserText ?? "")[0];
+    const now = new Date();
+    const refMonth = ref ? Number(ref.slice(5, 7)) : now.getMonth() + 1;
+    const refYear = ref ? Number(ref.slice(0, 4)) : now.getFullYear();
+    const bare = parseBareDays(question, refMonth, refYear);
+    if (bare.length) isoDates = [...new Set([...isoDates, ...bare])];
+  }
+
   // Follow-up: "e de Giovana?" (tem nome, mas sem data) herda o intervalo/datas
   // da pergunta anterior. Restrito a esse caso para não colar datas velhas em
-  // um assunto novo.
-  if (!isoDates.length && nameFilter && priorUserText) {
+  // um assunto novo — e nunca quando é um pedido de "últimos N".
+  if (!recentCount && !isoDates.length && nameFilter && priorUserText) {
     isoDates = parseQueryDates(priorUserText);
   }
 
-  const [primary, focused, byDate] = await Promise.all([
+  const [primary, focused, byDate, byPerson] = await Promise.all([
     searchKnowledge(question),
     keyTerms ? searchKnowledge(keyTerms) : null,
     isoDates.length ? searchDocumentsByDate(isoDates, nameFilter) : null,
+    recentCount && nameFilter
+      ? searchRecentReportsByPerson(nameFilter, recentCount)
+      : null,
   ]);
 
   const memories = primary.memories;
   let documents = focused
     ? mergeDocuments(primary.documents, focused.documents, 6)
     : primary.documents;
-  // Matches por data exata entram primeiro (score sentinela) e ampliam o teto
-  // para caber todos eles junto dos melhores da busca difusa.
+  // Matches estruturados (data exata / por pessoa) entram primeiro (score
+  // sentinela) e ampliam o teto para caber todos junto dos melhores da difusa.
   if (byDate?.length) {
     documents = mergeDocuments(byDate, documents, byDate.length + 4);
+  }
+  if (byPerson?.length) {
+    documents = mergeDocuments(byPerson, documents, byPerson.length + 4);
   }
 
   // Não injeta memórias negativas/meta (evita o modelo repetir "não encontrado").
@@ -349,14 +426,18 @@ async function* principalWithGeminiFallback(params: {
 }
 
 /** System do modo busca web: o modelo DEVE usar a WebSearch (o botão foi ligado
- *  de propósito), sem amarrar ao contexto interno. */
+ *  de propósito). Recebe a transcrição da conversa para dar conta de follow-ups,
+ *  mas a resposta em si vem da web (não do contexto interno do Notion). */
 const WEB_SEARCH_SYSTEM =
-  "Você é o Jarvis, assistente corporativo. O usuário ativou a BUSCA NA WEB para " +
-  "esta pergunta: use SEMPRE a ferramenta WebSearch para pesquisar na internet e " +
-  "responda baseando-se APENAS nos resultados encontrados. Responda em Português do " +
-  "Brasil, de forma clara e objetiva, e cite as fontes (títulos e/ou links) ao final. " +
-  "Se a busca não retornar nada útil, diga que não encontrou. Não prefixe seu próprio " +
-  "nome nem comente sobre o sistema. Markdown.";
+  "Você é o Jarvis, assistente corporativo. O usuário ativou a BUSCA NA WEB. " +
+  "Você recebe a TRANSCRIÇÃO da conversa (linhas 'Usuário:' e 'Jarvis:'); a última " +
+  "linha 'Usuário:' é a mensagem ATUAL. Responda a ela usando SEMPRE a ferramenta " +
+  "WebSearch para pesquisar na internet — tratando as mensagens anteriores como " +
+  "CONTEXTO (perguntas de continuidade como 'e o passo 2?' se referem ao que já foi " +
+  "dito). Baseie a resposta nos resultados da busca e cite as fontes (títulos e/ou " +
+  "links) ao final. Se a busca não retornar nada útil, diga que não encontrou. Não " +
+  "prefixe seu próprio nome nem comente sobre o sistema. Responda em Português do " +
+  "Brasil, de forma clara e objetiva. Markdown.";
 
 /**
  * Modo BUSCA WEB (botão do chat): responde direto da web via ferramenta WebSearch
@@ -364,14 +445,14 @@ const WEB_SEARCH_SYSTEM =
  * degrada com uma mensagem curta. Timeout maior: buscas encadeadas passam de 120s.
  */
 async function* streamWebSearch(params: {
-  question: string;
+  transcript: string;
   signal?: AbortSignal;
 }): AsyncGenerator<ClaudeChunk> {
   yield { type: "status", label: "Pesquisando na web…" };
   try {
     for await (const chunk of streamClaudeText({
       system: WEB_SEARCH_SYSTEM,
-      prompt: params.question,
+      prompt: params.transcript,
       allowWebSearch: true,
       timeoutMs: 180_000,
       signal: params.signal,
@@ -579,7 +660,7 @@ export async function POST(req: Request) {
         const source =
           webSearch && PRINCIPAL_PROVIDER === "claude"
             ? streamWebSearch({
-                question: messageText(message),
+                transcript: renderTranscript(messages),
                 signal: req.signal,
               })
             : principalWithGeminiFallback({

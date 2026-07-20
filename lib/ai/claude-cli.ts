@@ -211,8 +211,11 @@ export async function* streamClaudeText(
     "--strict-mcp-config",
     // Isola settings do usuário (CLAUDE.md/skills/regras de permissão): garante
     // que só as flags abaixo governam ferramentas — essencial p/ a via imagem.
-    "--setting-sources",
-    winQuote(""),
+    // Valor JUNTADO (=) em vez de um "" como argv separado: no Windows o shim
+    // claude.cmd expande %* e pode ENGOLIR um arg vazio, fazendo o CLI consumir a
+    // flag seguinte (--model) como valor → "Invalid setting source: --model".
+    // Juntado não tem arg vazio a cair. CLI aceita "=" vazio como "nenhuma fonte".
+    "--setting-sources=",
     "--model",
     model,
     "--system-prompt-file",
