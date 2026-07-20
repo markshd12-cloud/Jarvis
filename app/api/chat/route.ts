@@ -62,7 +62,11 @@ const BASE_SYSTEM =
   "corresponde EXATAMENTE ao que o usuário pediu: há marcas/entidades irmãs com nomes parecidos " +
   "(ex.: 'CPPEM Concursos' ≠ 'Colégio CPPEM') — NÃO misture uma com a outra. Se o pedido for " +
   "ambíguo entre fontes, diga quais opções existem e responda pela mais provável.\n" +
-  "As 'Memórias' são notas internas, podem estar incompletas/desatualizadas: use como dica, nunca como prova de que algo não existe.\n" +
+  "As 'Memórias internas' são fatos que você aprendeu em conversas com o usuário. Ao cruzá-las com as 'Fontes da empresa':\n" +
+  "• Memória CONCORDA com a fonte → responda normalmente.\n" +
+  "• Memória responde algo que a fonte NÃO cobre (lacuna) → use a memória como resposta, não diga que não sabe.\n" +
+  "• Memória DIVERGE da fonte → responda PRIMEIRO com o dado da fonte (Notion) e, logo abaixo, acrescente a ressalva: 'Obs.: na memória interna há divergência — <o que a memória diz>'.\n" +
+  "Nunca use uma memória como prova de que algo NÃO existe.\n" +
   "NUNCA afirme que uma informação 'não existe' ou 'não foi encontrada' só porque não está no contexto. " +
   "Se faltar algo, CHAME a ferramenta buscarConhecimento (pode chamar mais de uma vez, com termos diferentes) ANTES de responder. " +
   "Não comente sobre buscas anteriores, sobre o sistema, nem sobre suas limitações. " +
@@ -265,7 +269,7 @@ async function buildKnowledge(
   }
   if (usefulMemories.length) {
     blocks.push(
-      "## Memórias internas (dicas, podem estar incompletas)\n" +
+      "## Memórias internas (fatos aprendidos em conversas com o usuário)\n" +
         usefulMemories.map((m) => `- [${m.kind}] ${m.content}`).join("\n"),
     );
   }

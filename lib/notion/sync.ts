@@ -453,9 +453,12 @@ async function processCandidates(
 }
 
 /**
- * Estado resumível da carga inicial (guardado em notion_connections.sync_cursor).
- * A carga tem DUAS fases: primeiro varre todas as linhas de todos os bancos
- * (`datasources`), depois as páginas livres (`pages`).
+ * Estado resumível de uma rodada (guardado em notion_connections.sync_cursor).
+ * Compartilhado pela carga inicial (`runBackfill`) e pelo incremental
+ * (`runIncremental`): ambos têm DUAS fases — primeiro varre as linhas dos bancos
+ * (`datasources`), depois as páginas livres (`pages`). Como o watermark só fica
+ * não-nulo DEPOIS que o backfill completa e zera o cursor, um cursor presente com
+ * watermark não-nulo é, sem ambiguidade, estado do incremental.
  */
 interface BackfillState {
   stage: "datasources" | "pages";
@@ -607,10 +610,16 @@ async function runBackfill(
 }
 
 /**
- * INCREMENTAL (com watermark): re-descobre os bancos e varre cada um do mais novo
- * até cruzar o marco; depois as páginas livres. Só toca no que mudou — rápido e
- * idempotente (se estourar o tempo, não avança o marco e a próxima rodada repete
- * de forma barata, pulando o já-sincronizado pelo content_hash).
+ * INCREMENTAL (com watermark): varre os bancos do mais novo até cruzar o marco;
+ * depois as páginas livres. Só toca no que mudou — rápido e idempotente.
+ *
+ * RESUMÍVEL: um ciclo pode não caber num orçamento (ex.: muitos dias de atraso).
+ * Antes, ao estourar o tempo a rodada DESCARTAVA o progresso e recomeçava do topo
+ * — os primeiros bancos eram reprocessados e os últimos (ex.: "Atividades
+ * Diárias") passavam fome e nunca eram alcançados, congelando o watermark. Agora,
+ * ao estourar, salva a fila de bancos restantes + cursores em `sync_cursor`
+ * (mesmo mecanismo do backfill) e a próxima rodada CONTINUA de onde parou. O marco
+ * só avança quando o ciclo inteiro termina — então a leitura fica consistente.
  */
 async function runIncremental(
   admin: AdminClient,
@@ -619,11 +628,12 @@ async function runIncremental(
   known: KnownMap,
   start: number,
   watermark: number,
+  state: BackfillState | null,
 ): Promise<SyncResult> {
   let indexed = 0;
   let skipped = 0;
   let timedOut = false;
-  let newest: string | null = null;
+  let newest: string | null = state?.pendingWatermark ?? null;
   const track = (n: string | null) => {
     if (n && (!newest || new Date(n) > new Date(newest))) newest = n;
   };
@@ -632,21 +642,29 @@ async function runIncremental(
     skipped += r.skipped;
   };
 
+  let stage: "datasources" | "pages" = state?.stage ?? "datasources";
+  let dsQueue = state?.dsQueue ?? [];
+  let dsCursor = state?.dsCursor;
+  let pagesCursor = state?.pagesCursor;
+
+  // Ciclo novo (sem cursor pendente): lista os bancos uma vez. Enquanto o ciclo
+  // não terminar, a fila é retomada do `sync_cursor` (não redescobre do zero).
+  if (!state) {
+    dsQueue = await discoverDataSourceIds(notion);
+    stage = "datasources";
+    dsCursor = undefined;
+  }
+
   // Fase 1 — bancos: cada um varrido do topo até cruzar o marco.
-  const dsIds = await discoverDataSourceIds(notion);
-  for (const dsId of dsIds) {
-    if (overBudget(start)) {
-      timedOut = true;
-      break;
-    }
-    let cursor: string | undefined;
-    do {
+  if (stage === "datasources") {
+    while (dsQueue.length > 0) {
       if (overBudget(start)) {
         timedOut = true;
         break;
       }
+      const dsId = dsQueue[0];
       try {
-        const res = await queryDataSourcePage(notion, dsId, cursor);
+        const res = await queryDataSourcePage(notion, dsId, dsCursor);
         const t = triage(res.results, {
           watermark,
           skipDatabaseRows: false,
@@ -655,20 +673,28 @@ async function runIncremental(
         track(t.newest);
         skipped += t.skipped;
         fold(await processCandidates(admin, companyId, notion, t.candidates));
-        if (t.reachedCovered) break; // resto deste banco já está coberto
-        cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+        // Cruzou o marco OU acabou o banco → resto já coberto, vai pro próximo.
+        if (t.reachedCovered || !res.has_more || !res.next_cursor) {
+          dsQueue = dsQueue.slice(1);
+          dsCursor = undefined;
+        } else {
+          dsCursor = res.next_cursor;
+        }
       } catch (error) {
         console.error("[notion] falha ao consultar data source", dsId, error);
-        break; // pula este banco nesta rodada
+        dsQueue = dsQueue.slice(1); // pula este banco nesta rodada
+        dsCursor = undefined;
       }
-    } while (cursor);
-    if (timedOut) break;
+    }
+    if (!timedOut && dsQueue.length === 0) {
+      stage = "pages";
+      pagesCursor = undefined;
+    }
   }
 
   // Fase 2 — páginas livres.
-  if (!timedOut) {
-    let cursor: string | undefined;
-    do {
+  if (!timedOut && stage === "pages") {
+    for (;;) {
       if (overBudget(start)) {
         timedOut = true;
         break;
@@ -677,7 +703,7 @@ async function runIncremental(
         sort: { timestamp: "last_edited_time", direction: "descending" },
         filter: { property: "object", value: "page" },
         page_size: 100,
-        start_cursor: cursor,
+        start_cursor: pagesCursor,
       });
       const t = triage(res.results, {
         watermark,
@@ -687,16 +713,31 @@ async function runIncremental(
       track(t.newest);
       skipped += t.skipped;
       fold(await processCandidates(admin, companyId, notion, t.candidates));
-      if (t.reachedCovered) break;
-      cursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
-    } while (cursor);
+      if (t.reachedCovered) {
+        pagesCursor = undefined; // cruzou o marco → páginas livres cobertas
+        break;
+      }
+      pagesCursor = res.has_more ? (res.next_cursor ?? undefined) : undefined;
+      if (!pagesCursor) break;
+    }
   }
 
-  const done = !timedOut;
+  const done = !timedOut && stage === "pages" && !pagesCursor;
   const update: Record<string, string | null> = {
     last_synced_at: new Date().toISOString(),
   };
-  if (done && newest) update.last_edited_watermark = newest;
+  if (done) {
+    if (newest) update.last_edited_watermark = newest;
+    update.sync_cursor = null; // ciclo completo → limpa a retomada
+  } else {
+    update.sync_cursor = JSON.stringify({
+      stage,
+      dsQueue: stage === "datasources" ? dsQueue : undefined,
+      dsCursor: stage === "datasources" ? dsCursor : undefined,
+      pagesCursor: stage === "pages" ? pagesCursor : undefined,
+      pendingWatermark: newest ?? undefined,
+    } satisfies BackfillState);
+  }
   await admin
     .from("notion_connections")
     .update(update)
@@ -746,7 +787,8 @@ export async function syncNotion(companyId: string): Promise<SyncResult> {
     ]),
   );
 
+  const resume = parseBackfill(conn.sync_cursor);
   return watermark === null
-    ? runBackfill(admin, companyId, notion, known, start, parseBackfill(conn.sync_cursor))
-    : runIncremental(admin, companyId, notion, known, start, watermark);
+    ? runBackfill(admin, companyId, notion, known, start, resume)
+    : runIncremental(admin, companyId, notion, known, start, watermark, resume);
 }
