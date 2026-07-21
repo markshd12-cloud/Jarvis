@@ -152,11 +152,13 @@ export async function runSeed(companyId: string): Promise<SeedReport> {
   );
 
   // 2) Centros de custo (upsert por ca_centro_id) ---------------------------
-  const centrosResp = await caGet<Envelope<CaCentro>>(
+  // PAGINADO: sem isto, a 1ª página vinha só com os centros INATIVOS/legados
+  // (CPPEM CONCURSOS, Pix, ASAAS…) e os reais ativos (Administrativo, Pedagógico,
+  // Marketing…) ficavam na 2ª página, de fora — quebrando o % por centro de custo.
+  const centros = await fetchPaginated<CaCentro>(
     companyId,
     CONTA_AZUL_RESOURCES.centrosDeCusto.path!,
   );
-  const centros = centrosResp.itens ?? [];
   if (centros.length) {
     const { error } = await admin.from("fin_centros_custo").upsert(
       centros.map((c) => ({

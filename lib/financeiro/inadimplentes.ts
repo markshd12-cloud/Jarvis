@@ -11,6 +11,7 @@ import "server-only";
 
 import { caGet, ContaAzulError } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
+import { swr } from "@/lib/financeiro/cache";
 
 /** Um lançamento vencido de um cliente. */
 export interface InadimplenteItem {
@@ -158,22 +159,13 @@ async function computeInadimplentes(companyId: string): Promise<InadimplentesRes
   }
 }
 
-/**
- * Cache por processo (1 réplica em prod). A varredura pagina ~69 páginas (~10s);
- * o cache deixa reaberturas da aba e perguntas do chat instantâneas por 5 min.
- */
-const CACHE_TTL_MS = 5 * 60_000;
-const cache = new Map<string, { at: number; data: InadimplentesResult }>();
-
+/** SWR 10 min (serve instantâneo + revalida em background). Ver `./cache`. */
 export async function listarInadimplentes(
   companyId: string,
-  opts?: { force?: boolean },
+  opts: { force?: boolean } = {},
 ): Promise<InadimplentesResult> {
-  if (!opts?.force) {
-    const hit = cache.get(companyId);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
-  }
-  const data = await computeInadimplentes(companyId);
-  if (data.connected) cache.set(companyId, { at: Date.now(), data });
-  return data;
+  return swr(`inadimplentes:${companyId}`, 10 * 60_000, () => computeInadimplentes(companyId), {
+    force: opts.force,
+    cacheIf: (d) => d.connected,
+  });
 }

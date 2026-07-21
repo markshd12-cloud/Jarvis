@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import {
+  IconAddressBook,
   IconAlertTriangle,
   IconCategory,
   IconChartLine,
   IconChartPie,
+  IconLayoutDashboard,
   IconReceipt2,
   IconReportMoney,
   IconCoin,
@@ -28,6 +30,7 @@ import type { DreResult } from "@/lib/contaazul/dre";
 
 import { CadastrosPanel } from "@/components/financeiro/cadastros-panel";
 import { CentroCustoPanel } from "@/components/financeiro/centro-custo-panel";
+import { ClientesPanel } from "@/components/financeiro/clientes-panel";
 import { ColaboradoresPanel } from "@/components/financeiro/colaboradores-panel";
 import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
 import { DreConfigPanel } from "@/components/financeiro/dre-config-panel";
@@ -35,6 +38,7 @@ import { DreTable } from "@/components/financeiro/dre-table";
 import { FluxoCaixaPanel } from "@/components/financeiro/fluxo-caixa-panel";
 import { InadimplentesPanel } from "@/components/financeiro/inadimplentes-panel";
 import { OrcamentoPanel } from "@/components/financeiro/orcamento-panel";
+import { PainelPanel } from "@/components/financeiro/painel-panel";
 import { ReceitaPanel } from "@/components/financeiro/receita-panel";
 import { RecorrenciasPanel } from "@/components/financeiro/recorrencias-panel";
 import { VendasPanel } from "@/components/financeiro/vendas-panel";
@@ -45,6 +49,7 @@ import { VendasPanel } from "@/components/financeiro/vendas-panel";
  * nas próximas fases. Filtros usam Button + DropdownMenu do Jarvis.
  */
 type TabKey =
+  | "painel"
   | "dre"
   | "caixa"
   | "centro"
@@ -55,12 +60,14 @@ type TabKey =
   | "recorrencias"
   | "orcamento"
   | "receita"
-  | "inadimplentes";
+  | "inadimplentes"
+  | "clientes";
 
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 
 const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode }[] =
   [
+    { key: "painel", label: "Painel", ready: true, icon: <IconLayoutDashboard className={iconCls} /> },
     { key: "dre", label: "DRE", ready: true, icon: <IconReportMoney className={iconCls} /> },
     { key: "caixa", label: "Fluxo de Caixa", ready: true, icon: <IconChartLine className={iconCls} /> },
     { key: "centro", label: "% Centro de Custo", ready: true, icon: <IconChartPie className={iconCls} /> },
@@ -72,6 +79,7 @@ const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode 
     { key: "vendas", label: "Vendas e Faturar", ready: true, icon: <IconShoppingCart className={iconCls} /> },
     { key: "cadastros", label: "Categorias & Centros", ready: true, icon: <IconCategory className={iconCls} /> },
     { key: "colaboradores", label: "Colaboradores", ready: true, icon: <IconUsers className={iconCls} /> },
+    { key: "clientes", label: "Clientes", ready: true, icon: <IconAddressBook className={iconCls} /> },
   ];
 
 const MESES_ABREV = [
@@ -98,7 +106,7 @@ function ultimasCompetencias(): string[] {
 const BUS = ["Geral", "Colégio", "CPPEM", "Unicive"];
 
 export function FinanceiroShell() {
-  const [active, setActive] = useState<TabKey>("dre");
+  const [active, setActive] = useState<TabKey>("painel");
   const competencias = ultimasCompetencias();
   const [competencia, setCompetencia] = useState(competencias[0]);
   const [bu, setBu] = useState(BUS[0]);
@@ -155,6 +163,8 @@ export function FinanceiroShell() {
       <div className="flex justify-center">
         <FloatingDock items={dockItems} />
       </div>
+
+      {active === "painel" ? <PainelPanel /> : null}
 
       {active === "dre" ? (
         <section className="flex flex-col gap-4">
@@ -229,6 +239,8 @@ export function FinanceiroShell() {
       {active === "inadimplentes" ? <InadimplentesPanel /> : null}
 
       {active === "vendas" ? <VendasPanel /> : null}
+
+      {active === "clientes" ? <ClientesPanel /> : null}
     </div>
   );
 }

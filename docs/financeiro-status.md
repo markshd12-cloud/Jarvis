@@ -57,7 +57,15 @@ Decisão de escopo: o **cutover afeta SÓ a despesa**. A **receita segue do CA a
 - **Nota:** receita do snapshot no DRE + previsto×realizado + filtro BU no DRE = evolução v2 posterior (opcional).
 
 ### Fase 5 — Relatórios gerenciais
-- **Passo 12 · Dashboards TV** — alertas + gráfico receita×despesa por BU. Depende de 9 e 11.
+- **Passo 12 · Dashboards TV** — ✅ IMPLEMENTADO (2026-07-20), falta commit + deploy.
+  Aba **Painel** (1ª aba, default do shell): KPIs (receita recebida, despesa paga, resultado, saldo previsto,
+  a receber, inadimplência, vendas faturadas × a faturar), **card de alertas** (inadimplência, a pagar vencido,
+  a faturar), e 3 gráficos em CSS puro (sem lib): **receita × despesa mensal**, **receita por BU** (CPPEM/
+  Colégio/Unicive ✅), **despesa por centro** (via CA). Compõe fontes já cacheadas: `getContaAzulDashboard`
+  (range=ano), `resumoVendas`, `resumoCentrosCusto`, `listarInadimplentes`, e query `fin_receita_snapshot` por
+  BU. Arquivos: `lib/financeiro/painel.ts`, `app/api/financeiro/painel/route.ts`,
+  `components/financeiro/painel-panel.tsx`, wiring no shell (aba `painel` + default). ⚠️ **Despesa por BU fica
+  fora** (tudo "Geral" até o Passo 11) — a despesa aparece por CENTRO (CA) e no total, não por BU.
 - **Passo 13 · Fluxo de Caixa** — IMPLEMENTADO (2026-07-17), falta E2E logado + commit.
   Regime de CAIXA (data de pagamento/recebimento, não competência). Entradas = `fin_receita_snapshot`
   (recebido→pagamento / a receber→vencimento); saídas = `fin_parcelas` (paga→pagamento /
@@ -79,7 +87,20 @@ Decisão de escopo: o **cutover afeta SÓ a despesa**. A **receita segue do CA a
   centro". Os centros reais (Administrativo 30%, Pedagógico 28%, Marketing 12%, Comercial, Governo, Mercadoria,
   Tecnologia, Serviços Gerais, Financeiro, Cultura) só existem nos eventos do CA. Validado ao vivo 2026-07-20:
   realizado 2026 = R$ 1.235.786,90. **Custo do "sem BU":** o CA não tem BU nos eventos; p/ filtrar % por centro
-  por BU, precisaria RE-SEMEAR os centros certos do CA + mapear centro/BU no import (débito do Passo 2/11).
+  por BU, precisaria mapear centro/BU no import (Passo 11).
+
+### Débito 2/11 — Passo 2 RESOLVIDO (2026-07-20); Passo 11 agendado p/ início do próximo mês
+- **Passo 2 (seed de centros) ✅ CORRIGIDO:** causa era o seed chamar `/centro-de-custo` SEM paginar → pegava só
+  a 1ª página (10 centros INATIVOS/legados: CPPEM CONCURSOS, Pix, ASAAS, Stone…) e perdia a 2ª (os 9 reais
+  ATIVOS: Administrativo, Comercial, Marketing, Pedagógico, Governo, Mercadoria, Financeiro, Serviços Gerais,
+  Cultura). Fix: `lib/financeiro/seed.ts` usa `fetchPaginated` (como as categorias). Dado corrigido ao vivo via
+  upsert (`fin_centros_custo` agora com 19 centros; `ca_centro_id` dos ativos bate com os eventos). ⚠️ Fix de
+  CÓDIGO local, falta commit + deploy (o DADO já está corrigido em prod).
+- **Passo 11 (import mapear centro/BU) — agendado p/ INÍCIO DO PRÓXIMO MÊS** (decisão do usuário 2026-07-20:
+  quando o cadastro de despesa migrar do CA pro Jarvis). Só então `import-despesas.ts` deve setar
+  `centro_custo_id` (de `centros_de_custo[0].id` → casa por `ca_centro_id`) + `bu_id` (regra a definir) e fazer
+  backfill das despesas já importadas. Até lá, % Centro de Custo lê do CA ao vivo (correto) e despesa por BU
+  fica "Geral".
 - **Passo 15 · Vendas & Contas a Faturar** — ✅ IMPLEMENTADO (2026-07-20), falta commit + deploy.
   Lê `/venda/busca` do CA (âncora fiscal) do ano; separa **FATURADO** (NF emitida) × **A FATURAR** (situação
   APROVADO). Cards Total/Faturado/A Faturar + filtro Todas/Faturadas/A Faturar + busca cliente + paginação

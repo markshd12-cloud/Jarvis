@@ -11,6 +11,7 @@ import "server-only";
 
 import { caGet, ContaAzulError } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
+import { swr } from "@/lib/financeiro/cache";
 
 export interface VendaItem {
   id: string;
@@ -141,21 +142,14 @@ async function computeVendas(companyId: string, ano: number): Promise<VendasResu
   }
 }
 
-/** Cache por processo (5 min) — a varredura pagina o ano de vendas. */
-const CACHE_TTL_MS = 5 * 60_000;
-const cache = new Map<string, { at: number; data: VendasResumo }>();
-
+/** SWR 10 min (serve instantâneo + revalida em background). Ver `./cache`. */
 export async function resumoVendas(
   companyId: string,
   opts: { ano?: number; force?: boolean } = {},
 ): Promise<VendasResumo> {
   const ano = opts.ano && opts.ano > 2000 ? opts.ano : new Date().getUTCFullYear();
-  const key = `${companyId}:${ano}`;
-  if (!opts.force) {
-    const hit = cache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.data;
-  }
-  const data = await computeVendas(companyId, ano);
-  if (data.connected) cache.set(key, { at: Date.now(), data });
-  return data;
+  return swr(`vendas:${companyId}:${ano}`, 10 * 60_000, () => computeVendas(companyId, ano), {
+    force: opts.force,
+    cacheIf: (d) => d.connected,
+  });
 }
