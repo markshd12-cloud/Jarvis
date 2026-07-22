@@ -33,15 +33,14 @@ export const FEATURES: Feature[] = [
     sidebar: true,
   },
   {
-    // Marketing (Meta Ads) — dados GLOBAIS: quem tem a permissão vê todas as
-    // marcas (Colégio, CPPEM, Unicive, Everton), independentemente da empresa.
-    // O painel vive DENTRO do /dashboard (não é item de menu próprio); a chave
-    // continua na matriz de roles como permissão.
+    // Marketing (Meta Ads + Instagram) — dados GLOBAIS: quem tem a permissão vê
+    // todas as marcas (Colégio, CPPEM, Unicive, Everton). Tem página própria
+    // `/marketing` (item de sidebar, gated por `marketing`).
     key: "marketing",
     label: "Marketing",
-    href: "/dashboard",
+    href: "/marketing",
     actions: ["ver", "gerenciar"],
-    sidebar: false,
+    sidebar: true,
   },
   {
     // Financeiro (Conta Azul) — painel de receitas/despesas/DRE. Espelha o
@@ -51,6 +50,16 @@ export const FEATURES: Feature[] = [
     label: "Financeiro",
     href: "/dashboard",
     actions: ["ver", "gerenciar"],
+    sidebar: false,
+  },
+  {
+    // GA4 (Google Analytics do site) — dados GLOBAIS. É uma ABA do módulo
+    // Marketing (`/marketing`). Permissão PRÓPRIA na matriz de roles: controla
+    // "quem pode visualizar o GA4". Não é item de sidebar (entra pelo Marketing).
+    key: "ga4",
+    label: "GA4 / Site",
+    href: "/marketing",
+    actions: ["ver"],
     sidebar: false,
   },
   {
@@ -111,7 +120,8 @@ export function landingHref(ctx: AccessContext): string | null {
   if (ctx.isSuperadmin) return "/dashboard";
   const first = FEATURES.find((f) => f.sidebar && can(ctx, f.key));
   if (first) return first.href;
-  // Marketing e Financeiro não são itens de menu, mas seus painéis abrem no /dashboard.
-  if (can(ctx, "marketing") || can(ctx, "financeiro")) return "/dashboard";
+  // Financeiro abre no /dashboard; Marketing/GA4 têm a própria página /marketing.
+  if (can(ctx, "marketing") || can(ctx, "ga4")) return "/marketing";
+  if (can(ctx, "financeiro")) return "/dashboard";
   return null;
 }

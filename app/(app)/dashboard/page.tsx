@@ -6,10 +6,12 @@ import { can, landingHref } from "@/lib/permissions";
 import { getCompanyId } from "@/lib/db/company";
 import { getMarketingDashboard } from "@/lib/marketing/dashboard";
 import { getInstagramOverview } from "@/lib/marketing/social";
+import { getGa4Overview } from "@/lib/marketing/ga4";
 import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
 import { InstagramMetrics } from "@/components/instagram-metrics";
+import { Ga4Metrics } from "@/components/ga4-metrics";
 import { ContaAzulMetrics } from "@/components/contaazul-metrics";
 
 export const metadata: Metadata = {
@@ -24,23 +26,20 @@ export default async function DashboardPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  // O Dashboard reúne módulos com permissões próprias. Hoje: visão geral
-  // (`dashboard`) e o painel de Marketing/Meta Ads (`marketing`). Entra quem
-  // tiver qualquer um; cada seção é montada conforme a permissão.
+  // O Dashboard é o FACILITADOR de acesso: reúne um resumo dos módulos que a
+  // pessoa pode ver (financeiro do Conta Azul + marketing Meta/Instagram/GA4). O
+  // aprofundamento do marketing vive na página própria `/marketing`.
   const ctx = await getSessionContext();
   const canDashboard = can(ctx, "dashboard");
   const canMarketing = can(ctx, "marketing");
   const canFinanceiro = can(ctx, "financeiro");
-  if (!canDashboard && !canMarketing && !canFinanceiro)
+  const canGa4 = can(ctx, "ga4");
+  if (!canDashboard && !canMarketing && !canFinanceiro && !canGa4)
     redirect(landingHref(ctx) ?? "/sem-acesso");
 
   const sp = await searchParams;
   const brand = one(sp.brand);
-  // Meta Ads (pago) e Instagram (orgânico) compartilham o filtro de marca e são
-  // buscados em paralelo. O IG não usa período (snapshot de seguidores + posts).
-  // Conta Azul (financeiro) entra pela permissão `dashboard`, com seu próprio
-  // período (`ca`); nunca lança (degrada para estado "desconectado").
-  const [marketing, instagram, contaAzul] = await Promise.all([
+  const [marketing, instagram, ga4, contaAzul] = await Promise.all([
     canMarketing
       ? getMarketingDashboard({
           range: one(sp.range),
@@ -50,6 +49,7 @@ export default async function DashboardPage({
         })
       : Promise.resolve(null),
     canMarketing ? getInstagramOverview({ brand }) : Promise.resolve(null),
+    canGa4 ? getGa4Overview() : Promise.resolve(null),
     canFinanceiro
       ? getCompanyId().then((companyId) =>
           getContaAzulDashboard(companyId, {
@@ -61,7 +61,6 @@ export default async function DashboardPage({
   ]);
   const allBrands = MARKETING_AD_ACCOUNTS.map((a) => a.label);
 
-  // Params atuais (string) para os filtros do painel Conta Azul preservarem estado.
   const currentParams: Record<string, string | undefined> = {
     ca: one(sp.ca),
     cacat: one(sp.cacat),
@@ -97,6 +96,13 @@ export default async function DashboardPage({
             <>
               <hr className="border-border" />
               <InstagramMetrics data={instagram} />
+            </>
+          ) : null}
+
+          {ga4 ? (
+            <>
+              <hr className="border-border" />
+              <Ga4Metrics data={ga4} />
             </>
           ) : null}
         </div>

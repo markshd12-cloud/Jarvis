@@ -1,8 +1,15 @@
+import { InstagramFunnelPanel } from "@/components/instagram-funnel";
 import { InteractiveLineChart } from "@/components/charts/interactive-line";
+import type { InstagramFunnel } from "@/lib/marketing/instagram-funnel";
 import type {
   IgBrandFollowers,
+  IgFormatStat,
+  IgHour,
   IgMedia,
+  IgSegment,
+  InstagramAudience,
   InstagramOverview,
+  InstagramStories,
 } from "@/lib/marketing/social";
 
 /**
@@ -137,8 +144,128 @@ function MediaCard({ m }: { m: IgMedia }) {
   );
 }
 
-export function InstagramMetrics({ data }: { data: InstagramOverview }) {
-  const { totalFollowers, followersByBrand, series, posts, topMedia, brand } =
+/** Barras horizontais genéricas (segmento · valor), escaladas pelo maior. */
+function SegmentBars({
+  items,
+  format = count,
+}: {
+  items: IgSegment[];
+  format?: (v: number) => string;
+}) {
+  const max = Math.max(1, ...items.map((i) => i.value));
+  if (items.length === 0)
+    return <p className="py-2 text-xs text-muted-foreground">Sem dados.</p>;
+  return (
+    <ul className="flex flex-col gap-2.5">
+      {items.map((it, i) => (
+        <li key={it.label} className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between gap-2 text-sm">
+            <span className="truncate text-muted-foreground" title={it.label}>
+              {it.label}
+            </span>
+            <span className="shrink-0 tabular-nums font-medium">{format(it.value)}</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${(it.value / max) * 100}%`,
+                background: CHART_VARS[i % CHART_VARS.length],
+              }}
+            />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Mini gráfico de 24 barras (0-23h): melhor horário para postar. */
+function BestHours({ hours }: { hours: IgHour[] }) {
+  const byHour = new Map(hours.map((h) => [h.hour, h.value]));
+  const all = Array.from({ length: 24 }, (_, h) => ({ hour: h, value: byHour.get(h) ?? 0 }));
+  const max = Math.max(1, ...all.map((h) => h.value));
+  const peak = Math.max(...all.map((h) => h.value));
+  const top = all.filter((h) => h.value === peak && peak > 0).map((h) => h.hour);
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex h-24 items-end gap-0.5">
+        {all.map((h) => (
+          <div
+            key={h.hour}
+            className="flex-1 rounded-t"
+            style={{
+              height: `${Math.max(2, (h.value / max) * 100)}%`,
+              background: top.includes(h.hour) ? "var(--brand)" : "var(--muted)",
+            }}
+            title={`${String(h.hour).padStart(2, "0")}h · ${count(h.value)}`}
+          />
+        ))}
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground">
+        <span>00h</span>
+        <span>06h</span>
+        <span>12h</span>
+        <span>18h</span>
+        <span>23h</span>
+      </div>
+      {top.length ? (
+        <p className="text-xs text-muted-foreground">
+          Pico às{" "}
+          <span className="font-medium text-foreground">
+            {top.map((h) => `${String(h).padStart(2, "0")}h`).join(", ")}
+          </span>{" "}
+          — melhor janela para postar.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/** Barras de desempenho por formato (engajamento médio por post). */
+function FormatBars({ items }: { items: IgFormatStat[] }) {
+  const max = Math.max(1, ...items.map((i) => i.avgEngagement));
+  return (
+    <ul className="flex flex-col gap-3">
+      {items.map((it, i) => (
+        <li key={it.format} className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between gap-2 text-sm">
+            <span className="text-muted-foreground">
+              {it.format} <span className="text-xs">· {it.count} posts</span>
+            </span>
+            <span className="tabular-nums font-medium">
+              {compact.format(Math.round(it.avgEngagement))}{" "}
+              <span className="text-xs text-muted-foreground">eng./post</span>
+            </span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${(it.avgEngagement / max) * 100}%`,
+                background: CHART_VARS[i % CHART_VARS.length],
+              }}
+            />
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+export function InstagramMetrics({
+  data,
+  funnel,
+  audience,
+  stories,
+}: {
+  data: InstagramOverview;
+  /** Só na página /marketing (detalhe); no dashboard ficam undefined → ocultos. */
+  funnel?: InstagramFunnel | null;
+  audience?: InstagramAudience | null;
+  stories?: InstagramStories | null;
+}) {
+  const { totalFollowers, followersByBrand, series, posts, topMedia, byFormat, brand } =
     data;
 
   return (
@@ -170,6 +297,9 @@ export function InstagramMetrics({ data }: { data: InstagramOverview }) {
             <Kpi label="Salvos" value={count(posts.saved)} />
             <Kpi label="Alcance" value={count(posts.reach)} />
           </div>
+
+          {/* Funil da conta (só no /marketing) */}
+          {funnel ? <InstagramFunnelPanel data={funnel} /> : null}
 
           {/* Crescimento + seguidores por marca */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.55fr_1fr]">
@@ -233,6 +363,86 @@ export function InstagramMetrics({ data }: { data: InstagramOverview }) {
                 {topMedia.map((m) => (
                   <MediaCard key={m.mediaId} m={m} />
                 ))}
+              </div>
+            </div>
+          ) : null}
+
+          {/* Desempenho por formato (Reels/Carrossel/Imagem) */}
+          {byFormat.length ? (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <h3 className="mb-4 text-sm font-semibold tracking-tight">
+                Desempenho por formato
+                <span className="ml-2 font-normal text-muted-foreground">
+                  engajamento médio por post
+                </span>
+              </h3>
+              <FormatBars items={byFormat} />
+            </div>
+          ) : null}
+
+          {/* Demografia + melhor horário (só no /marketing) */}
+          {audience?.hasData ? (
+            <div className="flex flex-col gap-3">
+              <h3 className="text-sm font-semibold tracking-tight">
+                Audiência
+                <span className="ml-2 font-normal text-muted-foreground">
+                  seguidores{audience.capturedOn ? ` · ${ddmm(audience.capturedOn)}` : ""}
+                </span>
+              </h3>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                {audience.age.length ? (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <h4 className="mb-3 text-sm font-semibold tracking-tight">Por faixa etária</h4>
+                    <SegmentBars items={audience.age} />
+                  </div>
+                ) : null}
+                {audience.gender.length ? (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <h4 className="mb-3 text-sm font-semibold tracking-tight">Por gênero</h4>
+                    <SegmentBars items={audience.gender} />
+                  </div>
+                ) : null}
+                {audience.city.length ? (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <h4 className="mb-3 text-sm font-semibold tracking-tight">Principais cidades</h4>
+                    <SegmentBars items={audience.city} />
+                  </div>
+                ) : null}
+                {audience.country.length ? (
+                  <div className="rounded-xl border border-border bg-card p-4">
+                    <h4 className="mb-3 text-sm font-semibold tracking-tight">Principais países</h4>
+                    <SegmentBars items={audience.country} />
+                  </div>
+                ) : null}
+              </div>
+              {audience.bestHours.length ? (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h4 className="mb-3 text-sm font-semibold tracking-tight">
+                    Melhor horário para postar
+                    <span className="ml-2 font-normal text-muted-foreground">
+                      seguidores online por hora
+                    </span>
+                  </h4>
+                  <BestHours hours={audience.bestHours} />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Stories (só no /marketing) */}
+          {stories?.hasData ? (
+            <div className="flex flex-col gap-3">
+              <h3 className="text-sm font-semibold tracking-tight">
+                Stories
+                <span className="ml-2 font-normal text-muted-foreground">
+                  {stories.count} capturados nas últimas 24h
+                </span>
+              </h3>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Kpi label="Stories" value={count(stories.count)} highlight />
+                <Kpi label="Alcance" value={count(stories.reach)} />
+                <Kpi label="Respostas" value={count(stories.replies)} />
+                <Kpi label="Navegações" value={count(stories.navigation)} />
               </div>
             </div>
           ) : null}

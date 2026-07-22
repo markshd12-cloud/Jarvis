@@ -168,6 +168,9 @@ export async function syncInstagram(
 
       // Conteúdo recente + insights por mídia.
       media += await syncMedia(admin, brand, igId, errors);
+      // Audiência (demografia + melhor horário) e stories ativos (24h).
+      await syncAudience(admin, brand, igId, until, errors);
+      media += await syncStories(admin, brand, igId, errors);
       accounts++;
     } catch (e) {
       errors.push(`${brand} (${igId}): ${msg(e)}`);
@@ -248,6 +251,178 @@ async function syncMedia(
       .upsert(rows, { onConflict: "provider,media_id" });
     if (error) {
       errors.push(`${brand} upsert media: ${error.message}`);
+      return 0;
+    }
+  }
+  return rows.length;
+}
+
+// --------------------------- audiência (Fase 2) ---------------------------- //
+
+interface DemoResult {
+  dimension_values?: string[];
+  value?: number;
+}
+
+/**
+ * Demografia dos seguidores para um breakdown (age|gender|city|country) →
+ * Map<segmento, valor>. Métrica `follower_demographics` exige metric_type=
+ * total_value + timeframe; só funciona com ≥100 seguidores. Lança em erro.
+ */
+async function fetchDemographics(igId: string, breakdown: string): Promise<Map<string, number>> {
+  const r = await igGet(`${igId}/insights`, {
+    metric: "follower_demographics",
+    period: "lifetime",
+    timeframe: "this_month",
+    breakdown,
+    metric_type: "total_value",
+  });
+  const tv = (r.data as { total_value?: { breakdowns?: { results?: DemoResult[] }[] } }[])?.[0]
+    ?.total_value;
+  const results = tv?.breakdowns?.[0]?.results ?? [];
+  const out = new Map<string, number>();
+  for (const res of results) {
+    const seg = res.dimension_values?.[0];
+    if (seg != null && seg !== "") out.set(String(seg), Number(res.value) || 0);
+  }
+  return out;
+}
+
+/** Seguidores online por HORA do dia (0-23) → Map<hora, valor>. Best-effort. */
+async function fetchOnlineFollowers(igId: string): Promise<Map<string, number>> {
+  const r = await igGet(`${igId}/insights`, { metric: "online_followers", period: "lifetime" });
+  const values = (r.data as { values?: { value?: Record<string, number> }[] }[])?.[0]?.values ?? [];
+  // A API devolve ≥2 buckets e o ÚLTIMO costuma vir vazio ({}). Pega o último
+  // bucket NÃO-vazio (o dia com dados de fato).
+  let picked: Record<string, number> = {};
+  for (const v of values) {
+    if (v?.value && Object.keys(v.value).length > 0) picked = v.value;
+  }
+  const out = new Map<string, number>();
+  for (const [hour, v] of Object.entries(picked)) out.set(hour, Number(v) || 0);
+  return out;
+}
+
+interface AudienceRow {
+  provider: "instagram";
+  account_id: string;
+  brand: string;
+  breakdown: string;
+  segment: string;
+  value: number;
+  captured_on: string;
+}
+
+/**
+ * Snapshot de audiência (demografia + melhor horário) de uma conta →
+ * social_audience. Cada breakdown é isolado: um que falhe (ex.: <100 seguidores)
+ * não impede os outros. `day` = data do snapshot (upsert idempotente no dia).
+ */
+async function syncAudience(
+  admin: SupabaseClient,
+  brand: string,
+  igId: string,
+  day: string,
+  errors: string[],
+): Promise<void> {
+  const rows: AudienceRow[] = [];
+  const push = (breakdown: string, map: Map<string, number>) => {
+    for (const [segment, value] of map)
+      rows.push({ provider: "instagram", account_id: igId, brand, breakdown, segment, value, captured_on: day });
+  };
+
+  for (const b of ["age", "gender", "city", "country"]) {
+    try {
+      push(b, await fetchDemographics(igId, b));
+    } catch (e) {
+      errors.push(`${brand} demografia ${b}: ${msg(e)}`);
+    }
+  }
+  try {
+    push("hour", await fetchOnlineFollowers(igId));
+  } catch (e) {
+    errors.push(`${brand} online_followers: ${msg(e)}`);
+  }
+
+  if (rows.length === 0) return;
+  const { error } = await admin
+    .from("social_audience")
+    .upsert(rows, { onConflict: "provider,account_id,breakdown,segment,captured_on" });
+  if (error) errors.push(`${brand} upsert audiência: ${error.message}`);
+}
+
+// ----------------------------- stories (Fase 3) ---------------------------- //
+
+/**
+ * Stories ATIVOS (a Graph só retorna os não expirados, ≤24h) + insights →
+ * social_media_insights (media_product_type='STORY', métricas especiais no jsonb
+ * `metrics`). Como stories somem em 24h, cada sync captura o estado atual; o
+ * cron de 6/6h pega cada story algumas vezes na vida dele (o último snapshot
+ * antes de expirar é o mais completo).
+ */
+async function syncStories(
+  admin: SupabaseClient,
+  brand: string,
+  igId: string,
+  errors: string[],
+): Promise<number> {
+  let list: { data?: unknown[] };
+  try {
+    list = await igGet(`${igId}/stories`, {
+      fields: "id,media_type,media_product_type,permalink,timestamp",
+      limit: "50",
+    });
+  } catch (e) {
+    errors.push(`${brand} stories list: ${msg(e)}`);
+    return 0;
+  }
+
+  const rows = [];
+  for (const raw of (list.data as Record<string, unknown>[]) ?? []) {
+    const s = raw as {
+      id: string;
+      media_type?: string;
+      permalink?: string;
+      timestamp?: string;
+    };
+    const ins: Record<string, number> = {};
+    // Tenta o conjunto rico; se algum nome não existir na versão, cai no mínimo.
+    for (const metric of ["reach,replies,shares,total_interactions,navigation,views", "reach,replies"]) {
+      try {
+        const r = await igGet(`${s.id}/insights`, { metric });
+        for (const item of (r.data as { name: string; values?: { value?: number }[] }[]) ?? [])
+          ins[item.name] = item.values?.[0]?.value ?? 0;
+        break;
+      } catch {
+        // tenta o próximo conjunto
+      }
+    }
+    rows.push({
+      provider: "instagram",
+      media_id: s.id,
+      account_id: igId,
+      brand,
+      media_type: s.media_type ?? null,
+      media_product_type: "STORY",
+      permalink: s.permalink ?? null,
+      caption: null,
+      reach: ins.reach ?? null,
+      views: ins.views ?? null,
+      likes: null,
+      comments: null,
+      saved: null,
+      shares: ins.shares ?? null,
+      metrics: ins,
+      posted_at: s.timestamp ?? null,
+    });
+  }
+
+  if (rows.length) {
+    const { error } = await admin
+      .from("social_media_insights")
+      .upsert(rows, { onConflict: "provider,media_id" });
+    if (error) {
+      errors.push(`${brand} upsert stories: ${error.message}`);
       return 0;
     }
   }

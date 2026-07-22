@@ -40,11 +40,19 @@ import {
   SidebarLink,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { IconArchive } from "@tabler/icons-react";
+import { IconArchive, IconSpeakerphone } from "@tabler/icons-react";
 
 // `feature` casa com as chaves de FEATURES em lib/permissions — todos os itens
-// são filtrados por `can()`. Quem não tem nada marcado cai em /sem-acesso.
-const links = [
+// são filtrados por `can()`. `anyOf` (opcional) libera o item se QUALQUER uma das
+// features bater (ex.: Marketing aparece p/ quem tem `marketing` OU `ga4`).
+// Quem não tem nada marcado cai em /sem-acesso.
+const links: {
+  label: string;
+  href: string;
+  feature: string;
+  anyOf?: string[];
+  icon: React.ReactNode;
+}[] = [
   {
     label: "Dashboard",
     href: "/dashboard",
@@ -62,6 +70,13 @@ const links = [
     href: "/agentes",
     feature: "agentes",
     icon: <BotIcon className="h-5 w-5 shrink-0 text-sidebar-foreground" />,
+  },
+  {
+    label: "Marketing",
+    href: "/marketing",
+    feature: "marketing",
+    anyOf: ["marketing", "ga4"],
+    icon: <IconSpeakerphone className="h-5 w-5 shrink-0 text-sidebar-foreground" />,
   },
   {
     label: "Financeiro",
@@ -110,7 +125,9 @@ export function DashboardShell({
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const navLinks = [
-    ...links.filter((l) => can(access, l.feature)),
+    ...links.filter((l) =>
+      l.anyOf ? l.anyOf.some((f) => can(access, f)) : can(access, l.feature),
+    ),
     ...(access.isSuperadmin ? superadminLinks : []),
   ];
 

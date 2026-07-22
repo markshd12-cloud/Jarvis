@@ -90,6 +90,22 @@ export const META_INSIGHT_FIELDS = [
  */
 export const META_ACTION_FIELDS = ["actions", "action_values"] as const;
 
+/**
+ * Campos por CAMPANHA / ANÚNCIO — leitura AO VIVO (não sincroniza p/ tabela; o
+ * volume por-nível é grande demais p/ diário). Ver `meta-detail.ts`. Summary do
+ * período (sem `time_increment`) + `sort=spend_descending` no request = leve.
+ */
+export const META_DETAIL_FIELDS = {
+  campaign: ["campaign_id", "campaign_name", "spend", "impressions", "clicks", "ctr", "actions", "action_values"],
+  // Rankings de qualidade só existem no nível ANÚNCIO e só com volume suficiente
+  // (>500 impressões em 7d); senão vêm "unknown". Ver Fase 3 em meta-detail.ts.
+  ad: [
+    "ad_id", "ad_name", "campaign_name", "spend", "impressions", "clicks", "ctr",
+    "actions", "action_values",
+    "quality_ranking", "engagement_rate_ranking", "conversion_rate_ranking",
+  ],
+} as const;
+
 /** action_type → conversão de interesse. `purchase` também alimenta o valor. */
 export const META_ACTIONS = {
   lead: "lead",
@@ -97,5 +113,12 @@ export const META_ACTIONS = {
   purchase: "purchase",
 } as const;
 
-/** Provedores válidos (chave de marketing_connections). GA4 entra depois. */
+/** Provedores válidos (chave de marketing_connections). */
 export type MarketingProvider = "meta_ads" | "ga4";
+
+/**
+ * Propriedade GA4 (Google Analytics 4) do site. Hardcoded como os ad accounts do
+ * Meta — a leitura reusa a service account do Vertex (GOOGLE_SERVICE_ACCOUNT_JSON),
+ * que tem acesso de Leitor na propriedade. Ver `lib/marketing/ga4.ts`.
+ */
+export const GA4_PROPERTY_ID = "545839732";

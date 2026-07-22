@@ -1,11 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { IconRefresh, IconAlertTriangle, IconDeviceTv } from "@tabler/icons-react";
+import {
+  IconRefresh,
+  IconAlertTriangle,
+  IconDeviceTv,
+  IconBellDollar,
+  IconChevronLeft,
+  IconChevronRight,
+} from "@tabler/icons-react";
 
 import { PainelTv } from "@/components/financeiro/painel-tv";
 import { Button } from "@/components/ui/button";
-import type { PainelResumo } from "@/lib/financeiro/painel";
+import type { BuMes, BuSerie, OrcamentoEstouro, PainelResumo } from "@/lib/financeiro/painel";
 
 /**
  * Dashboard TV (Passo 12): visão executiva do ano — KPIs, alertas, e gráficos
@@ -82,6 +89,272 @@ function BarList({ dados, cor }: { dados: { nome: string; valor: number }[]; cor
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+const RECEITA_COR = "#10b981"; // verde — caminho da receita
+const DESPESA_COR = "var(--destructive)"; // vermelho — caminho da despesa
+
+/**
+ * Linha ANUAL receita × despesa de UMA BU, com escala COMPARTILHADA (os dois
+ * caminhos no mesmo eixo R$ → dá pra ler qual está acima). SVG puro, sem lib.
+ */
+function BuLineChart({ meses }: { meses: BuMes[] }) {
+  const W = 640;
+  const H = 190;
+  const PAD = 14;
+  const [hover, setHover] = useState<number | null>(null);
+  const n = meses.length;
+  const max = Math.max(1, ...meses.flatMap((m) => [m.receita, m.despesa]));
+  const temDados = meses.some((m) => m.receita > 0 || m.despesa > 0);
+  const x = (i: number) => (n <= 1 ? W / 2 : PAD + (i / (n - 1)) * (W - 2 * PAD));
+  const y = (v: number) => H - PAD - (v / max) * (H - 2 * PAD);
+  const path = (key: "receita" | "despesa") =>
+    meses.map((m, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(m[key]).toFixed(1)}`).join(" ");
+
+  if (!temDados)
+    return (
+      <div className="flex h-44 items-center justify-center px-4 text-center text-xs text-muted-foreground">
+        Sem receita nem despesa lançada nesta unidade no ano.
+      </div>
+    );
+
+  const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (!rect.width || n <= 1) return;
+    const frac = (e.clientX - rect.left) / rect.width;
+    setHover(Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1)))));
+  };
+
+  return (
+    <div className="relative" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Receita e despesa por mês">
+        <defs>
+          <linearGradient id="bu-rec-area" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stopColor={RECEITA_COR} stopOpacity="0.22" />
+            <stop offset="1" stopColor={RECEITA_COR} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {[0.25, 0.5, 0.75].map((f) => (
+          <line key={f} x1="0" y1={H * f} x2={W} y2={H * f} stroke="var(--border)" strokeWidth="1" />
+        ))}
+        <path d={`${path("receita")} L${x(n - 1)},${H} L${x(0)},${H} Z`} fill="url(#bu-rec-area)" />
+        <path d={path("despesa")} fill="none" stroke={DESPESA_COR} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" strokeDasharray="5 3" />
+        <path d={path("receita")} fill="none" stroke={RECEITA_COR} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        {hover != null ? (
+          <g pointerEvents="none">
+            <line x1={x(hover)} y1={PAD} x2={x(hover)} y2={H} stroke="var(--muted-foreground)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
+            {(["receita", "despesa"] as const).map((key) => (
+              <circle key={key} cx={x(hover)} cy={y(meses[hover][key])} r="4" fill={key === "receita" ? RECEITA_COR : DESPESA_COR} stroke="var(--card)" strokeWidth="1.5" />
+            ))}
+          </g>
+        ) : (
+          (["receita", "despesa"] as const).map((key) => (
+            <circle key={key} cx={x(n - 1)} cy={y(meses[n - 1][key])} r="3.5" fill={key === "receita" ? RECEITA_COR : DESPESA_COR} />
+          ))
+        )}
+      </svg>
+      {hover != null ? (
+        <div
+          className="pointer-events-none absolute -top-1 z-10 -translate-x-1/2 rounded-md border border-border bg-popover px-2 py-1 text-[11px] shadow-md"
+          style={{ left: `${(x(hover) / W) * 100}%` }}
+        >
+          <p className="mb-0.5 font-medium">{mesLabel(meses[hover].mes)}</p>
+          <p className="tabular-nums" style={{ color: RECEITA_COR }}>{brl.format(meses[hover].receita)}</p>
+          <p className="tabular-nums text-destructive">{brl.format(meses[hover].despesa)}</p>
+        </div>
+      ) : null}
+      <div className="mt-1 flex justify-between px-1 text-[10px] text-muted-foreground">
+        {meses.map((m) => (
+          <span key={m.mes}>{mesLabel(m.mes).charAt(0).toUpperCase()}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Despesa FIXA (veio de recorrência) × VARIÁVEL de uma BU — duas barras + %. */
+function FixaVariavelChart({ serie }: { serie: BuSerie }) {
+  const total = serie.fixa + serie.variavel;
+  if (total <= 0)
+    return (
+      <div className="flex h-full min-h-32 flex-col items-center justify-center gap-1 px-4 text-center text-xs text-muted-foreground">
+        <p>Sem despesa classificada nesta unidade.</p>
+        <p className="text-[11px]">
+          Uma despesa vira <strong>fixa</strong> quando nasce de uma recorrência (Passo 8). Hoje
+          tudo é importado do Conta Azul → ainda sem fixas.
+        </p>
+      </div>
+    );
+  const pct = (v: number) => Math.round((v / total) * 100);
+  const linhas = [
+    { nome: "Fixa (recorrente)", valor: serie.fixa, cor: "bg-indigo-500" },
+    { nome: "Variável", valor: serie.variavel, cor: "bg-sky-400" },
+  ];
+  return (
+    <div className="flex flex-col gap-2.5 py-1">
+      {linhas.map((l) => (
+        <div key={l.nome} className="flex flex-col gap-1">
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">{l.nome}</span>
+            <span className="tabular-nums">
+              {brl.format(l.valor)} <span className="text-muted-foreground">· {pct(l.valor)}%</span>
+            </span>
+          </div>
+          <div className="h-3 overflow-hidden rounded-full bg-muted">
+            <div className={`h-full rounded-full ${l.cor}`} style={{ width: `${pct(l.valor)}%` }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Bloco que MESCLA as BUs: um seletor com rotação automática (CPPEM → Colégio →
+ * Unicive → …) alimentando a linha anual e o fixa×variável ao mesmo tempo. Clicar
+ * numa pill (ou nas setas) fixa a BU e pausa a rotação.
+ */
+function MesclaBu({ porBu }: { porBu: BuSerie[] }) {
+  const [idx, setIdx] = useState(0);
+  const [pausado, setPausado] = useState(false);
+  const total = porBu.length;
+
+  useEffect(() => {
+    if (total <= 1 || pausado) return;
+    const id = setInterval(() => setIdx((i) => (i + 1) % total), 7000);
+    return () => clearInterval(id);
+  }, [total, pausado]);
+
+  if (total === 0)
+    return (
+      <div className="rounded-lg border border-dashed border-border p-4 text-center text-xs text-muted-foreground">
+        Sem séries por unidade ainda — a receita por BU já entra; a despesa por BU acende no Passo 11
+        (mapear centro/BU na importação).
+      </div>
+    );
+
+  const cur = idx % total;
+  const serie = porBu[cur];
+  const go = (d: number) => {
+    setPausado(true);
+    setIdx((i) => (i + d + total) % total);
+  };
+
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <p className="text-sm font-medium">Por unidade (BU) · ano</p>
+        <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full" style={{ background: RECEITA_COR }} /> Receita
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="inline-block h-2 w-2 rounded-full bg-destructive" /> Despesa
+          </span>
+        </span>
+        <div className="ml-auto flex items-center gap-1">
+          {total > 1 && (
+            <button
+              type="button"
+              onClick={() => go(-1)}
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+              aria-label="Unidade anterior"
+            >
+              <IconChevronLeft className="h-4 w-4" />
+            </button>
+          )}
+          {porBu.map((s, i) => (
+            <button
+              key={s.buId ?? s.bu}
+              type="button"
+              onClick={() => {
+                setPausado(true);
+                setIdx(i);
+              }}
+              className={`rounded-full px-2.5 py-0.5 text-xs transition-colors ${
+                i === cur ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {s.bu}
+            </button>
+          ))}
+          {total > 1 && (
+            <button
+              type="button"
+              onClick={() => go(1)}
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted"
+              aria-label="Próxima unidade"
+            >
+              <IconChevronRight className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1.7fr_1fr]">
+        <div>
+          <p className="mb-1 text-xs font-medium text-muted-foreground">
+            {serie.bu} — receita × despesa mês a mês
+          </p>
+          <BuLineChart meses={serie.meses} />
+        </div>
+        <div className="flex flex-col">
+          <p className="mb-1 text-xs font-medium text-muted-foreground">
+            {serie.bu} — despesa fixa × variável
+          </p>
+          <FixaVariavelChart serie={serie} />
+        </div>
+      </div>
+      {!pausado && total > 1 && (
+        <p className="mt-2 text-right text-[10px] text-muted-foreground">
+          Alternando entre unidades · clique numa unidade para fixar
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Card de estouro de orçamento como LISTA (qual categoria/BU passou do orçado). */
+function OrcamentoAlertas({
+  alertas,
+  definidos,
+}: {
+  alertas: OrcamentoEstouro[];
+  definidos: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-border p-3">
+      <p className="mb-2 flex items-center gap-1.5 text-sm font-medium">
+        <IconBellDollar className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+        Orçamentos estourados <span className="text-xs font-normal text-muted-foreground">· mês atual</span>
+      </p>
+      {!definidos ? (
+        <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
+          Nenhum orçamento cadastrado. Defina limites por categoria/BU na aba{" "}
+          <strong>Orçamento</strong> para receber avisos quando o previsto passar do orçado.
+        </p>
+      ) : alertas.length === 0 ? (
+        <p className="px-1 py-3 text-center text-xs text-muted-foreground">
+          Nenhuma categoria estourou o orçamento este mês. 👍
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border">
+          {alertas.map((a) => (
+            <li key={`${a.categoria}|${a.bu}`} className="flex items-center gap-2 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{a.categoria}</p>
+                <p className="text-xs text-muted-foreground">
+                  {a.bu} · orçado {brlCompact.format(a.orcado)} · previsto {brlCompact.format(a.previsto)}
+                </p>
+              </div>
+              <span className="shrink-0 rounded-md bg-destructive/10 px-2 py-1 text-xs font-semibold tabular-nums text-destructive">
+                +{brlCompact.format(a.excedente)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -215,6 +488,9 @@ export function PainelPanel() {
             </div>
           )}
 
+          {/* Estouro de orçamento (lista) */}
+          <OrcamentoAlertas alertas={data.alertasOrcamento} definidos={data.orcamentosDefinidos} />
+
           {!data.connected && (
             <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
               Conta Azul indisponível — alguns números podem estar zerados.
@@ -257,6 +533,9 @@ export function PainelPanel() {
               )}
             </div>
           </div>
+
+          {/* Mescla BUs: linha anual receita×despesa + fixa×variável (rotação automática) */}
+          <MesclaBu porBu={data.porBu} />
 
           {/* Receita por BU + Despesa por centro */}
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
