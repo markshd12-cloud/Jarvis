@@ -146,7 +146,7 @@ export function DreTable({
       {!temOrcamento ? (
         <div className="border-b border-border bg-muted/20 px-4 py-1.5 text-[11px] text-muted-foreground">
           Sem metas nesta competência — cadastre em <strong>Orçamento &amp; Limite</strong> para
-          ver as colunas <strong>Orçado</strong> e <strong>Desvio</strong> aqui.
+          ver as colunas <strong>Meta</strong> e <strong>Desvio</strong> aqui.
         </div>
       ) : null}
       <div
@@ -156,7 +156,7 @@ export function DreTable({
         )}
       >
         <span>Categoria</span>
-        {temOrcamento ? <span className="text-right">Orçado</span> : null}
+        {temOrcamento ? <span className="text-right">Meta</span> : null}
         <span className="text-right">{temOrcamento ? "Realizado" : "Valor"}</span>
         {temOrcamento ? <span className="text-right">Desvio</span> : null}
         <span className="text-right">AV %</span>

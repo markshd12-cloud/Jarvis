@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { invalidateDre } from "@/lib/contaazul/dre";
 import { finContext } from "@/lib/financeiro/context";
 import {
   getOrcamentoComparativo,
@@ -30,6 +31,9 @@ export async function POST(req: NextRequest) {
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   try {
     const orcamento = await saveOrcamento(gate.companyId, await req.json());
+    // A meta alimenta a coluna "Meta" do DRE Orçamentário — invalida o cache do
+    // DRE pra a mudança aparecer na hora (sem esperar o TTL de 10 min).
+    invalidateDre(gate.companyId);
     return NextResponse.json({ orcamento }, { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });

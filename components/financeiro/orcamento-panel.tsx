@@ -16,8 +16,8 @@ import type {
 
 /**
  * Aba Orçamento & Limite (Passo 9). Meta por categoria × BU × competência, com o
- * comparativo Orçado × Previsto × Realizado × Limite (previsto/realizado vêm das
- * nossas parcelas). "Sugerir" pré-preenche o Orçado com a MÉDIA mensal do custo
+ * comparativo Meta (=orçado) × Lançado (=previsto) × Realizado × Limite (lançado/
+ * realizado vêm das parcelas). "Sugerir" pré-preenche a Meta com a MÉDIA mensal do custo
  * dos últimos N meses — a previsão pro próximo mês. Flags de estouro são live
  * (recalculados enquanto edita). Salvar faz upsert idempotente por linha.
  */
@@ -171,7 +171,7 @@ export function OrcamentoPanel() {
         return next;
       });
       const base = (j.competenciasBase ?? []).join(", ");
-      setAviso(`Orçado preenchido com a média mensal de ${j.meses} meses (${base}). Revise e salve.`);
+      setAviso(`Meta preenchida com a média mensal de ${j.meses} meses (${base}). Revise e salve.`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -244,7 +244,8 @@ export function OrcamentoPanel() {
         <div>
           <h2 className="text-sm font-semibold">Orçamento &amp; Limite</h2>
           <p className="text-xs text-muted-foreground">
-            Meta por categoria × BU. Previsto e Realizado vêm das parcelas; a sugestão prevê pela média histórica.
+            <strong>Meta</strong> (você planeja) · <strong>Lançado</strong> (já registrado) ·{" "}
+            <strong>Realizado</strong> (pago/recebido) — por categoria × BU. A Meta também alimenta o DRE.
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -295,10 +296,18 @@ export function OrcamentoPanel() {
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-3 py-2 font-medium">Categoria</th>
                 <th className="px-3 py-2 font-medium">BU</th>
-                <th className="px-3 py-2 text-right font-medium">Orçado</th>
-                <th className="px-3 py-2 text-right font-medium">Previsto</th>
-                <th className="px-3 py-2 text-right font-medium">Realizado</th>
-                <th className="px-3 py-2 text-right font-medium">Limite</th>
+                <th className="px-3 py-2 text-right font-medium" title="Quanto você PLANEJA gastar/faturar no mês (a meta que você define).">
+                  Meta
+                </th>
+                <th className="px-3 py-2 text-right font-medium" title="O que já foi LANÇADO no sistema neste mês — contas registradas, pagas ou não.">
+                  Lançado
+                </th>
+                <th className="px-3 py-2 text-right font-medium" title="O que de fato foi PAGO/RECEBIDO (saiu ou entrou no caixa).">
+                  Realizado
+                </th>
+                <th className="px-3 py-2 text-right font-medium" title="Teto opcional — se o Realizado passar disto, é estouro.">
+                  Limite
+                </th>
                 <th className="px-3 py-2" />
               </tr>
             </thead>

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { invalidateDre } from "@/lib/contaazul/dre";
 import { finContext } from "@/lib/financeiro/context";
 import { deleteOrcamento } from "@/lib/financeiro/orcamentos";
 
@@ -16,6 +17,7 @@ export async function DELETE(
   const { id } = await params;
   try {
     await deleteOrcamento(gate.companyId, id);
+    invalidateDre(gate.companyId); // some do DRE Orçamentário na hora
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 409 });
