@@ -61,6 +61,7 @@ export function CentroCustoPanel() {
           connected: false,
           ano,
           linhas: [],
+          porMes: [],
           totais: { previsto: 0, realizado: 0 },
           atualizadoEm: new Date().toISOString(),
           erro: "Não foi possível carregar.",

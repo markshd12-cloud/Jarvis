@@ -12,13 +12,14 @@
  */
 import "server-only";
 
-import { createSign } from "node:crypto";
-
+import { cachedSwr } from "@/lib/cache/kv";
+import { getGoogleAccessToken } from "@/lib/google/auth";
 import { GA4_PROPERTY_ID } from "@/lib/marketing/config";
 
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const SCOPE = "https://www.googleapis.com/auth/analytics.readonly";
-const API = `https://analyticsdata.googleapis.com/v1beta/properties/${GA4_PROPERTY_ID}:runReport`;
+const API_BASE = `https://analyticsdata.googleapis.com/v1beta/properties/${GA4_PROPERTY_ID}`;
+const API = `${API_BASE}:runReport`;
+const API_REALTIME = `${API_BASE}:runRealtimeReport`;
 
 // ------------------------------- tipos ------------------------------------- //
 
@@ -42,6 +43,50 @@ export interface Ga4Site {
   sessions: number;
   users: number;
 }
+/** Atribuição fina: origem/mídia da sessão (ex.: "google / cpc"). */
+export interface Ga4SourceRow {
+  sourceMedium: string;
+  sessions: number;
+  users: number;
+  /** true p/ "(not set)"/"(data not available)" — tráfego SEM atribuição (UTM faltando). */
+  semAtribuicao: boolean;
+}
+export interface Ga4CampaignRow {
+  campaign: string;
+  sessions: number;
+}
+/** Página de ENTRADA (host + landingPage) — onde a sessão começou. */
+export interface Ga4Landing {
+  path: string;
+  sessions: number;
+}
+/** Segmento genérico (dispositivo, cidade, novo/recorrente). */
+export interface Ga4Segment {
+  label: string;
+  sessions: number;
+}
+/** Sessões por hora do dia (0-23), no fuso da propriedade. */
+export interface Ga4Hour {
+  hour: number;
+  sessions: number;
+}
+/** Qualidade do tráfego. */
+export interface Ga4Behavior {
+  bounceRate: number; // 0-100
+  engagedSessions: number;
+  pagesPerSession: number;
+  sessionsPerUser: number;
+}
+/** Tempo real: quem está no site AGORA (Fase 3). */
+export interface Ga4RealtimePage {
+  page: string;
+  users: number;
+}
+export interface Ga4Realtime {
+  activeUsers: number;
+  byPage: Ga4RealtimePage[];
+  atualizadoEm: string;
+}
 export interface Ga4Overview {
   hasData: boolean;
   totals: {
@@ -57,6 +102,20 @@ export interface Ga4Overview {
   bySite: Ga4Site[];
   series: Ga4Point[];
   topPages: Ga4Page[];
+  // ---- Fase 1: atribuição + páginas de entrada ----
+  bySourceMedium: Ga4SourceRow[];
+  byCampaign: Ga4CampaignRow[];
+  landingPages: Ga4Landing[];
+  /** Sessões sem atribuição; alto = UTMs faltando (ver docs/ga4-tracking-setup.md). */
+  semAtribuicaoSessions: number;
+  /** Total de sessões do relatório de origem (base p/ o % sem atribuição). */
+  atribuicaoTotalSessions: number;
+  // ---- Fase 2: dispositivo, geo, comportamento ----
+  byDevice: Ga4Segment[];
+  byNewReturning: Ga4Segment[];
+  byCity: Ga4Segment[];
+  byHour: Ga4Hour[];
+  behavior: Ga4Behavior;
   atualizadoEm: string;
 }
 
@@ -67,47 +126,45 @@ const empty = (): Ga4Overview => ({
   bySite: [],
   series: [],
   topPages: [],
+  bySourceMedium: [],
+  byCampaign: [],
+  landingPages: [],
+  semAtribuicaoSessions: 0,
+  atribuicaoTotalSessions: 0,
+  byDevice: [],
+  byNewReturning: [],
+  byCity: [],
+  byHour: [],
+  behavior: { bounceRate: 0, engagedSessions: 0, pagesPerSession: 0, sessionsPerUser: 0 },
   atualizadoEm: new Date().toISOString(),
 });
+
+/** Rótulos pt-BR das dimensões do GA4. */
+const DEVICE_LABEL: Record<string, string> = {
+  mobile: "Celular",
+  desktop: "Computador",
+  tablet: "Tablet",
+};
+const NVR_LABEL: Record<string, string> = {
+  new: "Novos",
+  returning: "Recorrentes",
+};
+const NAO_IDENTIFICADO = "(não identificado)";
+const rotulo = (map: Record<string, string>, v: string) =>
+  map[v] ?? (isSemAtribuicao(v) ? NAO_IDENTIFICADO : v);
 
 function n(v: unknown): number {
   const x = Number(v);
   return Number.isFinite(x) ? x : 0;
 }
-const b64url = (s: string) => Buffer.from(s).toString("base64url");
+
+/** Valores que o GA4 usa quando NÃO conseguiu atribuir a origem (UTM faltando). */
+const SEM_ATRIBUICAO = new Set(["(not set)", "(data not available)", "(none)", ""]);
+const isSemAtribuicao = (s: string) => SEM_ATRIBUICAO.has(s.trim());
 
 // ------------------------------- auth -------------------------------------- //
 
-let tokenCache: { token: string; exp: number } | null = null;
-
-async function getAccessToken(): Promise<string> {
-  if (tokenCache && Date.now() < tokenCache.exp - 60_000) return tokenCache.token;
-
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON ausente");
-  const sa = JSON.parse(raw) as { client_email: string; private_key: string };
-
-  const now = Math.floor(Date.now() / 1000);
-  const signingInput =
-    `${b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }))}.` +
-    b64url(JSON.stringify({ iss: sa.client_email, scope: SCOPE, aud: TOKEN_URL, iat: now, exp: now + 3600 }));
-  const signature = createSign("RSA-SHA256").update(signingInput).sign(sa.private_key).toString("base64url");
-  const assertion = `${signingInput}.${signature}`;
-
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`GA4 auth HTTP ${res.status}`);
-  const json = (await res.json()) as { access_token: string; expires_in: number };
-  tokenCache = { token: json.access_token, exp: Date.now() + json.expires_in * 1000 };
-  return json.access_token;
-}
+const getAccessToken = () => getGoogleAccessToken(SCOPE);
 
 // ------------------------------ Data API ----------------------------------- //
 
@@ -118,22 +175,47 @@ interface RunReportResp {
   }[];
 }
 
-async function runReport(body: unknown): Promise<RunReportResp> {
+async function post(url: string, body: unknown): Promise<RunReportResp> {
   const token = await getAccessToken();
-  const res = await fetch(API, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`GA4 runReport HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  if (!res.ok) throw new Error(`GA4 HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return (await res.json()) as RunReportResp;
+}
+
+const runReport = (body: unknown) => post(API, body);
+/** Realtime tem um conjunto de dimensões PRÓPRIO (ex.: `hostName` é inválido lá). */
+const runRealtime = (body: unknown) => post(API_REALTIME, body);
+
+/**
+ * Agrega linhas por chave somando as métricas. O GA4 pode devolver a MESMA chave
+ * em linhas separadas — sem isso vira duplicata (e key duplicada no React).
+ */
+function aggregate(
+  rows: RunReportResp["rows"],
+  keyOf: (dims: string[]) => string,
+  metricCount = 1,
+): Map<string, number[]> {
+  const out = new Map<string, number[]>();
+  for (const r of rows ?? []) {
+    const dims = (r.dimensionValues ?? []).map((d) => d.value);
+    const k = keyOf(dims);
+    const cur = out.get(k) ?? new Array<number>(metricCount).fill(0);
+    for (let i = 0; i < metricCount; i++) cur[i] += n(r.metricValues?.[i]?.value);
+    out.set(k, cur);
+  }
+  return out;
 }
 
 const RANGE_28D = [{ startDate: "27daysAgo", endDate: "today" }];
 
 async function computeGa4(): Promise<Ga4Overview> {
-  const [tot, chan, site, serie, pages] = await Promise.all([
+  const [tot, chan, site, serie, pages, srcMed, camp, landing, devNvr, cidade, hora, comport] =
+    await Promise.all([
     runReport({
       dateRanges: RANGE_28D,
       metrics: [
@@ -171,6 +253,61 @@ async function computeGa4(): Promise<Ga4Overview> {
       metrics: [{ name: "screenPageViews" }],
       orderBys: [{ metric: { metricName: "screenPageViews" }, desc: true }],
       limit: 8,
+    }),
+    // Fase 1 — atribuição fina: de onde veio a sessão (origem/mídia).
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "sessionSourceMedium" }],
+      metrics: [{ name: "sessions" }, { name: "totalUsers" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 12,
+    }),
+    // Fase 1 — campanhas (UTM). "(not set)" alto = UTM faltando.
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "sessionCampaignName" }],
+      metrics: [{ name: "sessions" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 8,
+    }),
+    // Fase 1 — páginas de ENTRADA (com host, p/ desambiguar multi-site).
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "hostName" }, { name: "landingPage" }],
+      metrics: [{ name: "sessions" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 8,
+    }),
+    // Fase 2 — dispositivo × novo/recorrente: 1 request, DOIS eixos (agregamos
+    // cada dimensão separadamente depois). Economiza uma chamada.
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "deviceCategory" }, { name: "newVsReturning" }],
+      metrics: [{ name: "sessions" }],
+      limit: 20,
+    }),
+    // Fase 2 — geo (cidade).
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "city" }],
+      metrics: [{ name: "sessions" }],
+      orderBys: [{ metric: { metricName: "sessions" }, desc: true }],
+      limit: 8,
+    }),
+    // Fase 2 — sessões por hora do dia (quando o site bomba).
+    runReport({
+      dateRanges: RANGE_28D,
+      dimensions: [{ name: "hour" }],
+      metrics: [{ name: "sessions" }],
+      limit: 24,
+    }),
+    // Fase 2 — qualidade do tráfego (limite de 10 métricas/request → relatório à parte).
+    runReport({
+      dateRanges: RANGE_28D,
+      metrics: [
+        { name: "bounceRate" }, { name: "engagedSessions" },
+        { name: "screenPageViewsPerSession" }, { name: "sessionsPerUser" },
+      ],
     }),
   ]);
 
@@ -225,6 +362,66 @@ async function computeGa4(): Promise<Ga4Overview> {
     .sort((a, b) => b.views - a.views)
     .slice(0, 8);
 
+  // ---- Fase 1: atribuição + páginas de entrada ----
+  const bySourceMedium: Ga4SourceRow[] = [...aggregate(srcMed.rows, (d) => d[0] ?? "—", 2)]
+    .map(([sourceMedium, [sessions, users]]) => ({
+      sourceMedium,
+      sessions,
+      users,
+      // "(direct) / (none)" é direto (legítimo), não falta de UTM: só marcamos
+      // como sem atribuição o que o GA4 não soube classificar.
+      semAtribuicao: sourceMedium.split("/").every((p) => isSemAtribuicao(p)),
+    }))
+    .sort((a, b) => b.sessions - a.sessions);
+
+  const byCampaign: Ga4CampaignRow[] = [...aggregate(camp.rows, (d) => d[0] ?? "—")]
+    .map(([campaign, [sessions]]) => ({ campaign, sessions }))
+    .sort((a, b) => b.sessions - a.sessions);
+
+  // Rótulo legível: host+path quando há path; buckets vazio/"(not set)" ficam
+  // explícitos (NÃO são fundidos com "/" — seriam números diferentes).
+  const landingKey = (d: string[]): string => {
+    const host = d[0] ?? "";
+    const lp = (d[1] ?? "").trim();
+    if (lp === "") return `${host} · (vazia)`;
+    if (lp === "(not set)") return `${host} · (não identificada)`;
+    return `${host}${lp}`;
+  };
+  const landingPages: Ga4Landing[] = [...aggregate(landing.rows, landingKey)]
+    .map(([path, [sessions]]) => ({ path, sessions }))
+    .sort((a, b) => b.sessions - a.sessions);
+
+  const atribuicaoTotalSessions = bySourceMedium.reduce((s, r) => s + r.sessions, 0);
+  const semAtribuicaoSessions = bySourceMedium
+    .filter((r) => r.semAtribuicao)
+    .reduce((s, r) => s + r.sessions, 0);
+
+  // ---- Fase 2: dispositivo, novo/recorrente, geo, hora, comportamento ----
+  const porSessoes = (m: Map<string, number[]>): Ga4Segment[] =>
+    [...m]
+      .map(([label, [sessions]]) => ({ label, sessions }))
+      .filter((s) => s.sessions > 0)
+      .sort((a, b) => b.sessions - a.sessions);
+
+  // O MESMO relatório alimenta os dois eixos (somando sobre a outra dimensão).
+  const byDevice = porSessoes(aggregate(devNvr.rows, (d) => rotulo(DEVICE_LABEL, d[0] ?? "")));
+  const byNewReturning = porSessoes(aggregate(devNvr.rows, (d) => rotulo(NVR_LABEL, d[1] ?? "")));
+  const byCity = porSessoes(
+    aggregate(cidade.rows, (d) => (isSemAtribuicao(d[0] ?? "") ? NAO_IDENTIFICADO : (d[0] ?? ""))),
+  );
+  const byHour: Ga4Hour[] = [...aggregate(hora.rows, (d) => d[0] ?? "")]
+    .map(([h, [sessions]]) => ({ hour: Number(h), sessions }))
+    .filter((h) => Number.isFinite(h.hour))
+    .sort((a, b) => a.hour - b.hour);
+
+  const b = comport.rows?.[0]?.metricValues ?? [];
+  const behavior: Ga4Behavior = {
+    bounceRate: n(b[0]?.value) * 100, // vem como razão (0-1)
+    engagedSessions: n(b[1]?.value),
+    pagesPerSession: n(b[2]?.value),
+    sessionsPerUser: n(b[3]?.value),
+  };
+
   return {
     hasData: totals.sessions > 0 || byChannel.length > 0,
     totals,
@@ -232,24 +429,73 @@ async function computeGa4(): Promise<Ga4Overview> {
     bySite,
     series,
     topPages,
+    bySourceMedium,
+    byCampaign,
+    landingPages,
+    semAtribuicaoSessions,
+    atribuicaoTotalSessions,
+    byDevice,
+    byNewReturning,
+    byCity,
+    byHour,
+    behavior,
     atualizadoEm: new Date().toISOString(),
   };
 }
 
 // ------------------------------- cache ------------------------------------- //
 
+// SWR de 2 camadas (memória + Supabase `cache_kv`): sobrevive a redeploy e é
+// compartilhado entre réplicas. São 8 runReports por load frio — com cache, isso
+// roda no máximo 1× a cada 10 min globalmente. Ver `lib/cache/kv.ts`.
 const TTL = 10 * 60_000;
-let cache: { at: number; data: Ga4Overview } | null = null;
 
-/** Visão do GA4 (28 dias). Cache 10 min; degrada gracioso em falha. */
+/** Visão do GA4 (28 dias). Cache SWR 10 min; degrada gracioso em falha. */
 export async function getGa4Overview(): Promise<Ga4Overview> {
-  if (cache && Date.now() - cache.at < TTL) return cache.data;
-  try {
-    const data = await computeGa4();
-    if (data.hasData) cache = { at: Date.now(), data };
-    return data;
-  } catch (error) {
-    console.error("[ga4] falha ao ler GA4:", (error as Error).message);
-    return empty();
-  }
+  const compute = async (): Promise<Ga4Overview> => {
+    try {
+      return await computeGa4();
+    } catch (error) {
+      console.error("[ga4] falha ao ler GA4:", (error as Error).message);
+      return empty();
+    }
+  };
+  return cachedSwr("ga4:overview:28d", TTL, compute, { cacheIf: (d) => d.hasData });
+}
+
+// --------------------------- Fase 3 — tempo real ---------------------------- //
+
+// TTL curto: "tempo real" com 10 min de cache não seria tempo real. 60s equilibra
+// frescor e volume de chamadas (a página é server-rendered a cada request).
+const TTL_REALTIME = 60_000;
+
+/**
+ * Usuários ativos AGORA + o que estão vendo. Zero usuários é resposta VÁLIDA (a
+ * API devolve 0 linhas quando não há ninguém) — não é erro. Cache SWR 60s.
+ */
+export async function getGa4Realtime(): Promise<Ga4Realtime> {
+  const compute = async (): Promise<Ga4Realtime> => {
+    try {
+      const [tot, porPagina] = await Promise.all([
+        runRealtime({ metrics: [{ name: "activeUsers" }] }),
+        runRealtime({
+          dimensions: [{ name: "unifiedScreenName" }],
+          metrics: [{ name: "activeUsers" }],
+          limit: 5,
+        }),
+      ]);
+      return {
+        activeUsers: n(tot.rows?.[0]?.metricValues?.[0]?.value),
+        byPage: [...aggregate(porPagina.rows, (d) => d[0] ?? "—")]
+          .map(([page, [users]]) => ({ page, users }))
+          .sort((a, b) => b.users - a.users),
+        atualizadoEm: new Date().toISOString(),
+      };
+    } catch (error) {
+      console.error("[ga4] falha no realtime:", (error as Error).message);
+      return { activeUsers: 0, byPage: [], atualizadoEm: new Date().toISOString() };
+    }
+  };
+  // Sem `cacheIf`: 0 usuários é um resultado legítimo e deve ser cacheado.
+  return cachedSwr("ga4:realtime", TTL_REALTIME, compute);
 }

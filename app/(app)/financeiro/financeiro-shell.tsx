@@ -136,6 +136,7 @@ export function FinanceiroShell() {
             rows: [],
             semMapeamento: 0,
             atualizadoAte: null,
+            temOrcamento: false,
             despesaFonte: "contaazul",
             cutover: null,
           });
@@ -216,6 +217,7 @@ export function FinanceiroShell() {
             connected={dre?.connected ?? true}
             atualizadoAte={dre?.atualizadoAte ?? null}
             despesaFonte={dre?.despesaFonte ?? "contaazul"}
+            temOrcamento={dre?.temOrcamento ?? false}
           />
         </section>
       ) : null}

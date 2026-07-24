@@ -47,12 +47,44 @@ function Valor({ value, bold }: { value: number; bold?: boolean }) {
   );
 }
 
+/**
+ * Desvio = Realizado − Orçado, já na convenção de sinal do DRE (receita +,
+ * despesa −). Por isso a leitura é a MESMA dos dois lados: **positivo = melhor
+ * que o planejado** (faturou mais OU gastou menos). Sem meta lançada → "—".
+ */
+function Desvio({ valor, orcado, bold }: { valor: number; orcado: number; bold?: boolean }) {
+  if (orcado === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const d = valor - orcado;
+  const pct = (d / Math.abs(orcado)) * 100;
+  const bom = d >= 0;
+  return (
+    <span
+      className={cn(
+        "tabular-nums",
+        bold && "font-semibold",
+        bom ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400",
+      )}
+      title={bom ? "Melhor que o planejado" : "Pior que o planejado"}
+    >
+      {d > 0 ? "+" : ""}
+      {brl.format(d)}
+      <span className="block text-[10px] font-normal opacity-80">
+        {pct > 0 ? "+" : ""}
+        {pct.toFixed(1).replace(".", ",")}%
+      </span>
+    </span>
+  );
+}
+
 export function DreTable({
   rows,
   loading,
   connected = true,
   atualizadoAte,
   despesaFonte = "contaazul",
+  temOrcamento = false,
 }: {
   rows: DreRow[];
   loading?: boolean;
@@ -60,6 +92,8 @@ export function DreTable({
   atualizadoAte?: string | null;
   /** Fonte da despesa nesta competência (Passo 11): 'jarvis' pós-cutover. */
   despesaFonte?: "contaazul" | "jarvis";
+  /** Há metas nesta competência? Só então as colunas Orçado/Desvio aparecem. */
+  temOrcamento?: boolean;
 }) {
   // Grupos expandidos (por código). 03 (Custos) começa aberto, como na referência.
   const [open, setOpen] = useState<Set<string>>(new Set(["03"]));
@@ -87,6 +121,11 @@ export function DreTable({
   }
 
   const carimbo = atualizadoAte ? fmtCarimbo(atualizadoAte) : null;
+  // Sem metas: mantém o layout de 3 colunas de sempre (uma coluna de zeros
+  // pareceria "orçamos R$ 0"). Com metas: abre Orçado e Desvio.
+  const cols = temOrcamento
+    ? "grid-cols-[1fr_8rem_8rem_8.5rem_4.5rem]"
+    : "grid-cols-[1fr_9rem_6rem]";
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
@@ -104,9 +143,22 @@ export function DreTable({
           <span className="ml-auto">Receita da Conta Azul{carimbo ? ` até ${carimbo}` : ""}</span>
         </div>
       ) : null}
-      <div className="grid grid-cols-[1fr_9rem_6rem] items-center gap-2 border-b border-border bg-muted/50 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+      {!temOrcamento ? (
+        <div className="border-b border-border bg-muted/20 px-4 py-1.5 text-[11px] text-muted-foreground">
+          Sem metas nesta competência — cadastre em <strong>Orçamento &amp; Limite</strong> para
+          ver as colunas <strong>Orçado</strong> e <strong>Desvio</strong> aqui.
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "grid items-center gap-2 border-b border-border bg-muted/50 px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-muted-foreground",
+          cols,
+        )}
+      >
         <span>Categoria</span>
-        <span className="text-right">Valor</span>
+        {temOrcamento ? <span className="text-right">Orçado</span> : null}
+        <span className="text-right">{temOrcamento ? "Realizado" : "Valor"}</span>
+        {temOrcamento ? <span className="text-right">Desvio</span> : null}
         <span className="text-right">AV %</span>
       </div>
 
@@ -116,14 +168,24 @@ export function DreTable({
             return (
               <div
                 key={`t-${idx}`}
-                className="grid grid-cols-[1fr_9rem_6rem] items-center gap-2 bg-muted/40 px-4 py-2.5"
+                className={cn("grid items-center gap-2 bg-muted/40 px-4 py-2.5", cols)}
               >
                 <span className="text-sm font-semibold text-foreground">
                   {row.label}
                 </span>
+                {temOrcamento ? (
+                  <span className="text-right text-sm text-muted-foreground tabular-nums">
+                    {row.orcado ? brl.format(row.orcado) : "—"}
+                  </span>
+                ) : null}
                 <span className="text-right">
                   <Valor value={row.valor} bold />
                 </span>
+                {temOrcamento ? (
+                  <span className="text-right text-sm">
+                    <Desvio valor={row.valor} orcado={row.orcado} bold />
+                  </span>
+                ) : null}
                 <span className="text-right text-sm font-semibold text-muted-foreground">
                   {fmtAv(row.av)}
                 </span>
@@ -139,7 +201,8 @@ export function DreTable({
                 type="button"
                 onClick={() => hasChildren && toggle(row.codigo)}
                 className={cn(
-                  "grid w-full grid-cols-[1fr_9rem_6rem] items-center gap-2 px-4 py-2.5 text-left",
+                  "grid w-full items-center gap-2 px-4 py-2.5 text-left",
+                  cols,
                   hasChildren && "hover:bg-muted/30",
                 )}
               >
@@ -157,9 +220,19 @@ export function DreTable({
                   <span className="text-xs text-muted-foreground">{row.codigo}</span>
                   <span>{row.label}</span>
                 </span>
+                {temOrcamento ? (
+                  <span className="text-right text-sm text-muted-foreground tabular-nums">
+                    {row.orcado ? brl.format(row.orcado) : "—"}
+                  </span>
+                ) : null}
                 <span className="text-right">
                   <Valor value={row.valor} />
                 </span>
+                {temOrcamento ? (
+                  <span className="text-right text-sm">
+                    <Desvio valor={row.valor} orcado={row.orcado} />
+                  </span>
+                ) : null}
                 <span className="text-right text-sm text-muted-foreground">
                   {fmtAv(row.av)}
                 </span>
@@ -170,7 +243,8 @@ export function DreTable({
                     <div
                       key={`${row.codigo}-${i}`}
                       className={cn(
-                        "grid grid-cols-[1fr_9rem_6rem] items-center gap-2 bg-background/40 px-4 py-2 pl-11",
+                        "grid items-center gap-2 bg-background/40 px-4 py-2 pl-11",
+                        cols,
                         leaf.sub && "bg-muted/20",
                       )}
                     >
@@ -182,9 +256,19 @@ export function DreTable({
                       >
                         {leaf.label}
                       </span>
+                      {temOrcamento ? (
+                        <span className="text-right text-xs text-muted-foreground tabular-nums">
+                          {leaf.orcado ? brl.format(leaf.orcado) : "—"}
+                        </span>
+                      ) : null}
                       <span className="text-right text-sm">
                         <Valor value={leaf.valor} bold={leaf.sub} />
                       </span>
+                      {temOrcamento ? (
+                        <span className="text-right text-xs">
+                          <Desvio valor={leaf.valor} orcado={leaf.orcado} bold={leaf.sub} />
+                        </span>
+                      ) : null}
                       <span className="text-right text-xs text-muted-foreground">
                         {fmtAv(leaf.av)}
                       </span>

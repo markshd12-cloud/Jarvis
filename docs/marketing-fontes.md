@@ -32,8 +32,9 @@ Legenda: ✅ já integrado · ➕ dá pra adicionar · ⚙️ depende de configu
 - **Realtime API** (`:runRealtimeReport`): usuários ativos agora.
 
 ### Ajustes de tracking ⚙️ (lado do cliente, via GTM)
-- **Conversões = 0 hoje** → marcar **eventos-chave (key events)** no GA4: clique WhatsApp, envio de
-  formulário, matrícula. Sem isso, "Conversões" e CPL por canal não valem.
+- **Conversões = 0 hoje (CONFIRMADO no probe 2026-07-21: `keyEvents`=0)** → só disparam `page_view`/
+  `session_start`/`first_visit`/`user_engagement`. Marcar **eventos-chave (key events)** no GA4: clique
+  WhatsApp, envio de formulário, matrícula. Sem isso, "Conversões" e CPL por canal não valem. **Ação do cliente.**
 - **"Unassigned" alto** = campanhas sem **UTM**. Padronizar UTMs melhora a atribuição por canal.
 - **Cross-domain measurement** (GTM/GA4): se `captura.cppem` → `cppem.com.br` é a MESMA jornada,
   configurar p/ não abrir sessão nova ao trocar de subdomínio. Se são sites independentes, o `hostName` já basta.

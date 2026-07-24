@@ -22,11 +22,13 @@ import {
   type MetaDailyRow,
   type MetaMetrics,
 } from "@/lib/marketing/metrics";
+import { getYoutubeOverview } from "@/lib/marketing/youtube";
 
 // Termos que indicam pergunta de mídia paga / desempenho de anúncios. "meta"
 // sozinho fica de fora (ambíguo com "meta/objetivo" em PT); exigimos "meta ads".
+// Inclui também os termos de YouTube (canal orgânico), cujo bloco vai junto.
 const MARKETING_RE =
-  /(invest|gast|tr[aá]fego|an[uú]nci|m[ií]dia\s+paga|meta\s*ads|campanha|impress|clique|\bctr\b|\bcpc\b|\bcpm\b|\bcpl\b|alcance|aproveitamento|\blead|convers|whats|\broas\b)/i;
+  /(invest|gast|tr[aá]fego|an[uú]nci|m[ií]dia\s+paga|meta\s*ads|campanha|impress|clique|\bctr\b|\bcpc\b|\bcpm\b|\bcpl\b|alcance|aproveitamento|\blead|convers|whats|\broas\b|youtube|\byt\b|inscrit|v[ií]deo|shorts|visualiza|\bcanal\b)/i;
 
 export function isMarketingQuery(text: string): boolean {
   return MARKETING_RE.test(text);
@@ -150,6 +152,46 @@ function dailyTable(rows: MetaDailyRow[]): string {
 }
 
 /**
+ * Bloco do YouTube (canal orgânico) para o system do chat. Compacto de
+ * propósito — o orçamento de tokens é compartilhado com o bloco do Meta.
+ * Retorna "" se ainda não houve sync.
+ */
+async function buildYoutubeSection(): Promise<string> {
+  const yt = await getYoutubeOverview({ topLimit: 5 }).catch(() => null);
+  if (!yt?.hasData) return "";
+
+  const canais = yt.channels
+    .map(
+      (c) =>
+        `- ${c.brand}: ${int.format(c.subscribers)} inscritos, ` +
+        `${int.format(c.views)} visualizações totais, ${int.format(c.videoCount)} vídeos`,
+    )
+    .join("\n");
+
+  const videos = yt.topVideos
+    .map(
+      (v) =>
+        `- "${v.title}" (${v.brand}, ${v.isShort ? "Shorts" : "vídeo"}, ` +
+        `${int.format(v.views)} views, ${int.format(v.likes)} likes, ${int.format(v.comments)} comentários)`,
+    )
+    .join("\n");
+
+  const formato = yt.byFormat
+    .map((f) => `${f.format}: ${int.format(Math.round(f.avgViews))} views/vídeo (${f.count} vídeos)`)
+    .join(" · ");
+
+  return (
+    `## YouTube — canal orgânico (fonte de verdade)\n` +
+    `Use para inscritos, visualizações, vídeos e Shorts. "Visualizações totais" é o ACUMULADO ` +
+    `do canal (vitalício), não do período.\n` +
+    `Total: ${int.format(yt.totalSubscribers)} inscritos, ${int.format(yt.totalViews)} visualizações.\n` +
+    `${canais}\n` +
+    (formato ? `\nDesempenho por formato (entre os vídeos recentes): ${formato}\n` : "") +
+    (videos ? `\nVídeos recentes mais vistos:\n${videos}` : "")
+  );
+}
+
+/**
  * Monta o bloco de Meta Ads para o system do chat. Retorna "" se não houver
  * dados. `question` guia a detecção de período histórico.
  */
@@ -180,7 +222,10 @@ export async function buildMarketingBlock(question: string): Promise<string> {
     }
   }
 
-  if (!daily.length && !month.hasData && !historic) return "";
+  // YouTube (orgânico) — bloco compacto e independente do Meta.
+  const youtubeSection = await buildYoutubeSection();
+
+  if (!daily.length && !month.hasData && !historic && !youtubeSection) return "";
 
   const header =
     `## Meta Ads — mídia paga (fonte de verdade; valores em BRL, fuso de São Paulo; hoje = ${ddmm(until)})\n` +
@@ -197,5 +242,10 @@ export async function buildMarketingBlock(question: string): Promise<string> {
     ? "\n\n" + periodBlock(`### Mês corrente (${ddmm(startOfMonth())} a ${ddmm(until)})`, month)
     : "";
 
-  return header + dailySection + monthSection + historic;
+  // Só monta o cabeçalho do Meta se houver dado de Meta — senão o bloco do
+  // YouTube sairia sob um título "Meta Ads" enganoso.
+  const temMeta = daily.length > 0 || month.hasData || !!historic;
+  const metaPart = temMeta ? header + dailySection + monthSection + historic : "";
+
+  return [metaPart, youtubeSection].filter(Boolean).join("\n\n");
 }

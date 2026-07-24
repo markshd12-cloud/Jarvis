@@ -24,10 +24,21 @@ export interface CentroCustoLinha {
   realizado: number;
 }
 
+/** Mesma linha, fatiada por mês de vencimento ('AAAA-MM'). Alimenta séries. */
+export interface CentroCustoMes {
+  mes: string;
+  centroId: string | null;
+  centro: string;
+  previsto: number;
+  realizado: number;
+}
+
 export interface CentrosCustoResumo {
   connected: boolean;
   ano: number;
   linhas: CentroCustoLinha[];
+  /** Quebra mensal (mesma fonte das `linhas`) — usada pelo CAC. */
+  porMes: CentroCustoMes[];
   totais: { previsto: number; realizado: number };
   atualizadoEm: string;
   erro?: string;
@@ -46,6 +57,7 @@ function num(v: unknown): number {
 interface ApiItem {
   total?: unknown;
   pago?: unknown;
+  data_vencimento?: string | null;
   centros_de_custo?: { id?: string; nome?: string }[] | null;
 }
 interface ApiResp {
@@ -84,15 +96,30 @@ async function computeCentrosCusto(
     }
 
     const map = new Map<string, CentroCustoLinha>();
+    // ⚠️ `centros_de_custo[0]`: o CA permite RATEAR uma despesa entre vários
+    // centros; aqui o valor inteiro vai para o primeiro. Aceitável enquanto o
+    // rateio não for usado — se passar a ser, tratar a lista completa.
+    const mesMap = new Map<string, CentroCustoMes>();
     for (const it of itens) {
       const cc = it.centros_de_custo?.[0] ?? null;
       const centroId = cc?.id ?? null;
       const centro = (cc?.nome ?? "").trim() || "Sem centro";
       const key = centroId ?? "__sem__";
       const linha = map.get(key) ?? { centroId, centro, previsto: 0, realizado: 0 };
-      linha.previsto += num(it.total);
-      linha.realizado += num(it.pago);
+      const previsto = num(it.total);
+      const realizado = num(it.pago);
+      linha.previsto += previsto;
+      linha.realizado += realizado;
       map.set(key, linha);
+
+      const mes = (it.data_vencimento ?? "").slice(0, 7);
+      if (mes) {
+        const mk = `${mes}|${key}`;
+        const lm = mesMap.get(mk) ?? { mes, centroId, centro, previsto: 0, realizado: 0 };
+        lm.previsto += previsto;
+        lm.realizado += realizado;
+        mesMap.set(mk, lm);
+      }
     }
 
     const linhas = [...map.values()].sort(
@@ -103,7 +130,8 @@ async function computeCentrosCusto(
       { previsto: 0, realizado: 0 },
     );
 
-    return { connected: true, ano, linhas, totais, atualizadoEm };
+    const porMes = [...mesMap.values()].sort((a, b) => a.mes.localeCompare(b.mes));
+    return { connected: true, ano, linhas, porMes, totais, atualizadoEm };
   } catch (error) {
     const erro =
       error instanceof ContaAzulError
@@ -113,6 +141,7 @@ async function computeCentrosCusto(
       connected: false,
       ano,
       linhas: [],
+      porMes: [],
       totais: { previsto: 0, realizado: 0 },
       atualizadoEm,
       erro,

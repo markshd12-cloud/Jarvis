@@ -10,7 +10,12 @@ import {
   getInstagramStories,
 } from "@/lib/marketing/social";
 import { getInstagramFunnel } from "@/lib/marketing/instagram-funnel";
-import { getGa4Overview } from "@/lib/marketing/ga4";
+import { getYoutubeOverview } from "@/lib/marketing/youtube";
+import { YoutubeMetrics } from "@/components/youtube-metrics";
+import { getCac } from "@/lib/marketing/cac";
+import { CacMetrics } from "@/components/cac-metrics";
+import { getCompanyId } from "@/lib/db/company";
+import { getGa4Overview, getGa4Realtime } from "@/lib/marketing/ga4";
 import { getMetaDetail, getMetaBreakdowns } from "@/lib/marketing/meta-detail";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
@@ -39,6 +44,9 @@ export default async function MarketingPage({
   const ctx = await getSessionContext();
   const canMarketing = can(ctx, "marketing");
   const canGa4 = can(ctx, "ga4");
+  // CAC expõe custo (inclusive do Comercial) → exige as DUAS permissões.
+  // `can()` já libera superadmin automaticamente.
+  const canCac = canMarketing && can(ctx, "financeiro");
   if (!canMarketing && !canGa4) redirect(landingHref(ctx) ?? "/sem-acesso");
 
   const sp = await searchParams;
@@ -53,6 +61,9 @@ export default async function MarketingPage({
     igAudience,
     igStories,
     ga4,
+    ga4Realtime,
+    youtube,
+    cac,
   ] = await Promise.all([
     canMarketing
       ? getMarketingDashboard({
@@ -69,6 +80,11 @@ export default async function MarketingPage({
     canMarketing ? getInstagramAudience({ brand }) : Promise.resolve(null),
     canMarketing ? getInstagramStories({ brand }) : Promise.resolve(null),
     canGa4 ? getGa4Overview() : Promise.resolve(null),
+    canGa4 ? getGa4Realtime() : Promise.resolve(null),
+    canMarketing ? getYoutubeOverview({ brand }) : Promise.resolve(null),
+    canCac
+      ? getCompanyId().then((companyId) => (companyId ? getCac(companyId) : null))
+      : Promise.resolve(null),
   ]);
   const allBrands = MARKETING_AD_ACCOUNTS.map((a) => a.label);
 
@@ -103,7 +119,9 @@ export default async function MarketingPage({
           />
         ) : null
       }
-      ga4={ga4 ? <Ga4Metrics data={ga4} /> : null}
+      ga4={ga4 ? <Ga4Metrics data={ga4} realtime={ga4Realtime} /> : null}
+      youtube={youtube ? <YoutubeMetrics data={youtube} /> : null}
+      cac={cac ? <CacMetrics data={cac} /> : null}
     />
   );
 }

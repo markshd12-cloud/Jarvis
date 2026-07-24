@@ -7,6 +7,7 @@ import {
   IconBrandMeta,
   IconBrandTiktok,
   IconBrandYoutube,
+  IconCoin,
   IconLayoutDashboard,
   IconWorld,
 } from "@tabler/icons-react";
@@ -20,7 +21,15 @@ import { FloatingDock } from "@/components/ui/floating-dock";
  * TikTok, Comparativo) entram como "(em breve)". Um slot `null` = sem permissão
  * (o servidor não montou) → a aba não aparece.
  */
-type TabKey = "meta" | "instagram" | "ga4" | "painel" | "youtube" | "tiktok" | "comparativo";
+type TabKey =
+  | "meta"
+  | "instagram"
+  | "ga4"
+  | "youtube"
+  | "cac"
+  | "painel"
+  | "tiktok"
+  | "comparativo";
 
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 
@@ -39,19 +48,30 @@ export function MarketingShell({
   meta,
   instagram,
   ga4,
+  youtube,
+  cac,
 }: {
   meta: React.ReactNode | null;
   instagram: React.ReactNode | null;
   ga4: React.ReactNode | null;
+  youtube: React.ReactNode | null;
+  cac: React.ReactNode | null;
 }) {
-  const has = { meta: !!meta, instagram: !!instagram, ga4: !!ga4 };
+  const has = {
+    meta: !!meta,
+    instagram: !!instagram,
+    ga4: !!ga4,
+    youtube: !!youtube,
+    cac: !!cac,
+  };
 
   const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode }[] = [
     { key: "meta", label: "Meta Ads", ready: has.meta, icon: <IconBrandMeta className={iconCls} /> },
     { key: "instagram", label: "Instagram", ready: has.instagram, icon: <IconBrandInstagram className={iconCls} /> },
     { key: "ga4", label: "GA4 / Site", ready: has.ga4, icon: <IconWorld className={iconCls} /> },
     { key: "painel", label: "Painel", ready: false, icon: <IconLayoutDashboard className={iconCls} /> },
-    { key: "youtube", label: "YouTube", ready: false, icon: <IconBrandYoutube className={iconCls} /> },
+    { key: "youtube", label: "YouTube", ready: has.youtube, icon: <IconBrandYoutube className={iconCls} /> },
+    { key: "cac", label: "CAC", ready: has.cac, icon: <IconCoin className={iconCls} /> },
     { key: "tiktok", label: "TikTok", ready: false, icon: <IconBrandTiktok className={iconCls} /> },
     { key: "comparativo", label: "Comparativo", ready: false, icon: <IconArrowsLeftRight className={iconCls} /> },
   ];
@@ -88,7 +108,8 @@ export function MarketingShell({
           {active === "instagram" ? (has.instagram ? instagram : <EmBreve nome="Instagram — sem permissão" />) : null}
           {active === "ga4" ? (has.ga4 ? ga4 : <EmBreve nome="GA4 — sem permissão" />) : null}
           {active === "painel" ? <EmBreve nome="Painel consolidado" /> : null}
-          {active === "youtube" ? <EmBreve nome="YouTube" /> : null}
+          {active === "youtube" ? (has.youtube ? youtube : <EmBreve nome="YouTube" />) : null}
+          {active === "cac" ? (has.cac ? cac : <EmBreve nome="CAC — requer Marketing + Financeiro" />) : null}
           {active === "tiktok" ? <EmBreve nome="TikTok" /> : null}
           {active === "comparativo" ? <EmBreve nome="Comparativo entre canais" /> : null}
         </div>

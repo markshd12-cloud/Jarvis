@@ -43,7 +43,11 @@ export default function RootLayout({
           }}
         />
       </head>
-      <body className="min-h-full flex flex-col">
+      {/* suppressHydrationWarning: extensões de navegador (ColorZilla, Grammarly…)
+          injetam atributos no <body> antes do React hidratar (ex.: `cz-shortcut-listen`),
+          o que gera um falso alarme de hidratação. Suprime só os atributos DESTE
+          elemento — não esconde divergências reais dentro da árvore. */}
+      <body className="min-h-full flex flex-col" suppressHydrationWarning>
         <ScrollbarAutoHide />
         {children}
       </body>

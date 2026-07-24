@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSessionContext } from "@/lib/db/permissions";
 import { syncInstagram } from "@/lib/marketing/instagram";
 import { syncMeta } from "@/lib/marketing/meta";
+import { syncYoutube } from "@/lib/marketing/youtube";
 import { can } from "@/lib/permissions";
 
 export const runtime = "nodejs";
@@ -44,7 +45,13 @@ export async function POST(req: NextRequest) {
           console.error("[marketing] sync Instagram falhou", error);
           return { accounts: 0, dailyRows: 0, media: 0, errors: [String(error)] };
         });
-    return NextResponse.json({ meta, instagram });
+    // YouTube (Nível A) roda isolado: usa a service account do Google, então uma
+    // falha aqui não tem relação com o token da Meta — não invalida o resto.
+    const youtube = await syncYoutube().catch((error) => {
+      console.error("[marketing] sync YouTube falhou", error);
+      return { channels: 0, videos: 0, errors: [String(error)] };
+    });
+    return NextResponse.json({ meta, instagram, youtube });
   } catch (error) {
     console.error("[marketing] sync Meta falhou", error);
     return new Response("Falha ao sincronizar", { status: 500 });

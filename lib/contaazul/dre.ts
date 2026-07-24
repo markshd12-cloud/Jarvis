@@ -58,6 +58,11 @@ export type DreChild = {
   label: string;
   valor: number;
   av: number;
+  /**
+   * Meta do mês (`fin_orcamentos`), já COM SINAL do DRE (receita +, despesa −).
+   * 0 quando não há orçamento lançado para a categoria.
+   */
+  orcado: number;
   /** Cabeçalho de subgrupo (03.1/03.2) — renderiza um pouco mais forte. */
   sub?: boolean;
 };
@@ -68,9 +73,10 @@ export type DreRow =
       label: string;
       valor: number;
       av: number;
+      orcado: number;
       children: DreChild[];
     }
-  | { kind: "subtotal"; label: string; valor: number; av: number };
+  | { kind: "subtotal"; label: string; valor: number; av: number; orcado: number };
 export interface DreResult {
   connected: boolean;
   competencia: string;
@@ -84,6 +90,11 @@ export interface DreResult {
    * então isto alimenta o selo "dados da CA até …" no DRE. `null` sem dados.
    */
   atualizadoAte: string | null;
+  /**
+   * false = nenhuma meta lançada para esta competência → a UI mostra estado-guia
+   * em vez de uma coluna de zeros (que pareceria "orçamos R$ 0").
+   */
+  temOrcamento: boolean;
   /** Fonte da DESPESA nesta competência: 'jarvis' (≥ cutover) ou 'contaazul'. */
   despesaFonte: "contaazul" | "jarvis";
   /** Competência de cutover configurada (AAAA-MM), ou null se tudo vem do CA. */
@@ -205,6 +216,44 @@ export async function despesaJarvisPorCategoria(
 }
 
 /**
+ * ORÇADO por categoria financeira do CA na competência (DRE Orçamentário).
+ *
+ * Cadeia: `fin_orcamentos.categoria_id` → `fin_categorias.ca_categoria_id`, que é
+ * a MESMA chave que o DRE usa nas folhas. Metas de BUs diferentes para a mesma
+ * categoria são SOMADAS (o DRE não é quebrado por BU).
+ *
+ * Sinal: `valor_orcado` é sempre positivo no cadastro; aqui aplicamos a convenção
+ * do DRE (receita +, despesa −) via `fin_categorias.tipo`. Assim o orçado fica
+ * comparável com o realizado linha a linha — e o desvio (realizado − orçado) tem
+ * a MESMA leitura nos dois lados: **positivo = melhor que o planejado**.
+ */
+export async function orcadoPorCategoriaCa(
+  companyId: string,
+  competencia: string,
+): Promise<Map<string, number>> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_orcamentos")
+    .select("valor_orcado, fin_categorias!inner ( ca_categoria_id, tipo )")
+    .eq("company_id", companyId)
+    .eq("competencia", competencia);
+  if (error) throw new Error(`orcadoPorCategoriaCa: ${error.message}`);
+
+  const mapa = new Map<string, number>();
+  for (const r of data ?? []) {
+    const cat = r.fin_categorias as unknown as {
+      ca_categoria_id?: string | null;
+      tipo?: string | null;
+    } | null;
+    const caId = cat?.ca_categoria_id ?? null;
+    if (!caId) continue; // categoria própria (sem par no CA) não casa com o DRE
+    const sinal = cat?.tipo === "despesa" ? -1 : 1;
+    mapa.set(caId, (mapa.get(caId) ?? 0) + sinal * num(r.valor_orcado));
+  }
+  return mapa;
+}
+
+/**
  * Despesa do CA agrupada por COMPETÊNCIA (AAAA-MM), numa faixa de vencimento —
  * UMA leitura paginada só (barato) p/ conferir vários meses de uma vez. Soma
  * crua (o consumidor compara com o Jarvis). Usada pela reconciliação de período.
@@ -242,6 +291,7 @@ async function computeDre(
     rows: [],
     semMapeamento: 0,
     atualizadoAte: null,
+    temOrcamento: false,
     despesaFonte: "contaazul",
     cutover: null,
   };
@@ -261,13 +311,16 @@ async function computeDre(
     // tudo do CA (fallback = comportamento de hoje).
     const cutover = await getCutoverCompetencia(companyId);
     const usaJarvis = cutover != null && competencia >= cutover;
-    const [struct, receber, despesa] = await Promise.all([
+    const [struct, receber, despesa, orcadoPorCat] = await Promise.all([
       caGet<DreStructResp>(companyId, CONTA_AZUL_RESOURCES.categoriasDre.path!),
       fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, de, ate),
       usaJarvis
         ? despesaJarvisPorCategoria(companyId, competencia)
         : despesaCaPorCategoria(companyId, competencia),
+      // Metas do mês. Falha aqui não derruba o DRE — só zera a coluna Orçado.
+      orcadoPorCategoriaCa(companyId, competencia).catch(() => new Map<string, number>()),
     ]);
+    const temOrcamento = orcadoPorCat.size > 0;
 
     // Valor (com sinal) por categoria financeira, só na competência pedida.
     // Receita: +total (recebíveis recentes vêm sem `data_competencia` → caímos p/
@@ -298,40 +351,51 @@ async function computeDre(
     const usados = new Set<string>();
     const folha = (c: DreCategoriaFin): DreChild => {
       usados.add(c.id);
-      return { label: c.nome, valor: valorPorCat.get(c.id) ?? 0, av: 0 };
+      return {
+        label: c.nome,
+        valor: valorPorCat.get(c.id) ?? 0,
+        av: 0,
+        orcado: orcadoPorCat.get(c.id) ?? 0,
+      };
     };
 
     // Passe 1: valor de cada grupo (com filhos), preservando a ordem da API.
     type Calc =
       | { tot: DreItemApi }
-      | { item: DreItemApi; valor: number; children: DreChild[] };
+      | { item: DreItemApi; valor: number; orcado: number; children: DreChild[] };
     const calc: Calc[] = struct.itens.map((item) => {
       if (item.indica_totalizador) return { tot: item };
       const children: DreChild[] = [];
       let valor = 0;
+      let orcado = 0;
       for (const c of item.categorias_financeiras) {
         const ch = folha(c);
         valor += ch.valor;
+        orcado += ch.orcado;
         children.push(ch);
       }
       for (const sub of item.subitens) {
         let subVal = 0;
+        let subOrc = 0;
         const subLeaves: DreChild[] = [];
         for (const c of sub.categorias_financeiras) {
           const ch = folha(c);
           subVal += ch.valor;
+          subOrc += ch.orcado;
           subLeaves.push(ch);
         }
         valor += subVal;
+        orcado += subOrc;
         children.push({
           label: `${sub.codigo ?? ""} ${sub.descricao}`.trim(),
           valor: subVal,
           av: 0,
+          orcado: subOrc,
           sub: true,
         });
         children.push(...subLeaves);
       }
-      return { item, valor, children };
+      return { item, valor, orcado, children };
     });
 
     const g01 = calc.find(
@@ -343,6 +407,7 @@ async function computeDre(
     // Passe 2: linhas com AV e totalizadores (soma corrente).
     const rows: DreRow[] = [];
     let acc = 0;
+    let accOrc = 0;
     for (const c of calc) {
       if ("tot" in c) {
         rows.push({
@@ -350,15 +415,18 @@ async function computeDre(
           label: c.tot.descricao,
           valor: acc,
           av: av(acc, receitaBruta),
+          orcado: accOrc,
         });
       } else {
         acc += c.valor;
+        accOrc += c.orcado;
         rows.push({
           kind: "group",
           codigo: c.item.codigo ?? "",
           label: c.item.descricao,
           valor: c.valor,
           av: av(c.valor, receitaBruta),
+          orcado: c.orcado,
           children: c.children.map((ch) => ({
             ...ch,
             av: av(ch.valor, receitaBruta),
@@ -377,6 +445,7 @@ async function computeDre(
       rows,
       semMapeamento,
       atualizadoAte,
+      temOrcamento,
       despesaFonte: usaJarvis ? "jarvis" : "contaazul",
       cutover,
       aviso:

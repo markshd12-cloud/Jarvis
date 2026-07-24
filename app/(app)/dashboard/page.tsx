@@ -7,6 +7,8 @@ import { getCompanyId } from "@/lib/db/company";
 import { getMarketingDashboard } from "@/lib/marketing/dashboard";
 import { getInstagramOverview } from "@/lib/marketing/social";
 import { getGa4Overview } from "@/lib/marketing/ga4";
+import { getYoutubeOverview } from "@/lib/marketing/youtube";
+import { YoutubeMetrics } from "@/components/youtube-metrics";
 import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
@@ -39,7 +41,7 @@ export default async function DashboardPage({
 
   const sp = await searchParams;
   const brand = one(sp.brand);
-  const [marketing, instagram, ga4, contaAzul] = await Promise.all([
+  const [marketing, instagram, youtube, ga4, contaAzul] = await Promise.all([
     canMarketing
       ? getMarketingDashboard({
           range: one(sp.range),
@@ -49,6 +51,7 @@ export default async function DashboardPage({
         })
       : Promise.resolve(null),
     canMarketing ? getInstagramOverview({ brand }) : Promise.resolve(null),
+    canMarketing ? getYoutubeOverview({ brand }) : Promise.resolve(null),
     canGa4 ? getGa4Overview() : Promise.resolve(null),
     canFinanceiro
       ? getCompanyId().then((companyId) =>
@@ -96,6 +99,13 @@ export default async function DashboardPage({
             <>
               <hr className="border-border" />
               <InstagramMetrics data={instagram} />
+            </>
+          ) : null}
+
+          {youtube?.hasData ? (
+            <>
+              <hr className="border-border" />
+              <YoutubeMetrics data={youtube} />
             </>
           ) : null}
 

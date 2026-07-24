@@ -41,6 +41,8 @@ export interface MarketingBrand {
   instagram: string[];
   /** Facebook Page — uso futuro. */
   facebookPage: string | null;
+  /** Canal do YouTube (UC...). null = marca sem canal. */
+  youtube: string | null;
 }
 
 export const MARKETING_BRANDS = {
@@ -49,24 +51,28 @@ export const MARKETING_BRANDS = {
     adAccountId: "act_872192120930966",
     instagram: ["17841424910850559"],
     facebookPage: "124001460793885",
+    youtube: "UCJbURlqS7QRt7RQF-QZnbFg", // @cppemconcursos
   },
   unicive: {
     label: "Unicive",
     adAccountId: "act_345492055179709",
     instagram: ["17841449797943607"],
     facebookPage: "308583202333132",
+    youtube: null,
   },
   colegio: {
     label: "Colégio",
     adAccountId: "act_587296211099482",
     instagram: ["17841408638987215"],
     facebookPage: "306424352558530",
+    youtube: "UCvbns9FR81Q5paw1DFzs7Jw", // @colegiocppem
   },
   everton: {
     label: "Everton",
     adAccountId: "act_687701173447585",
     instagram: ["17841404986383024", "17841465120978766"],
     facebookPage: null,
+    youtube: null,
   },
 } satisfies Record<string, MarketingBrand>;
 
