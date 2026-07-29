@@ -12,14 +12,55 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { CentrosCustoResumo } from "@/lib/financeiro/centros-custo";
+import { avaliarIdeal, matchCentroIdeal } from "@/lib/financeiro/centros-ideal";
 
 /**
  * Aba "% por Centro de Custo" (Passo 14): distribuição da despesa por centro de
  * custo no ano, previsto × realizado e % do total, com barra de distribuição.
  * Fonte = Conta Azul ao vivo (cache 5 min; "Atualizar" fura o cache). Gated por
  * `financeiro` no server.
+ *
+ * Benchmark: compara o % real com a FAIXA IDEAL por centro (arquivo "Categorias
+ * de Despesas e Receitas.md" — empresa MLG). Ver `lib/financeiro/centros-ideal`.
  */
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const fmtPp = (n: number) => `${n.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} pp`;
+
+const brlC = new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+/**
+ * Célula "vs. ideal": faixa % ideal + selo (dentro/abaixo/acima) com o desvio em
+ * pontos percentuais, e a META ANUAL em R$ no tooltip. "—" quando o centro não
+ * tem meta. O julgamento é sempre por % (participação, vale p/ qualquer período);
+ * o R$ anual é referência informativa (ver ressalva em docs/financeiro-centros-ideal).
+ */
+function VsIdeal({ centro, pct }: { centro: string; pct: number }) {
+  const ideal = matchCentroIdeal(centro);
+  if (!ideal) return <span className="text-xs text-muted-foreground">—</span>;
+  const { situacao, deltaPp } = avaliarIdeal(pct, ideal);
+  const cls =
+    situacao === "dentro"
+      ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
+      : situacao === "acima"
+        ? "bg-destructive/12 text-destructive"
+        : "bg-amber-500/12 text-amber-600 dark:text-amber-400";
+  const label =
+    situacao === "dentro" ? "Dentro" : situacao === "acima" ? `Acima +${fmtPp(deltaPp)}` : `Abaixo −${fmtPp(deltaPp)}`;
+  const tip = `${ideal.pergunta}\n\nMeta anual: ${brlC.format(ideal.anualMin)}–${brlC.format(ideal.anualMax)}`;
+  return (
+    <div className="flex flex-col items-end gap-1" title={tip}>
+      <span className="text-xs text-muted-foreground tabular-nums">
+        ideal {ideal.minPct}–{ideal.maxPct}%
+      </span>
+      <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${cls}`}>{label}</span>
+    </div>
+  );
+}
 
 type Base = "realizado" | "previsto";
 
@@ -90,7 +131,8 @@ export function CentroCustoPanel() {
         <div>
           <h2 className="text-sm font-semibold">% por Centro de Custo</h2>
           <p className="text-xs text-muted-foreground">
-            Distribuição da despesa (contas a pagar do Conta Azul) por centro no ano
+            Distribuição da despesa (contas a pagar do Conta Azul) por centro no ano, comparada à{" "}
+            <strong>faixa ideal</strong> da empresa (MLG)
             {data ? ` · atualizado ${fmtCarimbo(data.atualizadoEm)}` : ""}
           </p>
         </div>
@@ -157,6 +199,7 @@ export function CentroCustoPanel() {
               <th className="px-3 py-2 text-right font-medium">
                 % ({base === "realizado" ? "realizado" : "previsto"})
               </th>
+              <th className="px-3 py-2 text-right font-medium">vs. ideal</th>
               <th className="px-3 py-2 font-medium">Distribuição</th>
             </tr>
           </thead>
@@ -171,6 +214,9 @@ export function CentroCustoPanel() {
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{brl.format(l.realizado)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{pct.toFixed(1)}%</td>
+                  <td className="px-3 py-2 text-right">
+                    <VsIdeal centro={l.centro} pct={pct} />
+                  </td>
                   <td className="px-3 py-2">
                     <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
                       <div
@@ -184,7 +230,7 @@ export function CentroCustoPanel() {
             })}
             {linhas.length === 0 && !loading && (
               <tr>
-                <td colSpan={5} className="px-3 py-6 text-center text-muted-foreground">
+                <td colSpan={6} className="px-3 py-6 text-center text-muted-foreground">
                   {data?.connected ? "Nenhuma despesa no período." : "Sem dados."}
                 </td>
               </tr>
@@ -201,6 +247,7 @@ export function CentroCustoPanel() {
                   {brl.format(data?.totais.realizado ?? 0)}
                 </td>
                 <td className="px-3 py-2 text-right tabular-nums">100%</td>
+                <td className="px-3 py-2" />
                 <td className="px-3 py-2" />
               </tr>
             </tfoot>
