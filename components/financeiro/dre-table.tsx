@@ -140,7 +140,11 @@ export function DreTable({
           >
             Despesa: {despesaFonte === "jarvis" ? "Jarvis (nossas parcelas)" : "Conta Azul"}
           </span>
-          <span className="ml-auto">Receita da Conta Azul{carimbo ? ` até ${carimbo}` : ""}</span>
+          <span className="ml-auto">
+            {despesaFonte === "jarvis"
+              ? "Receita: espelho do Conta Azul (sincronize na aba Receita)"
+              : `Receita da Conta Azul${carimbo ? ` até ${carimbo}` : ""}`}
+          </span>
         </div>
       ) : null}
       {!temOrcamento ? (

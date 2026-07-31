@@ -595,6 +595,13 @@ async function computeDre(
           jarvisMode
             ? "Fonte 100% Jarvis: receita do espelho + despesa das parcelas (rateio). Total = Σ BUs + Sem BU."
             : "",
+          // Guarda contra a leitura errada mais provável pós-cutover: DRE com
+          // despesa e receita ZERO parece "prejuízo total", mas quase sempre é
+          // só espelho sem recebível daquela competência (o CA ainda não emitiu,
+          // ou ninguém sincronizou — não há sync automático).
+          jarvisMode && receitaBruta === 0 && Math.abs(acc) > 0.005
+            ? "⚠ Receita ZERADA nesta competência: o espelho não tem recebíveis dela. Se o Conta Azul já emitiu, vá em Receita → “Sincronizar do Conta Azul”. O resultado abaixo NÃO é prejuízo real enquanto a receita não entrar."
+            : "",
         ]
           .filter(Boolean)
           .join(" ") || undefined,
