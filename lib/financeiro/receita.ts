@@ -187,18 +187,38 @@ export interface ResumoReceita {
   sincronizadoEm: string | null;
 }
 
-/** Resumo do snapshot por competência (mês), com total e o quanto já foi recebido. */
+/**
+ * Resumo do snapshot por competência (mês), com total e o quanto já foi recebido.
+ *
+ * ⚠️ PAGINADO: o PostgREST devolve no máximo 1000 linhas por requisição. Sem
+ * paginar, um snapshot com milhares de recebíveis era SILENCIOSAMENTE cortado no
+ * primeiro lote — e o resumo mostrava só os meses mais antigos (o mês atual e os
+ * futuros sumiam da lista), com um total muito menor que o real.
+ */
 export async function resumoReceita(companyId: string): Promise<ResumoReceita> {
   const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("fin_receita_snapshot")
-    .select("valor, recebido, data_competencia, sincronizado_em")
-    .eq("company_id", companyId);
-  if (error) throw new Error(`resumoReceita: ${error.message}`);
+  const PAGE = 1000;
+  const linhas: {
+    valor: unknown;
+    recebido: unknown;
+    data_competencia: string | null;
+    sincronizado_em: string | null;
+  }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await admin
+      .from("fin_receita_snapshot")
+      .select("valor, recebido, data_competencia, sincronizado_em")
+      .eq("company_id", companyId)
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`resumoReceita: ${error.message}`);
+    const rows = (data ?? []) as unknown as typeof linhas;
+    linhas.push(...rows);
+    if (rows.length < PAGE) break;
+  }
 
   const porMes = new Map<string, ReceitaCompetencia>();
   let sincronizadoEm: string | null = null;
-  for (const r of data ?? []) {
+  for (const r of linhas) {
     const comp = (r.data_competencia as string | null)?.slice(0, 7);
     if (comp) {
       const cur = porMes.get(comp) ?? { competencia: comp, total: 0, recebido: 0 };

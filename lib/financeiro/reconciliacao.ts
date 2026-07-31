@@ -210,11 +210,16 @@ function ymdAddMonths(delta: number): string {
   const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + delta, 1));
   return d.toISOString().slice(0, 10);
 }
-/** Competências 'AAAA-MM' dos últimos `meses` meses (recente → antigo). */
+/**
+ * Competências 'AAAA-MM' da conferência: 2 meses À FRENTE + os `meses` anteriores
+ * (recente → antigo). O futuro entra porque o mês do cutover costuma ser o que
+ * está COMEÇANDO (em 31/07, cortar 08/2026) — sem ele, era impossível conferir o
+ * Δ do próprio mês que se quer virar.
+ */
 function ultimasCompetencias(meses: number): string[] {
   const now = new Date();
-  return Array.from({ length: meses }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+  return Array.from({ length: meses + 2 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() + 2 - i, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 }
@@ -260,9 +265,10 @@ export async function reconciliarPeriodo(
     const comps = ultimasCompetencias(meses);
     const deComp = `${comps[comps.length - 1]}-01`;
     const ateComp = `${comps[0]}-31`;
-    // Vencimento: superset das janelas [C-2, C+3] de todas as competências.
+    // Vencimento: superset das janelas [C-2, C+3] de todas as competências —
+    // a mais recente agora é +2 meses, então a folga pra frente vai a +6.
     const deVenc = ymdAddMonths(-(meses + 2));
-    const ateVenc = ymdAddMonths(4);
+    const ateVenc = ymdAddMonths(6);
 
     const [caMes, jarMes] = await Promise.all([
       despesaCaPorMes(companyId, deVenc, ateVenc),

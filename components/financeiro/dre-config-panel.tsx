@@ -31,11 +31,16 @@ function labelComp(ym: string): string {
   return `${m}/${y}`;
 }
 
-/** Últimas 18 competências (AAAA-MM), da mais recente pra trás. */
+/**
+ * Competências pro cutover: 3 meses À FRENTE … 17 atrás (recente → antigo).
+ * O futuro é obrigatório aqui: na virada de mês o cutover natural é o mês que
+ * ESTÁ COMEÇANDO (ex.: em 31/07, cortar a partir de 08/2026) — e a lista
+ * só-passado tornava esse corte impossível de selecionar.
+ */
 function ultimasCompetencias(): string[] {
   const now = new Date();
-  return Array.from({ length: 18 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+  return Array.from({ length: 21 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth() + 3 - i, 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
 }

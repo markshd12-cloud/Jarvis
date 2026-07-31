@@ -97,19 +97,27 @@ function labelCompetencia(ym: string): string {
   return `${MESES_ABREV[(m - 1) % 12]}/${y}`;
 }
 
-/** Últimos 12 meses (competências) a partir de hoje. */
+const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+/** Competência do mês corrente (o default do DRE). */
+function competenciaAtual(): string {
+  return ym(new Date());
+}
+/**
+ * Competências selecionáveis: 3 meses À FRENTE … 11 atrás (recente → antigo).
+ * Incluir o futuro é essencial na virada de mês: no dia 31/07 é preciso poder
+ * abrir 08/2026 (o mês que vai ser cortado pro Jarvis) — a lista só-passado
+ * escondia justamente o mês do cutover.
+ */
 function ultimasCompetencias(): string[] {
   const now = new Date();
-  return Array.from({ length: 12 }, (_, i) => {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-  });
+  return Array.from({ length: 15 }, (_, i) => ym(new Date(now.getFullYear(), now.getMonth() + 3 - i, 1)));
 }
 
 export function FinanceiroShell() {
   const [active, setActive] = useState<TabKey>("painel");
   const competencias = ultimasCompetencias();
-  const [competencia, setCompetencia] = useState(competencias[0]);
+  // Default = mês corrente (não o 1º da lista, que agora é 3 meses à frente).
+  const [competencia, setCompetencia] = useState(competenciaAtual);
   // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho).
   const [bus, setBus] = useState<{ id: string; nome: string }[]>([]);
   const [buId, setBuId] = useState("");
