@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getDre } from "@/lib/contaazul/dre";
 import { getCompanyId } from "@/lib/db/company";
+import { mesCorrente } from "@/lib/financeiro/competencia";
 import { getSessionContext } from "@/lib/db/permissions";
 import { can } from "@/lib/permissions";
 
@@ -25,9 +26,7 @@ export async function GET(req: NextRequest) {
     });
 
   const raw = req.nextUrl.searchParams.get("competencia") ?? "";
-  const competencia = /^\d{4}-\d{2}$/.test(raw)
-    ? raw
-    : new Date().toISOString().slice(0, 7);
+  const competencia = /^\d{4}-\d{2}$/.test(raw) ? raw : mesCorrente();
 
   // ?bu=<id> → DRE daquela BU; ?bu=sem → receita sem BU; vazio = Todas (consolidado).
   const buRaw = req.nextUrl.searchParams.get("bu") ?? "";

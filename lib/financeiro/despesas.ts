@@ -14,6 +14,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { hojeSP } from "./competencia";
 import {
   buPrincipal,
   inserirRateios,
@@ -48,7 +49,9 @@ export const despesaInputSchema = z.object({
 export type DespesaInput = z.infer<typeof despesaInputSchema>;
 
 const cents = (v: number) => Math.round(v * 100);
-const hojeISO = () => new Date().toISOString().slice(0, 10);
+// Hoje no fuso da operação (o servidor é UTC): decide vencida × a vencer e a
+// data padrão da baixa. Em UTC, das 21h à meia-noite já seria "amanhã" (BRT).
+const hojeISO = () => hojeSP();
 
 /**
  * Grava os rateios das parcelas recém-inseridas. Casa cada parcela (por `numero`)

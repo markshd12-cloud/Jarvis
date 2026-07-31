@@ -15,6 +15,7 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { mesCorrente } from "./competencia";
 import { expandirPorBu, listRateios } from "./rateio";
 
 const cents = (v: number) => Math.round(v * 100);
@@ -159,7 +160,7 @@ export async function getFluxoCaixa(
     const ym =
       opts.mes && /^\d{4}-\d{2}$/.test(opts.mes)
         ? opts.mes
-        : new Date().toISOString().slice(0, 7);
+        : mesCorrente();
     de = `${ym}-01`;
     ate = lastDayOfMonth(ym);
   } else {

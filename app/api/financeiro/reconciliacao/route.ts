@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { mesCorrente } from "@/lib/financeiro/competencia";
 import { finContext } from "@/lib/financeiro/context";
 import { reconciliarDespesa } from "@/lib/financeiro/reconciliacao";
 
@@ -13,7 +14,7 @@ export async function GET(req: NextRequest) {
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
 
   const raw = req.nextUrl.searchParams.get("competencia") ?? "";
-  const competencia = /^\d{4}-\d{2}$/.test(raw) ? raw : new Date().toISOString().slice(0, 7);
+  const competencia = /^\d{4}-\d{2}$/.test(raw) ? raw : mesCorrente();
 
   return NextResponse.json(await reconciliarDespesa(gate.companyId, competencia));
 }

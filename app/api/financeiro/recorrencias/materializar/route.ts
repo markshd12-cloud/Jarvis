@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { invalidateDre } from "@/lib/contaazul/dre";
+import { mesCorrente } from "@/lib/financeiro/competencia";
 import { finContext } from "@/lib/financeiro/context";
 import { materializar } from "@/lib/financeiro/recorrencias";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -24,10 +25,11 @@ export async function POST(req: NextRequest) {
   const isCron = !!process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET;
 
   const body = await req.json().catch(() => ({}));
+  // Mês corrente no fuso da operação (o servidor é UTC — ver lib/financeiro/competencia).
   const competencia =
     typeof body.competencia === "string" && /^\d{4}-\d{2}$/.test(body.competencia)
       ? body.competencia
-      : new Date().toISOString().slice(0, 7);
+      : mesCorrente();
 
   if (isCron) {
     const admin = createAdminClient();
