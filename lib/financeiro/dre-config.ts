@@ -19,6 +19,49 @@ export interface DreConfig {
   updated_at: string | null;
 }
 
+/** Árvore do DRE cacheada (Opção A) + carimbo do último sync bem-sucedido. */
+export interface DreEstruturaCache {
+  json: unknown | null;
+  syncAt: string | null;
+}
+
+/** Lê a estrutura do DRE guardada (ou {null,null} se nunca sincronizou). */
+export async function getDreEstruturaCache(
+  companyId: string,
+): Promise<DreEstruturaCache> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_dre_config")
+    .select("estrutura_json, estrutura_sync_at")
+    .eq("company_id", companyId)
+    .maybeSingle();
+  if (error) throw new Error(`getDreEstruturaCache: ${error.message}`);
+  return {
+    json: (data?.estrutura_json as unknown) ?? null,
+    syncAt: (data?.estrutura_sync_at as string | null) ?? null,
+  };
+}
+
+/**
+ * Regrava a árvore do DRE (upsert por empresa). Atualiza SÓ as colunas de
+ * estrutura — `cutover_competencia` fica intacto (upsert não toca coluna ausente).
+ */
+export async function saveDreEstruturaCache(
+  companyId: string,
+  json: unknown,
+): Promise<void> {
+  const admin = createAdminClient();
+  const { error } = await admin.from("fin_dre_config").upsert(
+    {
+      company_id: companyId,
+      estrutura_json: json as never,
+      estrutura_sync_at: new Date().toISOString(),
+    },
+    { onConflict: "company_id" },
+  );
+  if (error) throw new Error(`saveDreEstruturaCache: ${error.message}`);
+}
+
 export async function getDreConfig(companyId: string): Promise<DreConfig> {
   const admin = createAdminClient();
   const { data, error } = await admin

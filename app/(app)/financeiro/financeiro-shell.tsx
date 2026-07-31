@@ -106,24 +106,45 @@ function ultimasCompetencias(): string[] {
   });
 }
 
-// BU fixa em "Geral" nesta fase — as unidades (CPPEM/Colégio/Unicive) vêm depois.
-const BUS = ["Geral", "Colégio", "CPPEM", "Unicive"];
-
 export function FinanceiroShell() {
   const [active, setActive] = useState<TabKey>("painel");
   const competencias = ultimasCompetencias();
   const [competencia, setCompetencia] = useState(competencias[0]);
-  const [bu, setBu] = useState(BUS[0]);
+  // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho).
+  const [bus, setBus] = useState<{ id: string; nome: string }[]>([]);
+  const [buId, setBuId] = useState("");
   const [dre, setDre] = useState<DreResult | null>(null);
   const [loading, setLoading] = useState(true);
   // Bump p/ recarregar o DRE após importar/mudar cutover (Passo 11).
   const [reloadKey, setReloadKey] = useState(0);
 
+  // BUs reais (uma vez) para o seletor do DRE por BU.
+  useEffect(() => {
+    let cancel = false;
+    fetch("/api/financeiro/bus")
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancel)
+          setBus(
+            (j.bus ?? [])
+              .filter((b: { ativo?: boolean }) => b.ativo !== false)
+              .map((b: { id: string; nome: string }) => ({ id: b.id, nome: b.nome })),
+          );
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, []);
+
+  const buLabel =
+    buId === "sem" ? "Sem BU" : buId ? (bus.find((b) => b.id === buId)?.nome ?? "BU") : "Todas";
+
   useEffect(() => {
     if (active !== "dre") return;
     let cancel = false;
     setLoading(true);
-    fetch(`/api/financeiro/dre?competencia=${competencia}`)
+    fetch(`/api/financeiro/dre?competencia=${competencia}${buId ? `&bu=${buId}` : ""}`)
       .then((r) => r.json())
       .then((data: DreResult) => {
         if (!cancel) {
@@ -150,7 +171,7 @@ export function FinanceiroShell() {
     return () => {
       cancel = true;
     };
-  }, [competencia, active, reloadKey]);
+  }, [competencia, active, reloadKey, buId]);
 
   const dockItems = TABS.map((tab) => ({
     title: tab.ready ? tab.label : `${tab.label} (em breve)`,
@@ -191,23 +212,37 @@ export function FinanceiroShell() {
 
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
-                BU: {bu}
+                BU: {buLabel}
                 <ChevronDownIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {BUS.map((b) => (
-                  <DropdownMenuItem key={b} onClick={() => setBu(b)}>
-                    {b}
+                <DropdownMenuItem onClick={() => setBuId("")}>Todas</DropdownMenuItem>
+                {bus.map((b) => (
+                  <DropdownMenuItem key={b.id} onClick={() => setBuId(b.id)}>
+                    {b.nome}
                   </DropdownMenuItem>
                 ))}
+                <DropdownMenuItem onClick={() => setBuId("sem")}>Sem BU</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
 
-            {dre?.aviso ? (
-              <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">
-                {dre.aviso}
-              </span>
-            ) : null}
+            <div className="ml-auto flex items-center gap-2">
+              {dre?.estruturaFonte === "cache" ? (
+                <span
+                  className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400"
+                  title={
+                    dre.estruturaSyncAt
+                      ? `Árvore de ${new Date(dre.estruturaSyncAt).toLocaleString("pt-BR")}`
+                      : undefined
+                  }
+                >
+                  Estrutura em cache (CA fora)
+                </span>
+              ) : null}
+              {dre?.aviso ? (
+                <span className="text-xs text-amber-600 dark:text-amber-400">{dre.aviso}</span>
+              ) : null}
+            </div>
           </div>
 
           <DreConfigPanel

@@ -14,6 +14,14 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  buPrincipal,
+  inserirRateios,
+  listRateios,
+  rateioLinhaSchema,
+  validarRateio,
+  type RateioLinha,
+} from "./rateio";
 import type { GrupoParcela, ParcelaRow, SituacaoParcela } from "./types";
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "data AAAA-MM-DD");
@@ -24,6 +32,8 @@ const parcelaInputSchema = z.object({
   data_competencia: dateSchema,
   data_vencimento: dateSchema,
   metodo_pagamento: z.string().trim().nullish(),
+  // Rateio opcional: divide ESTA parcela em % por BU. Vazio/ausente = 100% na bu_id.
+  rateio: rateioLinhaSchema.array().optional(),
 });
 
 export const despesaInputSchema = z.object({
@@ -40,6 +50,25 @@ export type DespesaInput = z.infer<typeof despesaInputSchema>;
 const cents = (v: number) => Math.round(v * 100);
 const hojeISO = () => new Date().toISOString().slice(0, 10);
 
+/**
+ * Grava os rateios das parcelas recém-inseridas. Casa cada parcela (por `numero`)
+ * ao seu id e delega a gravação em lote. `parcelas` é o input parseado (índice i =
+ * numero i+1); `inseridas` é o retorno do insert com { id, numero }.
+ */
+async function gravarRateios(
+  companyId: string,
+  parcelas: { rateio?: RateioLinha[] }[],
+  inseridas: { id: string; numero: number }[],
+): Promise<void> {
+  const idPorNumero = new Map(inseridas.map((p) => [p.numero, p.id]));
+  const entries: { parcelaId: string; linhas: RateioLinha[] }[] = [];
+  parcelas.forEach((p, i) => {
+    const id = idPorNumero.get(i + 1);
+    if (id && p.rateio?.length) entries.push({ parcelaId: id, linhas: p.rateio });
+  });
+  await inserirRateios(companyId, entries);
+}
+
 export async function criarDespesa(
   companyId: string,
   input: DespesaInput,
@@ -52,6 +81,8 @@ export async function criarDespesa(
     throw new Error(
       `Soma das parcelas (R$ ${(soma / 100).toFixed(2)}) diferente do valor total (R$ ${v.valor_total.toFixed(2)}).`,
     );
+  // Valida rateios ANTES de gravar (fail-fast, sem compensating delete).
+  for (const p of v.parcelas) if (p.rateio?.length) validarRateio(p.rateio);
 
   const admin = createAdminClient();
   const { data: desp, error: e1 } = await admin
@@ -74,19 +105,24 @@ export async function criarDespesa(
     company_id: companyId,
     despesa_id: desp.id as string,
     numero: i + 1,
-    bu_id: p.bu_id,
+    // Com rateio, o bu_id vira o "principal" (maior %) — só fallback; quem manda é o rateio.
+    bu_id: p.rateio?.length ? (buPrincipal(p.rateio) ?? p.bu_id) : p.bu_id,
     valor_previsto: p.valor_previsto,
     data_competencia: p.data_competencia,
     data_vencimento: p.data_vencimento,
     metodo_pagamento: p.metodo_pagamento || null,
     status: "a_pagar" as const,
   }));
-  const { error: e2 } = await admin.from("fin_parcelas").insert(rows);
+  const { data: inseridas, error: e2 } = await admin
+    .from("fin_parcelas")
+    .insert(rows)
+    .select("id, numero");
   if (e2) {
     // Compensating delete: a despesa não pode existir sem suas parcelas.
     await admin.from("fin_despesas").delete().eq("company_id", companyId).eq("id", desp.id);
     throw new Error(`criarDespesa (parcelas): ${e2.message}`);
   }
+  await gravarRateios(companyId, v.parcelas, inseridas as { id: string; numero: number }[]);
   return { id: desp.id as string };
 }
 
@@ -112,6 +148,7 @@ export interface DespesaDetalheParcela {
   data_pagamento: string | null;
   status: string;
   metodo_pagamento: string | null;
+  rateio: RateioLinha[]; // vazio = sem rateio (usa bu_id)
 }
 export interface DespesaDetalhe {
   id: string;
@@ -151,6 +188,11 @@ export async function getDespesa(
     .order("numero", { ascending: true });
   if (e2) throw new Error(`getDespesa (parcelas): ${e2.message}`);
 
+  const rateios = await listRateios(
+    companyId,
+    (ps ?? []).map((p) => p.id as string),
+  );
+
   return {
     id: d.id as string,
     descricao: d.descricao as string,
@@ -170,6 +212,7 @@ export async function getDespesa(
       data_pagamento: (p.data_pagamento as string | null) ?? null,
       status: p.status as string,
       metodo_pagamento: (p.metodo_pagamento as string | null) ?? null,
+      rateio: rateios.get(p.id as string) ?? [],
     })),
   };
 }
@@ -190,6 +233,7 @@ export async function atualizarDespesa(
     throw new Error(
       `Soma das parcelas (R$ ${(soma / 100).toFixed(2)}) diferente do valor total (R$ ${v.valor_total.toFixed(2)}).`,
     );
+  for (const p of v.parcelas) if (p.rateio?.length) validarRateio(p.rateio);
 
   const admin = createAdminClient();
   const atual = await getDespesa(companyId, id);
@@ -215,6 +259,7 @@ export async function atualizarDespesa(
     .eq("id", id);
   if (e1) throw new Error(`atualizarDespesa: ${e1.message}`);
 
+  // Apaga as parcelas (o rateio antigo cai por cascade em fin_despesa_rateio).
   await admin.from("fin_parcelas").delete().eq("company_id", companyId).eq("despesa_id", id);
   const rows = v.parcelas.map((p, i) => {
     const pago = pagoPorNumero.get(i + 1);
@@ -222,7 +267,7 @@ export async function atualizarDespesa(
       company_id: companyId,
       despesa_id: id,
       numero: i + 1,
-      bu_id: p.bu_id,
+      bu_id: p.rateio?.length ? (buPrincipal(p.rateio) ?? p.bu_id) : p.bu_id,
       valor_previsto: p.valor_previsto,
       data_competencia: p.data_competencia,
       data_vencimento: p.data_vencimento,
@@ -232,8 +277,12 @@ export async function atualizarDespesa(
       valor_realizado: pago?.valor_realizado ?? null,
     };
   });
-  const { error: e2 } = await admin.from("fin_parcelas").insert(rows);
+  const { data: inseridas, error: e2 } = await admin
+    .from("fin_parcelas")
+    .insert(rows)
+    .select("id, numero");
   if (e2) throw new Error(`atualizarDespesa (parcelas): ${e2.message}`);
+  await gravarRateios(companyId, v.parcelas, inseridas as { id: string; numero: number }[]);
   return { id };
 }
 

@@ -47,6 +47,15 @@ const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" 
 const cents = (v: number) => Math.round(v * 100);
 const fmtData = (iso: string) => iso.split("-").reverse().join("/");
 
+/** Uma linha de rateio: quanto % dessa parcela cabe a esta BU. */
+type RateioLinha = { bu_id: string; percentual: number };
+
+/** Σ dos percentuais em centésimos (100% = 10000) — sem erro de float. */
+const somaRateioCent = (r: RateioLinha[]) =>
+  r.reduce((s, l) => s + Math.round((Number(l.percentual) || 0) * 100), 0);
+const rateioValido = (r: RateioLinha[]) =>
+  r.length === 0 || (r.length >= 2 && somaRateioCent(r) === 10000);
+
 async function send(url: string, method: "POST" | "PATCH" | "DELETE", body?: unknown) {
   const res = await fetch(url, {
     method,
@@ -98,6 +107,7 @@ interface DespesaDetalhe {
     data_competencia: string;
     metodo_pagamento: string | null;
     data_pagamento: string | null;
+    rateio: RateioLinha[];
   }[];
 }
 
@@ -567,6 +577,7 @@ interface LinhaParcela {
   data_vencimento: string;
   data_competencia: string;
   metodo_pagamento: string;
+  rateio: RateioLinha[]; // vazio = sem rateio (usa bu_id)
 }
 
 function DespesaForm({
@@ -596,6 +607,8 @@ function DespesaForm({
   const [primVenc, setPrimVenc] = useState(initial?.parcelas[0]?.data_vencimento ?? hoje);
   const [defBu, setDefBu] = useState(initial?.parcelas[0]?.bu_id ?? dim.bus[0]?.id ?? "");
   const [defMetodo, setDefMetodo] = useState("");
+  // Rateio padrão: aplicado a TODAS as parcelas ao "Gerar". Herda o da 1ª parcela ao editar.
+  const [defRateio, setDefRateio] = useState<RateioLinha[]>(initial?.parcelas[0]?.rateio ?? []);
   const [linhas, setLinhas] = useState<LinhaParcela[]>(
     (initial?.parcelas ?? []).map((p) => ({
       bu_id: p.bu_id,
@@ -603,8 +616,11 @@ function DespesaForm({
       data_vencimento: p.data_vencimento,
       data_competencia: p.data_competencia,
       metodo_pagamento: p.metodo_pagamento ?? "",
+      rateio: p.rateio ?? [],
     })),
   );
+  // Qual rateio o dialog edita: "def" (padrão) ou o índice da parcela; null = fechado.
+  const [rateioAlvo, setRateioAlvo] = useState<number | "def" | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Candidatos a duplicata (mesma categoria/valor/venc) achados antes de criar.
@@ -619,22 +635,46 @@ function DespesaForm({
       setErr("Preencha valor total, nº de parcelas e a BU padrão.");
       return;
     }
+    if (!rateioValido(defRateio)) {
+      setErr("Rateio padrão inválido — a soma dos percentuais precisa ser 100%.");
+      return;
+    }
     setErr(null);
     const base = Math.floor(total / n);
     const resto = total - base * n;
     setLinhas(
       Array.from({ length: n }, (_, i) => ({
-        bu_id: defBu,
+        bu_id: defRateio.length ? defRateio[0].bu_id : defBu,
         valor: ((base + (i === n - 1 ? resto : 0)) / 100).toFixed(2),
         data_vencimento: addMonths(primVenc, i),
         data_competencia: addMonths(primVenc, i),
         metodo_pagamento: defMetodo,
+        rateio: defRateio.map((l) => ({ ...l })), // cópia por parcela
       })),
     );
   };
 
   const setLinha = (i: number, k: keyof LinhaParcela, v: string) =>
     setLinhas((s) => s.map((l, j) => (j === i ? { ...l, [k]: v } : l)));
+
+  /** Grava o rateio editado no alvo (padrão ou parcela i). */
+  const salvarRateio = (linhas2: RateioLinha[]) => {
+    if (rateioAlvo === "def") setDefRateio(linhas2);
+    else if (typeof rateioAlvo === "number") {
+      const i = rateioAlvo;
+      setLinhas((s) =>
+        s.map((l, j) =>
+          j === i
+            ? { ...l, rateio: linhas2, bu_id: linhas2.length ? linhas2[0].bu_id : l.bu_id }
+            : l,
+        ),
+      );
+    }
+    setRateioAlvo(null);
+  };
+  const buNome = (id: string) => dim.bus.find((b) => b.id === id)?.nome ?? "—";
+  const resumoRateio = (r: RateioLinha[]) =>
+    r.map((l) => `${buNome(l.bu_id)} ${l.percentual}%`).join(" · ");
 
   const somaCents = linhas.reduce((s, l) => s + cents(Number(l.valor) || 0), 0);
   const totalCents = cents(Number(valorTotal) || 0);
@@ -649,6 +689,11 @@ function DespesaForm({
       if (!bate)
         throw new Error(
           `Soma das parcelas (${brl.format(somaCents / 100)}) ≠ total (${brl.format(totalCents / 100)}).`,
+        );
+      const parcelaRuim = linhas.findIndex((l) => !rateioValido(l.rateio));
+      if (parcelaRuim >= 0)
+        throw new Error(
+          `Rateio da parcela ${parcelaRuim + 1} inválido — a soma dos percentuais precisa ser 100%.`,
         );
       // Antes de CRIAR: checa duplicata — não recria à mão o que veio do import
       // do CA (defesa contra double-count no DRE cortado). Editar não checa.
@@ -680,6 +725,9 @@ function DespesaForm({
           data_vencimento: l.data_vencimento,
           data_competencia: l.data_competencia,
           metodo_pagamento: l.metodo_pagamento || null,
+          rateio: l.rateio.length
+            ? l.rateio.map((r) => ({ bu_id: r.bu_id, percentual: Number(r.percentual) }))
+            : undefined,
         })),
       };
       if (editando)
@@ -809,6 +857,37 @@ function DespesaForm({
               </select>
             </div>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border px-3 py-2">
+            <span className="text-xs font-medium text-muted-foreground">Rateio padrão por BU</span>
+            {defRateio.length === 0 ? (
+              <span className="text-xs text-muted-foreground">— usa a BU padrão (100%)</span>
+            ) : (
+              <span className="text-xs">{resumoRateio(defRateio)}</span>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-7"
+              onClick={() => setRateioAlvo("def")}
+            >
+              {defRateio.length ? "Editar rateio" : "Dividir entre BUs"}
+            </Button>
+            {defRateio.length > 0 && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 text-muted-foreground"
+                onClick={() => setDefRateio([])}
+              >
+                Remover
+              </Button>
+            )}
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Ao gerar, cada parcela recebe esse rateio — dá pra ajustar parcela a parcela na tabela.
+          </p>
           <Button type="button" variant="outline" size="sm" className="mt-2" onClick={gerar}>
             Gerar parcelas
           </Button>
@@ -831,17 +910,43 @@ function DespesaForm({
                     <tr key={i}>
                       <td className="py-1 pr-2 text-muted-foreground">{i + 1}</td>
                       <td className="py-1 pr-2">
-                        <select
-                          className={cn(selectCls, "h-7")}
-                          value={l.bu_id}
-                          onChange={(e) => setLinha(i, "bu_id", e.target.value)}
-                        >
-                          {dim.bus.map((b) => (
-                            <option key={b.id} value={b.id} className={optionCls}>
-                              {b.nome}
-                            </option>
-                          ))}
-                        </select>
+                        {l.rateio.length ? (
+                          <button
+                            type="button"
+                            onClick={() => setRateioAlvo(i)}
+                            title="Editar rateio desta parcela"
+                            className="flex max-w-[16rem] items-center gap-1 rounded border border-border px-1.5 py-1 text-left hover:bg-muted"
+                          >
+                            <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">
+                              rateio
+                            </span>
+                            <span className="truncate text-[11px] text-muted-foreground">
+                              {resumoRateio(l.rateio)}
+                            </span>
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            <select
+                              className={cn(selectCls, "h-7")}
+                              value={l.bu_id}
+                              onChange={(e) => setLinha(i, "bu_id", e.target.value)}
+                            >
+                              {dim.bus.map((b) => (
+                                <option key={b.id} value={b.id} className={optionCls}>
+                                  {b.nome}
+                                </option>
+                              ))}
+                            </select>
+                            <button
+                              type="button"
+                              title="Ratear entre BUs"
+                              onClick={() => setRateioAlvo(i)}
+                              className="shrink-0 rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+                            >
+                              %
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td className="py-1 pr-2">
                         <Input
@@ -940,6 +1045,150 @@ function DespesaForm({
           )}
         </DialogFooter>
       </form>
+
+      <Dialog open={rateioAlvo !== null} onOpenChange={(o) => !o && setRateioAlvo(null)}>
+        {rateioAlvo !== null && (
+          <RateioEditorDialog
+            bus={dim.bus}
+            titulo={
+              rateioAlvo === "def"
+                ? "Rateio padrão por BU"
+                : `Rateio da parcela ${(rateioAlvo as number) + 1}`
+            }
+            initial={rateioAlvo === "def" ? defRateio : linhas[rateioAlvo].rateio}
+            onSave={salvarRateio}
+            onCancel={() => setRateioAlvo(null)}
+          />
+        )}
+      </Dialog>
+    </DialogContent>
+  );
+}
+
+/**
+ * Editor de rateio: linhas (BU × %). Aplica só com Σ=100% e BUs distintas.
+ * "Remover rateio" (quando já havia) devolve `[]` → a parcela volta a valer pela BU.
+ */
+function RateioEditorDialog({
+  bus,
+  initial,
+  titulo,
+  onSave,
+  onCancel,
+}: {
+  bus: BusinessUnit[];
+  initial: RateioLinha[];
+  titulo: string;
+  onSave: (linhas: RateioLinha[]) => void;
+  onCancel: () => void;
+}) {
+  const [rows, setRows] = useState<RateioLinha[]>(
+    initial.length
+      ? initial.map((r) => ({ ...r }))
+      : [
+          { bu_id: bus[0]?.id ?? "", percentual: 50 },
+          { bu_id: bus[1]?.id ?? bus[0]?.id ?? "", percentual: 50 },
+        ],
+  );
+  const somaC = somaRateioCent(rows);
+  const dupBu = new Set(rows.map((r) => r.bu_id)).size !== rows.length;
+  const ok = rows.length >= 2 && somaC === 10000 && !dupBu;
+
+  const set = (i: number, patch: Partial<RateioLinha>) =>
+    setRows((s) => s.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const add = () => setRows((s) => [...s, { bu_id: bus[0]?.id ?? "", percentual: 0 }]);
+  const del = (i: number) => setRows((s) => s.filter((_, j) => j !== i));
+  const distribuir = () => {
+    const n = rows.length;
+    if (!n) return;
+    const base = Math.floor(10000 / n);
+    const resto = 10000 - base * n;
+    setRows((s) => s.map((r, i) => ({ ...r, percentual: (base + (i < resto ? 1 : 0)) / 100 })));
+  };
+
+  return (
+    <DialogContent className="max-w-md">
+      <DialogHeader>
+        <DialogTitle>{titulo}</DialogTitle>
+      </DialogHeader>
+      <p className="text-xs text-muted-foreground">
+        Divida o valor desta despesa entre as BUs. A soma precisa ser exatamente 100%.
+      </p>
+      <div className="flex flex-col gap-2">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <select
+              className={cn(selectCls, "h-8 flex-1")}
+              value={r.bu_id}
+              onChange={(e) => set(i, { bu_id: e.target.value })}
+            >
+              {bus.map((b) => (
+                <option key={b.id} value={b.id} className={optionCls}>
+                  {b.nome}
+                </option>
+              ))}
+            </select>
+            <div className="relative">
+              <Input
+                className="h-8 w-24 pr-6"
+                type="number"
+                step="0.01"
+                min="0"
+                max="100"
+                value={String(r.percentual)}
+                onChange={(e) => set(i, { percentual: Number(e.target.value) })}
+              />
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                %
+              </span>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => del(i)}
+              disabled={rows.length <= 2}
+              title="Remover BU"
+            >
+              <IconTrash className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={add}>
+          <IconPlus className="h-4 w-4" />
+          BU
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onClick={distribuir}>
+          Dividir igual
+        </Button>
+        <span
+          className={cn(
+            "ml-auto text-xs font-medium tabular-nums",
+            somaC === 10000 && !dupBu
+              ? "text-emerald-600 dark:text-emerald-400"
+              : "text-destructive",
+          )}
+        >
+          Σ {(somaC / 100).toFixed(2)}%
+        </span>
+      </div>
+      {dupBu && <p className="text-xs text-destructive">Há BU repetida — escolha BUs distintas.</p>}
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancelar
+        </Button>
+        {initial.length > 0 && (
+          <Button type="button" variant="ghost" onClick={() => onSave([])}>
+            Remover rateio
+          </Button>
+        )}
+        <Button type="button" disabled={!ok} onClick={() => onSave(rows.filter((r) => r.bu_id))}>
+          Aplicar
+        </Button>
+      </DialogFooter>
     </DialogContent>
   );
 }

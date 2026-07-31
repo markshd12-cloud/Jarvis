@@ -16,8 +16,15 @@ import "server-only";
 
 import { caGet } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
-import { getCutoverCompetencia } from "@/lib/financeiro/dre-config";
+import {
+  getCutoverCompetencia,
+  getDreEstruturaCache,
+  saveDreEstruturaCache,
+} from "@/lib/financeiro/dre-config";
+import { expandirPorBu, listRateios } from "@/lib/financeiro/rateio";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+const cents = (v: number) => Math.round(v * 100);
 
 // ----------------------------- Tipos da API --------------------------------
 
@@ -99,6 +106,14 @@ export interface DreResult {
   despesaFonte: "contaazul" | "jarvis";
   /** Competência de cutover configurada (AAAA-MM), ou null se tudo vem do CA. */
   cutover: string | null;
+  /**
+   * Fonte da ESTRUTURA (árvore) do DRE: 'ca' = veio fresca do Conta Azul (e foi
+   * regravada); 'cache' = o CA falhou e usamos a última árvore guardada. Deixa a
+   * UI avisar quando o DRE está desenhado por uma cópia (CA fora do ar).
+   */
+  estruturaFonte?: "ca" | "cache";
+  /** Carimbo (ISO) do último sync bem-sucedido da estrutura. */
+  estruturaSyncAt?: string | null;
   aviso?: string;
 }
 
@@ -186,16 +201,20 @@ export async function despesaCaPorCategoria(
  * pós-cutover e da reconciliação. Usa `valor_previsto` (o comprometido do mês,
  * equivalente ao `total` do evento do CA). Ignora parcela/despesa cancelada.
  * Categoria própria (sem par no CA) não casa com nenhuma linha → vira semMapeamento.
+ *
+ * `buId` (DRE por BU): atribui a cada parcela SÓ a fatia daquela BU — pelo rateio
+ * (`fin_despesa_rateio`) quando existe, senão 100% se a BU da parcela for a pedida.
  */
 export async function despesaJarvisPorCategoria(
   companyId: string,
   competencia: string,
+  buId?: string | null,
 ): Promise<{ mapa: Map<string, number>; carimbos: string[] }> {
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("fin_parcelas")
     .select(
-      "valor_previsto, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
+      "id, valor_previsto, bu_id, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
     )
     .eq("company_id", companyId)
     .gte("data_competencia", firstDay(competencia))
@@ -203,16 +222,68 @@ export async function despesaJarvisPorCategoria(
     .neq("status", "cancelada")
     .eq("fin_despesas.cancelada", false);
   if (error) throw new Error(`despesaJarvisPorCategoria: ${error.message}`);
+  const rows = data ?? [];
+  const rateios = buId
+    ? await listRateios(companyId, rows.map((r) => r.id as string))
+    : null;
   const mapa = new Map<string, number>();
-  for (const r of data ?? []) {
+  for (const r of rows) {
     const desp = r.fin_despesas as unknown as {
       fin_categorias?: { ca_categoria_id?: string | null } | null;
     };
     const caId = desp?.fin_categorias?.ca_categoria_id ?? null;
     if (!caId) continue;
-    mapa.set(caId, (mapa.get(caId) ?? 0) + num(r.valor_previsto));
+    let val = num(r.valor_previsto);
+    if (buId) {
+      const buPad = r.bu_id as string | null;
+      if (!buPad) continue;
+      const fatia = expandirPorBu(cents(val), buPad, rateios!.get(r.id as string)).find(
+        (f) => f.bu_id === buId,
+      );
+      if (!fatia) continue; // esta parcela não toca a BU pedida
+      val = fatia.valorCents / 100;
+    }
+    mapa.set(caId, (mapa.get(caId) ?? 0) + val);
   }
   return { mapa, carimbos: [] };
+}
+
+/**
+ * Receita por categoria financeira do CA na competência, lida do NOSSO espelho
+ * (`fin_receita_snapshot`, que já resolve a BU). Base da RECEITA no DRE por BU —
+ * o CA ao vivo não carrega a BU. Mapeia via `fin_categorias.ca_categoria_id` (a
+ * mesma chave das folhas do DRE). Competência = `data_competencia ?? data_vencimento`,
+ * igual ao caminho do CA. `buId` filtra a unidade.
+ */
+export async function receitaSnapshotPorCategoria(
+  companyId: string,
+  competencia: string,
+  buId?: string | null,
+): Promise<Map<string, number>> {
+  const admin = createAdminClient();
+  const de = firstDay(ymAddMonths(competencia, -1));
+  const ate = lastDay(ymAddMonths(competencia, 1));
+  let q = admin
+    .from("fin_receita_snapshot")
+    .select("valor, data_competencia, data_vencimento, fin_categorias!inner ( ca_categoria_id )")
+    .eq("company_id", companyId)
+    .gte("data_vencimento", de)
+    .lte("data_vencimento", ate);
+  // null = Todas (sem filtro); "sem" = receita sem BU resolvida; uuid = a BU.
+  if (buId === "sem") q = q.is("bu_id", null);
+  else if (buId) q = q.eq("bu_id", buId);
+  const { data, error } = await q;
+  if (error) throw new Error(`receitaSnapshotPorCategoria: ${error.message}`);
+  const mapa = new Map<string, number>();
+  for (const r of data ?? []) {
+    const ym = ((r.data_competencia as string | null) ?? (r.data_vencimento as string | null) ?? "").slice(0, 7);
+    if (ym !== competencia) continue;
+    const cat = r.fin_categorias as unknown as { ca_categoria_id?: string | null } | null;
+    const caId = cat?.ca_categoria_id ?? null;
+    if (!caId) continue;
+    mapa.set(caId, (mapa.get(caId) ?? 0) + num(r.valor));
+  }
+  return mapa;
 }
 
 /**
@@ -230,13 +301,19 @@ export async function despesaJarvisPorCategoria(
 export async function orcadoPorCategoriaCa(
   companyId: string,
   competencia: string,
+  buId?: string | null,
 ): Promise<Map<string, number>> {
+  // "Sem BU" não tem meta atribuível → coluna Orçado vazia nessa visão.
+  if (buId === "sem") return new Map<string, number>();
   const admin = createAdminClient();
-  const { data, error } = await admin
+  let q = admin
     .from("fin_orcamentos")
     .select("valor_orcado, fin_categorias!inner ( ca_categoria_id, tipo )")
     .eq("company_id", companyId)
     .eq("competencia", competencia);
+  // DRE por BU: só as metas daquela BU (metas "todas as BUs" ficam de fora da visão por BU).
+  if (buId) q = q.eq("bu_id", buId);
+  const { data, error } = await q;
   if (error) throw new Error(`orcadoPorCategoriaCa: ${error.message}`);
 
   const mapa = new Map<string, number>();
@@ -278,12 +355,45 @@ export async function despesaCaPorMes(
   return mapa;
 }
 
+/**
+ * Resolve a árvore do DRE com resiliência (Opção A). Injeta as 3 dependências
+ * (buscar do CA, ler cache, gravar cache) para ser testável sem CA/DB:
+ *   - CA responde → usa E regrava o cache (best-effort; falha ao gravar não
+ *     derruba o DRE). Fonte 'ca'.
+ *   - CA falha → usa a última árvore guardada. Fonte 'cache'.
+ *   - CA falha e nunca sincronizou → propaga o erro (DRE fica indisponível, como
+ *     era antes de existir cache).
+ */
+export async function resolveEstrutura(
+  fetchCa: () => Promise<DreItemApi[]>,
+  loadCache: () => Promise<{ json: unknown | null; syncAt: string | null }>,
+  saveCache: (itens: DreItemApi[]) => Promise<void>,
+  nowISO: string,
+): Promise<{ itens: DreItemApi[]; fonte: "ca" | "cache"; syncAt: string | null }> {
+  try {
+    const itens = await fetchCa();
+    try {
+      await saveCache(itens);
+    } catch {
+      /* persistir é best-effort — nunca derruba o DRE */
+    }
+    return { itens, fonte: "ca", syncAt: nowISO };
+  } catch (e) {
+    const cached = await loadCache();
+    if (cached.json)
+      return { itens: cached.json as DreItemApi[], fonte: "cache", syncAt: cached.syncAt };
+    throw e; // nunca sincronizou → sem árvore pra desenhar
+  }
+}
+
 // ------------------------------- Cálculo -----------------------------------
 
 async function computeDre(
   companyId: string,
   competencia: string,
+  buId?: string | null,
 ): Promise<DreResult> {
+  const bu = buId ?? null;
   const vazio: DreResult = {
     connected: false,
     competencia,
@@ -311,27 +421,52 @@ async function computeDre(
     // tudo do CA (fallback = comportamento de hoje).
     const cutover = await getCutoverCompetencia(companyId);
     const usaJarvis = cutover != null && competencia >= cutover;
-    const [struct, receber, despesa, orcadoPorCat] = await Promise.all([
-      caGet<DreStructResp>(companyId, CONTA_AZUL_RESOURCES.categoriasDre.path!),
-      fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, de, ate),
-      usaJarvis
-        ? despesaJarvisPorCategoria(companyId, competencia)
+    // MODO 100% JARVIS quando: pediram uma BU (ou "Sem BU"), OU a competência já
+    // passou do cutover. Nesse modo, TANTO a despesa (parcelas + rateio) QUANTO a
+    // receita (espelho `fin_receita_snapshot`, que resolve a BU) vêm das NOSSAS
+    // tabelas → o Total (Todas) = Σ BUs + "Sem BU", e o custo por BU FECHA.
+    // Só o consolidado ANTERIOR ao cutover segue no CA ao vivo (histórico).
+    const jarvisMode = bu != null || usaJarvis;
+    const [estrutura, receber, despesa, receitaJarvis, orcadoPorCat] = await Promise.all([
+      // Estrutura resiliente (Opção A): CA vivo regrava o cache; CA fora usa a cópia.
+      resolveEstrutura(
+        async () =>
+          (await caGet<DreStructResp>(companyId, CONTA_AZUL_RESOURCES.categoriasDre.path!))
+            .itens,
+        () => getDreEstruturaCache(companyId),
+        (itens) => saveDreEstruturaCache(companyId, itens),
+        new Date().toISOString(),
+      ),
+      jarvisMode
+        ? Promise.resolve<EventoDre[]>([])
+        : fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, de, ate),
+      jarvisMode
+        ? despesaJarvisPorCategoria(companyId, competencia, bu)
         : despesaCaPorCategoria(companyId, competencia),
+      jarvisMode
+        ? receitaSnapshotPorCategoria(companyId, competencia, bu)
+        : Promise.resolve<Map<string, number> | null>(null),
       // Metas do mês. Falha aqui não derruba o DRE — só zera a coluna Orçado.
-      orcadoPorCategoriaCa(companyId, competencia).catch(() => new Map<string, number>()),
+      orcadoPorCategoriaCa(companyId, competencia, bu).catch(() => new Map<string, number>()),
     ]);
+    const struct = { itens: estrutura.itens };
     const temOrcamento = orcadoPorCat.size > 0;
 
     // Valor (com sinal) por categoria financeira, só na competência pedida.
     // Receita: +total (recebíveis recentes vêm sem `data_competencia` → caímos p/
     // `data_vencimento`, igual ao relatório do CA). Despesa: −magnitude da fonte.
     const valorPorCat = new Map<string, number>();
-    for (const e of receber) {
-      const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
-      if (ym !== competencia) continue;
-      const id = e.categorias?.[0]?.id;
-      if (!id) continue;
-      valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + num(e.total));
+    if (jarvisMode) {
+      for (const [id, v] of receitaJarvis ?? new Map<string, number>())
+        valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + v);
+    } else {
+      for (const e of receber) {
+        const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+        if (ym !== competencia) continue;
+        const id = e.categorias?.[0]?.id;
+        if (!id) continue;
+        valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + num(e.total));
+      }
     }
     for (const [id, mag] of despesa.mapa) {
       valorPorCat.set(id, (valorPorCat.get(id) ?? 0) - mag);
@@ -446,12 +581,21 @@ async function computeDre(
       semMapeamento,
       atualizadoAte,
       temOrcamento,
-      despesaFonte: usaJarvis ? "jarvis" : "contaazul",
+      despesaFonte: jarvisMode ? "jarvis" : "contaazul",
       cutover,
+      estruturaFonte: estrutura.fonte,
+      estruturaSyncAt: estrutura.syncAt,
       aviso:
-        Math.abs(semMapeamento) > 0.005
-          ? "Há lançamentos sem categoria mapeada no DRE (não somados às linhas)."
-          : undefined,
+        [
+          Math.abs(semMapeamento) > 0.005
+            ? "Há lançamentos sem categoria mapeada no DRE (não somados às linhas)."
+            : "",
+          jarvisMode
+            ? "Fonte 100% Jarvis: receita do espelho + despesa das parcelas (rateio). Total = Σ BUs + Sem BU."
+            : "",
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined,
     };
   } catch {
     return vazio;
@@ -463,15 +607,16 @@ async function computeDre(
 const TTL_MS = (Number(process.env.CONTA_AZUL_CACHE_TTL_SECONDS) || 600) * 1000;
 const cache = new Map<string, { at: number; data: DreResult }>();
 
-/** DRE cacheado por empresa+competência (TTL simples). Só cacheia conectado. */
+/** DRE cacheado por empresa+competência+BU (TTL simples). Só cacheia conectado. */
 export async function getDre(
   companyId: string,
   competencia: string,
+  buId?: string | null,
 ): Promise<DreResult> {
-  const key = `${companyId}:${competencia}`;
+  const key = `${companyId}:${competencia}:${buId ?? ""}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-  const data = await computeDre(companyId, competencia);
+  const data = await computeDre(companyId, competencia, buId ?? null);
   if (data.connected) cache.set(key, { at: Date.now(), data });
   return data;
 }

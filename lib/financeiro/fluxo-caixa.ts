@@ -15,6 +15,9 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { expandirPorBu, listRateios } from "./rateio";
+
+const cents = (v: number) => Math.round(v * 100);
 
 export type FluxoModo = "mensal" | "diario";
 export type FluxoIncluir = "ambos" | "previsto" | "realizado";
@@ -93,6 +96,7 @@ const bucketKey = (modo: FluxoModo, isoDate: string): string =>
   modo === "mensal" ? isoDate.slice(0, 7) : isoDate.slice(0, 10);
 
 interface ParcelaRow {
+  id: string;
   valor_previsto: unknown;
   valor_realizado: unknown;
   status: string;
@@ -171,13 +175,14 @@ export async function getFluxoCaixa(
 
   const [parcRows, recRows] = await Promise.all([
     pageAll<ParcelaRow>((from, to) => {
-      let q = admin
+      // NÃO filtra bu_id no banco: com rateio, uma parcela pode pertencer
+      // parcialmente ao buId filtrado. O filtro por BU é proporcional, em JS.
+      const q = admin
         .from("fin_parcelas")
-        .select("valor_previsto, valor_realizado, status, data_vencimento, data_pagamento, bu_id")
+        .select("id, valor_previsto, valor_realizado, status, data_vencimento, data_pagamento, bu_id")
         .eq("company_id", companyId)
         .neq("status", "cancelada")
         .or(janelaOr);
-      if (buId) q = q.eq("bu_id", buId);
       return q.range(from, to);
     }, "parcelas"),
     pageAll<ReceitaRow>((from, to) => {
@@ -195,15 +200,33 @@ export async function getFluxoCaixa(
   const porChave = new Map(buckets.map((b) => [b.chave, b]));
   const dentro = (iso: string) => iso >= de && iso <= ate;
 
-  // Saídas (fin_parcelas)
+  // Saídas (fin_parcelas). Rateio só importa quando há filtro por BU (senão o
+  // valor cheio entra no bucket de tempo, independentemente do rateio).
+  const rateios = buId
+    ? await listRateios(companyId, parcRows.map((p) => p.id))
+    : null;
+  /** Valor da parcela atribuível ao filtro de BU (proporcional ao rateio). */
+  const parcelaValor = (p: ParcelaRow, valor: number): number | null => {
+    if (!buId) return valor;
+    if (!p.bu_id) return null;
+    const fatia = expandirPorBu(cents(valor), p.bu_id, rateios!.get(p.id)).find(
+      (f) => f.bu_id === buId,
+    );
+    return fatia ? fatia.valorCents / 100 : null;
+  };
   for (const p of parcRows) {
     const paga = p.status === "paga";
     const iso = paga ? p.data_pagamento ?? p.data_vencimento : p.data_vencimento;
     if (!iso || !dentro(iso)) continue;
     const b = porChave.get(bucketKey(modo, iso));
     if (!b) continue;
-    if (paga) b.saidaReal += num(p.valor_realizado ?? p.valor_previsto);
-    else b.saidaPrev += num(p.valor_previsto);
+    if (paga) {
+      const v = parcelaValor(p, num(p.valor_realizado ?? p.valor_previsto));
+      if (v !== null) b.saidaReal += v;
+    } else {
+      const v = parcelaValor(p, num(p.valor_previsto));
+      if (v !== null) b.saidaPrev += v;
+    }
   }
 
   // Entradas (fin_receita_snapshot)

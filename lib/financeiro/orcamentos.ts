@@ -14,6 +14,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { expandirPorBu, listRateios } from "./rateio";
 import type {
   FinOrcamento,
   OrcamentoLinha,
@@ -21,6 +22,7 @@ import type {
 } from "./types";
 
 const COMPETENCIA_RE = /^\d{4}-\d{2}$/;
+const cents = (v: number) => Math.round(v * 100);
 
 export const orcamentoInputSchema = z.object({
   categoria_id: z.string().uuid("categoria obrigatória"),
@@ -61,6 +63,7 @@ function splitKey(k: string): { categoria_id: string; bu_id: string | null } {
 
 // Linha (mínima) de fin_parcelas + categoria da despesa, como o PostgREST devolve.
 type ParcelaJoin = {
+  id: string;
   valor_previsto: unknown;
   valor_realizado: unknown;
   bu_id: string | null;
@@ -79,7 +82,7 @@ async function fetchParcelas(
   const { data, error } = await admin
     .from("fin_parcelas")
     .select(
-      "valor_previsto, valor_realizado, bu_id, status, data_competencia, fin_despesas!inner ( categoria_id, cancelada )",
+      "id, valor_previsto, valor_realizado, bu_id, status, data_competencia, fin_despesas!inner ( categoria_id, cancelada )",
     )
     .eq("company_id", companyId)
     .gte("data_competencia", firstDay(deComp))
@@ -221,12 +224,23 @@ export async function getOrcamentoComparativo(
     l.limite = o.valor_limite == null ? null : num(o.valor_limite);
   }
 
+  // Rateio: uma parcela pode se dividir em % por BU (senão, 100% no bu_id).
+  const rateios = await listRateios(
+    companyId,
+    parcelas.map((p) => p.id),
+  );
   for (const p of parcelas) {
     const catId = p.fin_despesas?.categoria_id ?? null;
-    if (!catId) continue;
-    const l = ensure(catId, p.bu_id ?? null);
-    l.previsto += num(p.valor_previsto);
-    if (p.status === "paga") l.realizado += num(p.valor_realizado);
+    if (!catId || !p.bu_id) continue;
+    const rt = rateios.get(p.id);
+    for (const f of expandirPorBu(cents(num(p.valor_previsto)), p.bu_id, rt)) {
+      ensure(catId, f.bu_id).previsto += f.valorCents / 100;
+    }
+    if (p.status === "paga") {
+      for (const f of expandirPorBu(cents(num(p.valor_realizado)), p.bu_id, rt)) {
+        ensure(catId, f.bu_id).realizado += f.valorCents / 100;
+      }
+    }
   }
 
   for (const l of linhas.values()) {
@@ -264,16 +278,22 @@ export async function sugerirOrcamento(
 
   const parcelas = await fetchParcelas(companyId, deComp, ateComp);
 
+  const rateios = await listRateios(
+    companyId,
+    parcelas.map((p) => p.id),
+  );
   // key → (ym → soma previsto no mês)
   const porKey = new Map<string, Map<string, number>>();
   for (const p of parcelas) {
     const catId = p.fin_despesas?.categoria_id ?? null;
-    if (!catId) continue;
+    if (!catId || !p.bu_id) continue;
     const ym = String(p.data_competencia).slice(0, 7);
-    const k = key(catId, p.bu_id ?? null);
-    const porMes = porKey.get(k) ?? new Map<string, number>();
-    porMes.set(ym, (porMes.get(ym) ?? 0) + num(p.valor_previsto));
-    porKey.set(k, porMes);
+    for (const f of expandirPorBu(cents(num(p.valor_previsto)), p.bu_id, rateios.get(p.id))) {
+      const k = key(catId, f.bu_id);
+      const porMes = porKey.get(k) ?? new Map<string, number>();
+      porMes.set(ym, (porMes.get(ym) ?? 0) + f.valorCents / 100);
+      porKey.set(k, porMes);
+    }
   }
 
   const competenciasBase = Array.from({ length: n }, (_, i) =>

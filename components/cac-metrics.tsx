@@ -167,7 +167,23 @@ export function CacMetrics({ data }: { data: CacResumo }) {
                 esmaecidos (CAC indefinido).
               </p>
             </div>
-          ) : null}
+          ) : (
+            // Auto-diagnóstico: em vez de sumir, explica POR QUE a série está vazia.
+            <div className="rounded-xl border border-dashed border-border p-4">
+              <h3 className="mb-1 text-sm font-semibold tracking-tight">CAC por mês</h3>
+              <p className="text-xs text-muted-foreground">
+                Sem série mensal para exibir.{" "}
+                {vendas === 0
+                  ? "O Conta Azul não retornou vendas neste ano — sem denominador para o CAC mensal."
+                  : custoTotal === 0
+                    ? "Sem custo de Marketing/Comercial por mês (o Conta Azul não trouxe o detalhamento mensal dos centros)."
+                    : "O detalhamento mensal do Conta Azul não veio neste carregamento (o CA pode ter demorado) — clique em Atualizar."}{" "}
+                <span className="tabular-nums">
+                  (ano: {count(vendas)} vendas · custo {money(custoTotal)})
+                </span>
+              </p>
+            </div>
+          )}
 
           {/* Centros que compõem o custo */}
           {centros.length ? (

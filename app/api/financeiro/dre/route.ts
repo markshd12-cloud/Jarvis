@@ -29,6 +29,11 @@ export async function GET(req: NextRequest) {
     ? raw
     : new Date().toISOString().slice(0, 7);
 
-  const dre = await getDre(companyId, competencia);
+  // ?bu=<id> → DRE daquela BU; ?bu=sem → receita sem BU; vazio = Todas (consolidado).
+  const buRaw = req.nextUrl.searchParams.get("bu") ?? "";
+  const buId =
+    buRaw === "sem" || /^[0-9a-f-]{36}$/i.test(buRaw) ? buRaw : null;
+
+  const dre = await getDre(companyId, competencia, buId);
   return NextResponse.json(dre);
 }

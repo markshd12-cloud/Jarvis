@@ -27,7 +27,6 @@ export async function generateImageViaCodex(
   const cfg = oauthConfig();
   const model = process.env.OPENAI_CODEX_IMAGE_MODEL?.trim() || "gpt-5.5";
   const size = process.env.OPENAI_CODEX_IMAGE_SIZE?.trim() || "1024x1024";
-
   const body = {
     model,
     instructions:
@@ -44,7 +43,7 @@ export async function generateImageViaCodex(
     store: false,
     // O backend Codex EXIGE stream:true (senão HTTP 400 "Stream must be set to true").
     stream: true,
-  };
+  }; 
 
   const res = await fetch(url, {
     method: "POST",

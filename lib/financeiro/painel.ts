@@ -13,8 +13,11 @@ import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
 import { swr } from "@/lib/financeiro/cache";
 import { resumoCentrosCusto } from "@/lib/financeiro/centros-custo";
 import { listarInadimplentes } from "@/lib/financeiro/inadimplentes";
+import { expandirPorBu, listRateios } from "@/lib/financeiro/rateio";
 import { resumoVendas } from "@/lib/financeiro/vendas";
 import { createAdminClient } from "@/lib/supabase/admin";
+
+const centsP = (v: number) => Math.round(v * 100);
 
 export interface PainelKpis {
   receitaRecebida: number;
@@ -135,6 +138,7 @@ function spMonth(): string {
 }
 
 interface ParcelaRow {
+  id: string;
   valor_previsto: unknown;
   valor_realizado: unknown;
   status: string;
@@ -195,11 +199,13 @@ async function serieBuAnual(companyId: string, ano: number): Promise<BuSerie[]> 
   }
 
   // Despesa por BU × mês (data_competencia) + fixa/variável (recorrencia_id).
+  // Coleta todas as parcelas do ano; depois aplica o rateio por BU.
+  const parcRows: ParcelaRow[] = [];
   for (let from = 0; ; from += PAGE) {
     const { data, error } = await admin
       .from("fin_parcelas")
       .select(
-        "valor_previsto, valor_realizado, status, bu_id, data_competencia, fin_despesas!inner ( categoria_id, recorrencia_id, cancelada )",
+        "id, valor_previsto, valor_realizado, status, bu_id, data_competencia, fin_despesas!inner ( categoria_id, recorrencia_id, cancelada )",
       )
       .eq("company_id", companyId)
       .gte("data_competencia", de)
@@ -209,15 +215,21 @@ async function serieBuAnual(companyId: string, ano: number): Promise<BuSerie[]> 
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
     const rows = (data ?? []) as unknown as ParcelaRow[];
-    for (const r of rows) {
-      const bu = r.bu_id ?? "__none__";
-      const ym = r.data_competencia?.slice(0, 7);
-      const val = r.status === "paga" ? num(r.valor_realizado ?? r.valor_previsto) : num(r.valor_previsto);
-      if (ym) bump(despesa, bu, ym, val);
-      if (despFrom(r)?.recorrencia_id) fixa.set(bu, (fixa.get(bu) ?? 0) + val);
-      else variavel.set(bu, (variavel.get(bu) ?? 0) + val);
-    }
+    parcRows.push(...rows);
     if (rows.length < PAGE) break;
+  }
+  const rateiosDesp = await listRateios(companyId, parcRows.map((p) => p.id));
+  for (const r of parcRows) {
+    const buPad = r.bu_id ?? "__none__";
+    const ym = r.data_competencia?.slice(0, 7);
+    const val = r.status === "paga" ? num(r.valor_realizado ?? r.valor_previsto) : num(r.valor_previsto);
+    const ehFixa = !!despFrom(r)?.recorrencia_id;
+    for (const f of expandirPorBu(centsP(val), buPad, rateiosDesp.get(r.id))) {
+      const parte = f.valorCents / 100;
+      if (ym) bump(despesa, f.bu_id, ym, parte);
+      if (ehFixa) fixa.set(f.bu_id, (fixa.get(f.bu_id) ?? 0) + parte);
+      else variavel.set(f.bu_id, (variavel.get(f.bu_id) ?? 0) + parte);
+    }
   }
 
   const buIds = new Set<string>([...receita.keys(), ...despesa.keys()]);
@@ -259,18 +271,22 @@ async function alertasOrcamentoDo(
 
   const { data: parc } = await admin
     .from("fin_parcelas")
-    .select("valor_previsto, bu_id, status, data_competencia, fin_despesas!inner ( categoria_id, cancelada )")
+    .select("id, valor_previsto, bu_id, status, data_competencia, fin_despesas!inner ( categoria_id, cancelada )")
     .eq("company_id", companyId)
     .gte("data_competencia", `${competencia}-01`)
     .lte("data_competencia", ultimoDia(competencia))
     .neq("status", "cancelada")
     .eq("fin_despesas.cancelada", false);
+  const parcRows = (parc ?? []) as unknown as ParcelaRow[];
+  const rateiosOrc = await listRateios(companyId, parcRows.map((p) => p.id));
   const previstoBy = new Map<string, number>();
-  for (const p of (parc ?? []) as unknown as ParcelaRow[]) {
+  for (const p of parcRows) {
     const cat = despFrom(p)?.categoria_id;
-    if (!cat) continue;
-    const k = `${cat}|${p.bu_id ?? ""}`;
-    previstoBy.set(k, (previstoBy.get(k) ?? 0) + num(p.valor_previsto));
+    if (!cat || !p.bu_id) continue;
+    for (const f of expandirPorBu(centsP(num(p.valor_previsto)), p.bu_id, rateiosOrc.get(p.id))) {
+      const k = `${cat}|${f.bu_id}`;
+      previstoBy.set(k, (previstoBy.get(k) ?? 0) + f.valorCents / 100);
+    }
   }
 
   const { data: cats } = await admin.from("fin_categorias").select("id, nome").eq("company_id", companyId);

@@ -25,7 +25,7 @@
  */
 import "server-only";
 
-import { swr } from "@/lib/financeiro/cache";
+import { cachedSwr } from "@/lib/cache/kv";
 import { resumoCentrosCusto } from "@/lib/financeiro/centros-custo";
 import { resumoVendas } from "@/lib/financeiro/vendas";
 import { getMetaMetrics } from "@/lib/marketing/metrics";
@@ -299,16 +299,21 @@ async function computeCac(
   };
 }
 
-/** CAC do ano. Cache SWR 5 min (as sub-fontes já são cacheadas). */
+/**
+ * CAC do ano. Cache SWR de 2 CAMADAS (memória + Supabase `cache_kv`): a leitura
+ * ao vivo do Conta Azul (ano inteiro de contas a pagar + vendas, paginado) é
+ * pesada — persistir evita re-varrer a cada deploy/réplica. TTL 10 min; SWR serve
+ * instantâneo e revalida em background. Só cacheia quando o CA respondeu.
+ */
 export async function getCac(
   companyId: string,
   opts: { ano?: number; driver?: CacDriver; force?: boolean } = {},
 ): Promise<CacResumo> {
   const ano = opts.ano ?? new Date().getUTCFullYear();
   const driver = opts.driver ?? "receita";
-  return swr(
+  return cachedSwr(
     `cac:${companyId}:${ano}:${driver}`,
-    5 * 60_000,
+    10 * 60_000,
     () => computeCac(companyId, ano, driver),
     { force: opts.force, cacheIf: (d) => d.connected },
   );

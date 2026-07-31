@@ -31,6 +31,26 @@ export const metadata: Metadata = { title: "Marketing | Jarvis" };
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 /**
+ * Trava de segurança: a página aguarda TODAS as integrações antes de renderizar
+ * (Promise.all). Sem isto, uma integração lenta/travada (ex.: CAC lendo o Conta
+ * Azul do ano todo ao vivo) faz a página "carregar pra sempre". Aqui, se passar
+ * de `ms`, a integração devolve `null` → a seção some, mas a página abre.
+ */
+function comTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T | null> {
+  return Promise.race([
+    p,
+    new Promise<null>((resolve) =>
+      setTimeout(() => {
+        console.warn(`[marketing] '${label}' excedeu ${ms}ms — degradando para vazio.`);
+        resolve(null);
+      }, ms),
+    ),
+  ]);
+}
+const T_RAPIDO = 8_000; // leituras do nosso banco / cacheadas
+const T_LENTO = 12_000; // leituras ao vivo (Conta Azul / Graph / GA4)
+
+/**
  * Módulo Marketing — página dedicada (espelha o Financeiro): dock de sub-abas.
  * Cada painel pronto é buscado no servidor conforme a permissão e passado ao
  * shell como slot. Meta Ads + Instagram → `marketing`; GA4 → `ga4` (checkbox
@@ -66,24 +86,32 @@ export default async function MarketingPage({
     cac,
   ] = await Promise.all([
     canMarketing
-      ? getMarketingDashboard({
-          range: one(sp.range),
-          since: one(sp.since),
-          until: one(sp.until),
-          brand,
-        })
+      ? comTimeout(
+          getMarketingDashboard({
+            range: one(sp.range),
+            since: one(sp.since),
+            until: one(sp.until),
+            brand,
+          }),
+          T_RAPIDO,
+          "meta-overview",
+        )
       : Promise.resolve(null),
-    canMarketing ? getMetaDetail({ brand }) : Promise.resolve(null),
-    canMarketing ? getMetaBreakdowns({ brand }) : Promise.resolve(null),
-    canMarketing ? getInstagramOverview({ brand }) : Promise.resolve(null),
-    canMarketing ? getInstagramFunnel({ brand }) : Promise.resolve(null),
-    canMarketing ? getInstagramAudience({ brand }) : Promise.resolve(null),
-    canMarketing ? getInstagramStories({ brand }) : Promise.resolve(null),
-    canGa4 ? getGa4Overview() : Promise.resolve(null),
-    canGa4 ? getGa4Realtime() : Promise.resolve(null),
-    canMarketing ? getYoutubeOverview({ brand }) : Promise.resolve(null),
+    canMarketing ? comTimeout(getMetaDetail({ brand }), T_LENTO, "meta-detail") : Promise.resolve(null),
+    canMarketing ? comTimeout(getMetaBreakdowns({ brand }), T_LENTO, "meta-breakdowns") : Promise.resolve(null),
+    canMarketing ? comTimeout(getInstagramOverview({ brand }), T_RAPIDO, "ig-overview") : Promise.resolve(null),
+    canMarketing ? comTimeout(getInstagramFunnel({ brand }), T_LENTO, "ig-funnel") : Promise.resolve(null),
+    canMarketing ? comTimeout(getInstagramAudience({ brand }), T_RAPIDO, "ig-audience") : Promise.resolve(null),
+    canMarketing ? comTimeout(getInstagramStories({ brand }), T_RAPIDO, "ig-stories") : Promise.resolve(null),
+    canGa4 ? comTimeout(getGa4Overview(), T_LENTO, "ga4-overview") : Promise.resolve(null),
+    canGa4 ? comTimeout(getGa4Realtime(), T_RAPIDO, "ga4-realtime") : Promise.resolve(null),
+    canMarketing ? comTimeout(getYoutubeOverview({ brand }), T_RAPIDO, "youtube") : Promise.resolve(null),
     canCac
-      ? getCompanyId().then((companyId) => (companyId ? getCac(companyId) : null))
+      ? comTimeout(
+          getCompanyId().then((companyId) => (companyId ? getCac(companyId) : null)),
+          T_LENTO,
+          "cac",
+        )
       : Promise.resolve(null),
   ]);
   const allBrands = MARKETING_AD_ACCOUNTS.map((a) => a.label);
