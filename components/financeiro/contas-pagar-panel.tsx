@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/financeiro/money-input";
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
 import {
@@ -533,13 +534,7 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
         </div>
         <div className="flex flex-col gap-1">
           <Label>Valor pago</Label>
-          <Input
-            type="number"
-            step="0.01"
-            min="0"
-            value={valor}
-            onChange={(e) => setValor(e.target.value)}
-          />
+          <MoneyInput value={valor} onChange={setValor} />
         </div>
       </div>
       {err && <p className="text-xs text-destructive">{err}</p>}
@@ -804,13 +799,7 @@ function DespesaForm({
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             <div className="flex flex-col gap-1">
               <Label>Valor total</Label>
-              <Input
-                type="number"
-                step="0.01"
-                min="0"
-                value={valorTotal}
-                onChange={(e) => setValorTotal(e.target.value)}
-              />
+              <MoneyInput value={valorTotal} onChange={setValorTotal} />
             </div>
             <div className="flex flex-col gap-1">
               <Label>Nº parcelas</Label>
@@ -949,13 +938,10 @@ function DespesaForm({
                         )}
                       </td>
                       <td className="py-1 pr-2">
-                        <Input
-                          className="h-7 w-24"
-                          type="number"
-                          step="0.01"
-                          min="0"
+                        <MoneyInput
+                          className="h-7 w-32 text-right tabular-nums"
                           value={l.valor}
-                          onChange={(e) => setLinha(i, "valor", e.target.value)}
+                          onChange={(v) => setLinha(i, "valor", v)}
                         />
                       </td>
                       <td className="py-1 pr-2">

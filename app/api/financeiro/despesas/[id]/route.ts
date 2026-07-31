@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { invalidateDre } from "@/lib/contaazul/dre";
 import { finContext } from "@/lib/financeiro/context";
 import {
   atualizarDespesa,
@@ -32,7 +33,9 @@ export async function PATCH(
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   const { id } = await params;
   try {
-    return NextResponse.json(await atualizarDespesa(gate.companyId, id, await req.json()));
+    const res = await atualizarDespesa(gate.companyId, id, await req.json());
+    invalidateDre(gate.companyId);
+    return NextResponse.json(res);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
@@ -48,6 +51,7 @@ export async function DELETE(
   const { id } = await params;
   try {
     await excluirDespesa(gate.companyId, id);
+    invalidateDre(gate.companyId);
     return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });

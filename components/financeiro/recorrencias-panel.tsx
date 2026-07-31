@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/financeiro/money-input";
 import { Label } from "@/components/ui/label";
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
@@ -327,13 +328,7 @@ function RecorrenciaForm({
         <div className="grid grid-cols-3 gap-3">
           <div className="flex flex-col gap-1">
             <Label>Valor</Label>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              value={valor}
-              onChange={(e) => setValor(e.target.value)}
-            />
+            <MoneyInput value={valor} onChange={setValor} />
           </div>
           <div className="flex flex-col gap-1">
             <Label>Dia venc.</Label>

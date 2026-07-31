@@ -20,6 +20,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/financeiro/money-input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
@@ -392,12 +393,9 @@ function ColaboradorForm({
           </div>
           <div className="flex flex-col gap-1">
             <Label>Salário-base</Label>
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
+            <MoneyInput
               value={f.salario_base}
-              onChange={(e) => set("salario_base", e.target.value)}
+              onChange={(v) => set("salario_base", v)}
             />
           </div>
         </div>

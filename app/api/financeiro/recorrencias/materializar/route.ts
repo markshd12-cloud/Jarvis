@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { invalidateDre } from "@/lib/contaazul/dre";
 import { finContext } from "@/lib/financeiro/context";
 import { materializar } from "@/lib/financeiro/recorrencias";
 
@@ -17,7 +18,9 @@ export async function POST(req: NextRequest) {
       typeof body.competencia === "string" && /^\d{4}-\d{2}$/.test(body.competencia)
         ? body.competencia
         : new Date().toISOString().slice(0, 7);
-    return NextResponse.json(await materializar(gate.companyId, competencia));
+    const res = await materializar(gate.companyId, competencia);
+    if (res.gerados > 0) invalidateDre(gate.companyId); // parcelas novas → DRE na hora
+    return NextResponse.json(res);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }

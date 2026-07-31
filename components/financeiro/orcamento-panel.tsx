@@ -5,6 +5,7 @@ import { IconBulb, IconDeviceFloppy, IconPlus, IconTrash } from "@tabler/icons-r
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/financeiro/money-input";
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
 import type {
@@ -328,13 +329,10 @@ export function OrcamentoPanel() {
                       </span>
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                      <MoneyInput
                         value={e.orcado}
-                        onChange={(ev) => setCampo(k, "orcado", ev.target.value)}
-                        className="h-7 w-28 text-right tabular-nums"
+                        onChange={(v) => setCampo(k, "orcado", v)}
+                        className="h-7 w-32 text-right tabular-nums"
                       />
                     </td>
                     <td
@@ -354,13 +352,10 @@ export function OrcamentoPanel() {
                       {brl.format(l.realizado)}
                     </td>
                     <td className="px-2 py-1.5 text-right">
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                      <MoneyInput
                         value={e.limite}
-                        onChange={(ev) => setCampo(k, "limite", ev.target.value)}
-                        className="h-7 w-28 text-right tabular-nums"
+                        onChange={(v) => setCampo(k, "limite", v)}
+                        className="h-7 w-32 text-right tabular-nums"
                         placeholder="—"
                       />
                     </td>
