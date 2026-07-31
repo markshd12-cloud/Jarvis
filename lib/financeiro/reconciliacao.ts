@@ -56,6 +56,17 @@ export interface ReconciliacaoResult {
 /** Tolerância de casamento: 1 centavo. */
 const TOL = 0.01;
 
+/**
+ * Último dia REAL da competência ('AAAA-MM' → 'AAAA-MM-DD'). Nunca montar a data
+ * final com `-31` fixo: o Postgres rejeita '2026-09-31' com
+ * "date/time field value out of range" e a consulta inteira falha.
+ */
+function ultimoDia(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m, 0));
+  return `${ym}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 export async function reconciliarDespesa(
   companyId: string,
   competencia: string,
@@ -170,7 +181,7 @@ async function manualPorCategoria(
     )
     .eq("company_id", companyId)
     .gte("data_competencia", `${competencia}-01`)
-    .lte("data_competencia", `${competencia}-31`)
+    .lte("data_competencia", ultimoDia(competencia))
     .neq("status", "cancelada")
     .eq("fin_despesas.cancelada", false)
     .eq("fin_despesas.fonte", "manual");
@@ -264,7 +275,7 @@ export async function reconciliarPeriodo(
   try {
     const comps = ultimasCompetencias(meses);
     const deComp = `${comps[comps.length - 1]}-01`;
-    const ateComp = `${comps[0]}-31`;
+    const ateComp = ultimoDia(comps[0]);
     // Vencimento: superset das janelas [C-2, C+3] de todas as competências —
     // a mais recente agora é +2 meses, então a folga pra frente vai a +6.
     const deVenc = ymdAddMonths(-(meses + 2));
