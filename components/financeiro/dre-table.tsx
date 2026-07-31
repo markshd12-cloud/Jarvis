@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 
+import { MoneyInput } from "@/components/financeiro/money-input";
 import { cn } from "@/lib/utils";
 import type { DreRow } from "@/lib/contaazul/dre";
 
@@ -31,6 +32,64 @@ function fmtCarimbo(iso: string): string | null {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+/**
+ * Meta digitável DIRETO no DRE (folhas do Faturamento Bruto). Salva no blur em
+ * `fin_orcamentos` (BU "Todas") — o mesmo lugar do Orçamento & Limite. O `key`
+ * no ponto de uso remonta o campo quando o valor volta do refetch.
+ */
+function MetaCell({
+  caId,
+  competencia,
+  initial,
+  onSaved,
+}: {
+  caId: string;
+  competencia: string;
+  initial: number;
+  onSaved: () => void;
+}) {
+  const [v, setV] = useState(initial ? String(Math.abs(initial)) : "");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(false);
+
+  const salvar = async () => {
+    const num = Number(v) || 0;
+    if (num === Math.abs(initial)) return; // sem mudança — não grava
+    setBusy(true);
+    setErr(false);
+    try {
+      const res = await fetch("/api/financeiro/dre/meta", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ca_categoria_id: caId, competencia, valor: num }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
+      onSaved();
+    } catch {
+      setErr(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="flex justify-end">
+      <MoneyInput
+        value={v}
+        onChange={setV}
+        onBlur={() => void salvar()}
+        placeholder="meta…"
+        disabled={busy}
+        className={cn(
+          "h-6 w-28 border-dashed text-right text-xs tabular-nums",
+          err && "border-destructive",
+        )}
+      />
+    </span>
+  );
 }
 
 function Valor({ value, bold }: { value: number; bold?: boolean }) {
@@ -86,6 +145,8 @@ export function DreTable({
   despesaFonte = "contaazul",
   temOrcamento = false,
   temPrevReal = false,
+  competencia,
+  onMetaSaved,
 }: {
   rows: DreRow[];
   loading?: boolean;
@@ -100,6 +161,10 @@ export function DreTable({
    * Previsto; ao pagar viram Realizado). false = modo CA, valor único (layout antigo).
    */
   temPrevReal?: boolean;
+  /** Competência exibida ('AAAA-MM') — habilita digitar a Meta no Faturamento Bruto. */
+  competencia?: string;
+  /** Chamado após salvar uma meta digitada no DRE (pra recarregar). */
+  onMetaSaved?: () => void;
 }) {
   // Grupos expandidos (por código). 03 (Custos) começa aberto, como na referência.
   const [open, setOpen] = useState<Set<string>>(new Set(["03"]));
@@ -127,10 +192,14 @@ export function DreTable({
   }
 
   const carimbo = atualizadoAte ? fmtCarimbo(atualizadoAte) : null;
+  // Meta digitável no Faturamento Bruto exige a coluna Meta SEMPRE visível no
+  // modo Jarvis (senão a 1ª meta não teria onde ser digitada).
+  const podeEditarMeta = temPrevReal && !!competencia && !!onMetaSaved;
+  const mostraMeta = temOrcamento || podeEditarMeta;
   // Layouts: modo CA (valor único) mantém os antigos; modo Previsto×Realizado
-  // abre as duas colunas com seus AV%. Meta/Desvio só quando há orçamento.
+  // abre as duas colunas com seus AV%. Meta/Desvio quando há orçamento (ou edição).
   const cols = temPrevReal
-    ? temOrcamento
+    ? mostraMeta
       ? "grid-cols-[1fr_7.5rem_7.5rem_4rem_7.5rem_4rem_8rem]"
       : "grid-cols-[1fr_8rem_4.5rem_8rem_4.5rem]"
     : temOrcamento
@@ -150,6 +219,7 @@ export function DreTable({
     orcado,
     bold,
     small,
+    metaEditor,
   }: {
     valor: number;
     previsto: number;
@@ -158,6 +228,8 @@ export function DreTable({
     orcado: number;
     bold?: boolean;
     small?: boolean;
+    /** Substitui a célula Meta por um editor (Faturamento Bruto no modo Jarvis). */
+    metaEditor?: ReactNode;
   }) => {
     const txt = small ? "text-xs" : "text-sm";
     if (!temPrevReal) {
@@ -186,10 +258,12 @@ export function DreTable({
     // Layout novo: [Meta?] Previsto AV% Realizado AV% [Desvio?]
     return (
       <>
-        {temOrcamento ? (
-          <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
-            {orcado ? brl.format(orcado) : "—"}
-          </span>
+        {mostraMeta ? (
+          metaEditor ?? (
+            <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
+              {orcado ? brl.format(orcado) : "—"}
+            </span>
+          )
         ) : null}
         <span className="text-right">
           <Valor value={previsto} bold={bold} />
@@ -203,7 +277,7 @@ export function DreTable({
         <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
           {fmtAv(avReal)}
         </span>
-        {temOrcamento ? (
+        {mostraMeta ? (
           <span className={cn("text-right", txt)}>
             <Desvio valor={previsto} orcado={orcado} bold={bold} />
           </span>
@@ -247,12 +321,12 @@ export function DreTable({
         <span>Categoria</span>
         {temPrevReal ? (
           <>
-            {temOrcamento ? <span className="text-right">Meta</span> : null}
+            {mostraMeta ? <span className="text-right">Meta</span> : null}
             <span className="text-right">Previsto</span>
             <span className="text-right">AV %</span>
             <span className="text-right">Realizado</span>
             <span className="text-right">AV %</span>
-            {temOrcamento ? <span className="text-right">Desvio</span> : null}
+            {mostraMeta ? <span className="text-right">Desvio</span> : null}
           </>
         ) : (
           <>
@@ -349,6 +423,19 @@ export function DreTable({
                         orcado={leaf.orcado}
                         bold={leaf.sub}
                         small
+                        metaEditor={
+                          // EXCLUSIVO do Faturamento Bruto (grupo 01): meta digitável
+                          // direto no DRE — grava no Orçamento & Limite (BU Todas).
+                          podeEditarMeta && row.codigo === "01" && !leaf.sub && leaf.caId ? (
+                            <MetaCell
+                              key={`${leaf.caId}-${competencia}-${leaf.orcado}`}
+                              caId={leaf.caId}
+                              competencia={competencia!}
+                              initial={leaf.orcado}
+                              onSaved={onMetaSaved!}
+                            />
+                          ) : undefined
+                        }
                       />
                     </div>
                   ))

@@ -134,6 +134,7 @@ export function ContasPagarPanel() {
     bu_id: "",
     categoria_id: "",
     busca: "",
+    competencia: "", // 'AAAA-MM' = só aquele mês; vazio = todos os meses
   });
 
   useEffect(() => {
@@ -168,6 +169,7 @@ export function ContasPagarPanel() {
       if (filtros.bu_id) qs.set("bu_id", filtros.bu_id);
       if (filtros.categoria_id) qs.set("categoria_id", filtros.categoria_id);
       if (filtros.busca.trim()) qs.set("busca", filtros.busca.trim());
+      if (filtros.competencia) qs.set("competencia", filtros.competencia);
       const j = await fetch(`/api/financeiro/despesas?${qs}`).then((r) => r.json());
       if (j.error) throw new Error(j.error);
       setParcelas(j.parcelas ?? []);
@@ -289,6 +291,26 @@ export function ContasPagarPanel() {
               {g.label}
             </button>
           ))}
+        </div>
+        <div className="flex items-center gap-1">
+          <label className="text-[11px] text-muted-foreground">Competência:</label>
+          <Input
+            type="month"
+            className="h-8 w-40"
+            value={filtros.competencia}
+            onChange={(e) => setF("competencia", e.target.value)}
+            title="Vazio = todos os meses"
+          />
+          {filtros.competencia && (
+            <button
+              type="button"
+              className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+              onClick={() => setF("competencia", "")}
+              title="Limpar (todos os meses)"
+            >
+              todos
+            </button>
+          )}
         </div>
         <select
           className={cn(selectCls, "w-auto")}

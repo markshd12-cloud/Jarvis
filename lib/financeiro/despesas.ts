@@ -331,18 +331,33 @@ export interface FiltrosParcela {
   busca?: string;
   de?: string;
   ate?: string;
+  /** Mês de COMPETÊNCIA ('AAAA-MM') — vê as dívidas de qualquer mês (passado/futuro). */
+  competencia?: string;
+}
+
+/** Último dia real da competência ('AAAA-MM' → 'AAAA-MM-DD'). */
+function ultimoDiaComp(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m, 0));
+  return `${ym}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 const one = <T>(v: T | T[] | null): T | null =>
   Array.isArray(v) ? (v[0] ?? null) : v;
 
-/** Lista as parcelas (linhas de contas a pagar) com o contexto da despesa. */
+/**
+ * Lista as parcelas (linhas de contas a pagar) com o contexto da despesa.
+ * PAGINADO: o PostgREST capa em 1000 linhas por request; sem paginar, um acervo
+ * de ~2000 parcelas era SILENCIOSAMENTE cortado — os meses mais à frente (fim da
+ * ordenação por vencimento) simplesmente não apareciam na tela.
+ */
 export async function listParcelas(
   companyId: string,
   filtros: FiltrosParcela = {},
 ): Promise<ParcelaRow[]> {
   const admin = createAdminClient();
-  let q = admin
+  const montar = () => {
+    let q = admin
     .from("fin_parcelas")
     .select(
       `id, numero, valor_previsto, valor_realizado, data_competencia, data_vencimento,
@@ -369,11 +384,28 @@ export async function listParcelas(
   if (filtros.busca) q = q.ilike("fin_despesas.descricao", `%${filtros.busca}%`);
   if (filtros.de) q = q.gte("data_vencimento", filtros.de);
   if (filtros.ate) q = q.lte("data_vencimento", filtros.ate);
+  if (filtros.competencia && /^\d{4}-\d{2}$/.test(filtros.competencia))
+    q = q
+      .gte("data_competencia", `${filtros.competencia}-01`)
+      .lte("data_competencia", ultimoDiaComp(filtros.competencia));
+    return q;
+  };
 
-  const { data, error } = await q.order("data_vencimento", { ascending: true });
-  if (error) throw new Error(`listParcelas: ${error.message}`);
+  const PAGE = 1000;
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await montar()
+      .order("data_vencimento", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(`listParcelas: ${error.message}`);
+    const lote = (data ?? []) as Record<string, unknown>[];
+    rows.push(...lote);
+    if (lote.length < PAGE) break;
+  }
 
-  return (data ?? []).map((r): ParcelaRow => {
+  const hoje = hojeISO();
+  return rows.map((r): ParcelaRow => {
     const bu = one<{ nome: string }>(r.business_units as never);
     const desp = one<{
       id: string;

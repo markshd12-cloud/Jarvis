@@ -41,6 +41,12 @@ async function send(url: string, method: "POST" | "DELETE", body?: unknown) {
 function competenciaAtual(): string {
   return new Date().toISOString().slice(0, 7);
 }
+/** 'AAAA-MM' ± n meses. */
+function addMeses(ym: string, n: number): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
 
 type Editavel = { orcado: string; limite: string };
 
@@ -255,14 +261,32 @@ export function OrcamentoPanel() {
             <strong>Realizado</strong> (pago/recebido) — por categoria × BU. A Meta também alimenta o DRE.
           </p>
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <label className="text-xs text-muted-foreground">Competência:</label>
+        <div className="ml-auto flex items-center gap-1">
+          <label className="mr-1 text-xs text-muted-foreground">Competência:</label>
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setCompetencia((c) => addMeses(c, -1))}
+            title="Mês anterior"
+          >
+            ◀
+          </Button>
           <Input
             type="month"
             className="h-8 w-40"
             value={competencia}
-            onChange={(e) => setCompetencia(e.target.value)}
+            onChange={(e) => e.target.value && setCompetencia(e.target.value)}
           />
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setCompetencia((c) => addMeses(c, 1))}
+            title="Próximo mês"
+          >
+            ▶
+          </Button>
         </div>
       </div>
 

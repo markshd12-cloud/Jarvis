@@ -32,6 +32,8 @@ export interface FinRecorrencia {
   periodicidade: Periodicidade;
   /** Rateio por BU da despesa gerada ({bu_id, percentual}[], Σ=100%); null = 100% na bu_id. */
   rateio: { bu_id: string; percentual: number }[] | null;
+  /** 1ª competência a gerar ('AAAA-MM'); null = sem restrição. */
+  inicio_competencia: string | null;
   ativo: boolean;
   created_at: string;
 }

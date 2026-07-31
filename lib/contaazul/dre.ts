@@ -77,6 +77,12 @@ export type DreChild = {
   orcado: number;
   /** Cabeçalho de subgrupo (03.1/03.2) — renderiza um pouco mais forte. */
   sub?: boolean;
+  /**
+   * Id da categoria financeira do CA desta FOLHA (subgrupos/grupos não têm).
+   * Permite à UI editar a Meta direto no DRE (grava em `fin_orcamentos` via
+   * de-para `ca_categoria_id` → `fin_categorias`).
+   */
+  caId?: string;
 };
 export type DreRow =
   | {
@@ -546,6 +552,7 @@ async function computeDre(
         previsto: prevPorCat.get(c.id) ?? 0,
         avPrev: 0,
         orcado: orcadoPorCat.get(c.id) ?? 0,
+        caId: c.id,
       };
     };
 

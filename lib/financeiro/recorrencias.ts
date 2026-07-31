@@ -29,6 +29,12 @@ export const recorrenciaInputSchema = z.object({
   periodicidade: z.enum(PERIODICIDADES as [string, ...string[]]),
   // Rateio por BU da despesa gerada. Vazio/ausente = 100% na bu_id.
   rateio: rateioLinhaSchema.array().nullish(),
+  // 1ª competência a gerar ('AAAA-MM'). Evita a 1ª parcela nascer VENCIDA
+  // (recorrência criada dia 31 c/ vencimento dia 5). Null = sem restrição.
+  inicio_competencia: z
+    .string()
+    .regex(/^\d{4}-\d{2}$/, "competência AAAA-MM")
+    .nullish(),
 });
 export type RecorrenciaInput = z.infer<typeof recorrenciaInputSchema>;
 
@@ -150,10 +156,12 @@ export async function materializar(
   const erros: string[] = [];
 
   for (const r of recs) {
-    // Anual: só gera no mês de criação.
+    // Ainda não começou: só gera de `inicio_competencia` em diante.
+    if (r.inicio_competencia && competencia < r.inicio_competencia) continue;
+    // Anual: gera no MÊS do início (fallback: mês de criação, comportamento antigo).
     if (r.periodicidade === "anual") {
-      const mesCriacao = r.created_at?.slice(5, 7);
-      if (mesCriacao !== competencia.slice(5, 7)) continue;
+      const mesAlvo = (r.inicio_competencia ?? r.created_at ?? "").slice(5, 7);
+      if (mesAlvo !== competencia.slice(5, 7)) continue;
     }
     if (jaNoMes.has(r.id)) {
       pulados++;

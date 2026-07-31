@@ -257,6 +257,14 @@ function RecorrenciaForm({
   const [valor, setValor] = useState(item ? String(item.valor_previsto) : "");
   const [dia, setDia] = useState(item ? String(item.dia_vencimento) : "5");
   const [periodicidade, setPeriodicidade] = useState(item?.periodicidade ?? "mensal");
+  // Início: default inteligente — se o dia de vencimento deste mês JÁ PASSOU,
+  // sugere o mês seguinte (senão a 1ª parcela nasceria vencida).
+  const [inicio, setInicio] = useState(() => {
+    if (item) return item.inicio_competencia ?? "";
+    const now = new Date();
+    const d = now.getDate() > 5 ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
   const [rateio, setRateio] = useState<RateioLinha[]>(item?.rateio ?? []);
   const [rateioOpen, setRateioOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -281,6 +289,7 @@ function RecorrenciaForm({
         dia_vencimento: Number(dia),
         periodicidade,
         rateio: rateio.length ? rateio : null,
+        inicio_competencia: inicio || null,
       };
       if (item) await send(`/api/financeiro/recorrencias/${item.id}`, "PATCH", body);
       else await send("/api/financeiro/recorrencias", "POST", body);
@@ -337,7 +346,7 @@ function RecorrenciaForm({
             allowEmpty
           />
         </div>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           <div className="flex flex-col gap-1">
             <Label>Valor</Label>
             <MoneyInput value={valor} onChange={setValor} />
@@ -350,6 +359,15 @@ function RecorrenciaForm({
               max="31"
               value={dia}
               onChange={(e) => setDia(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Início</Label>
+            <Input
+              type="month"
+              value={inicio}
+              onChange={(e) => setInicio(e.target.value)}
+              title="1ª competência a gerar — evita a 1ª parcela nascer vencida"
             />
           </div>
           <div className="flex flex-col gap-1">

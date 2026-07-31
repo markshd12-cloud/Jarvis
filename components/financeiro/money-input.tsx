@@ -18,6 +18,7 @@ export function MoneyInput({
   placeholder = "R$ 0,00",
   disabled,
   autoFocus,
+  onBlur,
 }: {
   value: string;
   onChange: (decimal: string) => void;
@@ -25,6 +26,7 @@ export function MoneyInput({
   placeholder?: string;
   disabled?: boolean;
   autoFocus?: boolean;
+  onBlur?: () => void;
 }) {
   const n = Number(value);
   const display = value === "" || !Number.isFinite(n) ? "" : fmt.format(n);
@@ -36,6 +38,7 @@ export function MoneyInput({
       placeholder={placeholder}
       disabled={disabled}
       autoFocus={autoFocus}
+      onBlur={onBlur}
       value={display}
       onChange={(e) => {
         // Máscara por dígitos: tudo que não for dígito cai fora; os dígitos são centavos.

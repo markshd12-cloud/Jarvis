@@ -268,6 +268,8 @@ export function FinanceiroShell() {
             despesaFonte={dre?.despesaFonte ?? "contaazul"}
             temOrcamento={dre?.temOrcamento ?? false}
             temPrevReal={dre?.temPrevReal ?? false}
+            competencia={competencia}
+            onMetaSaved={() => setReloadKey((k) => k + 1)}
           />
         </section>
       ) : null}

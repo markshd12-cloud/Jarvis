@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
     busca: p.get("busca") ?? undefined,
     de: p.get("de") ?? undefined,
     ate: p.get("ate") ?? undefined,
+    competencia: p.get("competencia") ?? undefined,
   };
   return NextResponse.json({ parcelas: await listParcelas(gate.companyId, filtros) });
 }
