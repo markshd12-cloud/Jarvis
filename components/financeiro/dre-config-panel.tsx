@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   IconChevronRight,
   IconDownload,
@@ -55,6 +55,8 @@ export function DreConfigPanel({
   const [recon, setRecon] = useState<ReconciliacaoResult | null>(null);
   const [periodo, setPeriodo] = useState<ReconPeriodoResult | null>(null);
   const [busy, setBusy] = useState<null | "import" | "cutover" | "recon" | "periodo">(null);
+  // Grupos abertos no detalhamento do Δ (por categoria).
+  const [abertos, setAbertos] = useState<Set<string>>(new Set());
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -237,21 +239,80 @@ export function DreConfigPanel({
                     </tr>
                   </thead>
                   <tbody>
-                    {recon.porGrupo.map((g) => (
-                      <tr key={g.grupo} className="border-t border-border/60">
-                        <td className="py-1">{g.label}</td>
-                        <td className="py-1 text-right tabular-nums">{brl.format(g.ca)}</td>
-                        <td className="py-1 text-right tabular-nums">{brl.format(g.jarvis)}</td>
-                        <td
-                          className={cn(
-                            "py-1 text-right tabular-nums",
-                            Math.abs(g.delta) > 0.01 ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
-                          )}
-                        >
-                          {brl.format(g.delta)}
-                        </td>
-                      </tr>
-                    ))}
+                    {recon.porGrupo.map((g) => {
+                      const cats = (recon.porCategoria ?? []).filter((c) => c.grupo === g.grupo);
+                      const diverge = Math.abs(g.delta) > 0.01;
+                      const open2 = abertos.has(g.grupo);
+                      return (
+                        <Fragment key={g.grupo}>
+                          <tr
+                            className={cn("border-t border-border/60", cats.length > 0 && "cursor-pointer hover:bg-muted/30")}
+                            onClick={() =>
+                              cats.length > 0 &&
+                              setAbertos((s) => {
+                                const n = new Set(s);
+                                if (n.has(g.grupo)) n.delete(g.grupo);
+                                else n.add(g.grupo);
+                                return n;
+                              })
+                            }
+                          >
+                            <td className="py-1">
+                              <span className="flex items-center gap-1">
+                                {cats.length > 0 ? (
+                                  <IconChevronRight
+                                    className={cn("h-3 w-3 shrink-0 transition-transform", open2 && "rotate-90")}
+                                  />
+                                ) : (
+                                  <span className="w-3" />
+                                )}
+                                {g.label}
+                                {cats.length > 0 && (
+                                  <span className="rounded bg-amber-500/10 px-1 text-[10px] text-amber-600 dark:text-amber-400">
+                                    {cats.length}
+                                  </span>
+                                )}
+                              </span>
+                            </td>
+                            <td className="py-1 text-right tabular-nums">{brl.format(g.ca)}</td>
+                            <td className="py-1 text-right tabular-nums">{brl.format(g.jarvis)}</td>
+                            <td
+                              className={cn(
+                                "py-1 text-right tabular-nums",
+                                diverge ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+                              )}
+                            >
+                              {brl.format(g.delta)}
+                            </td>
+                          </tr>
+                          {open2 &&
+                            cats.map((c) => (
+                              <tr key={`${g.grupo}-${c.nome}`} className="bg-muted/20">
+                                <td className="py-1 pl-6 text-muted-foreground">
+                                  {c.nome}
+                                  {c.jarvisManual > 0.01 && (
+                                    <span
+                                      className="ml-1 rounded bg-primary/10 px-1 text-[10px] text-primary"
+                                      title="Lançado à mão no Jarvis — o Conta Azul não tem"
+                                    >
+                                      manual {brl.format(c.jarvisManual)}
+                                    </span>
+                                  )}
+                                </td>
+                                <td className="py-1 text-right tabular-nums text-muted-foreground">
+                                  {brl.format(c.ca)}
+                                </td>
+                                <td className="py-1 text-right tabular-nums text-muted-foreground">
+                                  {brl.format(c.jarvis)}
+                                </td>
+                                <td className="py-1 text-right tabular-nums text-amber-600 dark:text-amber-400">
+                                  {brl.format(c.delta)}
+                                </td>
+                              </tr>
+                            ))}
+                        </Fragment>
+                      );
+                    })}
                     {recon.porGrupo.length === 0 && (
                       <tr>
                         <td colSpan={4} className="py-2 text-center text-muted-foreground">
@@ -279,7 +340,7 @@ export function DreConfigPanel({
                 <p className="mt-2 text-[11px] text-muted-foreground">
                   {recon.ok
                     ? "Δ ≈ 0 — seguro cortar esta competência pro Jarvis."
-                    : "Δ ≠ 0 — importe/ajuste a despesa antes de cortar, ou o DRE vai divergir."}
+                    : "Δ ≠ 0 — clique num grupo para ver QUAIS categorias divergem. Δ positivo = o Jarvis tem a mais (ex.: lançamento “manual”, que o CA não tem). Δ negativo = o CA tem algo que falta importar."}
                 </p>
               </div>
             ) : (

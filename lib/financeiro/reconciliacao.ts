@@ -25,6 +25,20 @@ export interface ReconGrupo {
   delta: number; // jarvis - ca
 }
 
+/**
+ * Detalhe do Δ por CATEGORIA — o "de onde vem a diferença". `jarvisManual` é a
+ * parte lançada à mão no Jarvis (`fonte='manual'`, ex. uma despesa nova que o CA
+ * não tem): explica sozinha boa parte dos Δ positivos.
+ */
+export interface ReconCategoria {
+  grupo: string;
+  nome: string;
+  ca: number;
+  jarvis: number;
+  jarvisManual: number;
+  delta: number;
+}
+
 export interface ReconciliacaoResult {
   connected: boolean;
   competencia: string;
@@ -34,6 +48,8 @@ export interface ReconciliacaoResult {
   /** |delta| pequeno o bastante para cortar o mês com segurança. */
   ok: boolean;
   porGrupo: ReconGrupo[];
+  /** Só as categorias que divergem (|Δ| > tolerância), maior Δ primeiro. */
+  porCategoria: ReconCategoria[];
   erro?: string;
 }
 
@@ -53,14 +69,20 @@ export async function reconciliarDespesa(
     const admin = createAdminClient();
     const { data: cats, error } = await admin
       .from("fin_categorias")
-      .select("ca_categoria_id, grupo_dre")
+      .select("ca_categoria_id, grupo_dre, nome")
       .eq("company_id", companyId)
       .not("ca_categoria_id", "is", null);
     if (error) throw new Error(error.message);
     const grupoByCa = new Map<string, string>();
+    const nomeByCa = new Map<string, string>();
     for (const c of cats ?? [])
-      if (c.ca_categoria_id)
+      if (c.ca_categoria_id) {
         grupoByCa.set(c.ca_categoria_id as string, (c.grupo_dre as string | null) ?? "sem");
+        nomeByCa.set(c.ca_categoria_id as string, (c.nome as string | null) ?? "—");
+      }
+
+    // Parte lançada À MÃO no Jarvis (não veio do import) — explica Δ positivo.
+    const manualByCa = await manualPorCategoria(companyId, competencia);
 
     const agg = new Map<string, { ca: number; jarvis: number }>();
     const add = (m: Map<string, number>, lado: "ca" | "jarvis") => {
@@ -84,6 +106,24 @@ export async function reconciliarDespesa(
       }))
       .sort((a, b) => a.grupo.localeCompare(b.grupo));
 
+    // Detalhe por categoria: união das chaves dos dois lados, só o que diverge.
+    const porCategoria: ReconCategoria[] = [];
+    for (const caId of new Set([...caMap.keys(), ...jarvisMap.keys()])) {
+      const vCa = caMap.get(caId) ?? 0;
+      const vJarvis = jarvisMap.get(caId) ?? 0;
+      const d = vJarvis - vCa;
+      if (Math.abs(d) <= TOL) continue;
+      porCategoria.push({
+        grupo: grupoByCa.get(caId) ?? "sem",
+        nome: nomeByCa.get(caId) ?? "(categoria fora do de-para)",
+        ca: vCa,
+        jarvis: vJarvis,
+        jarvisManual: manualByCa.get(caId) ?? 0,
+        delta: d,
+      });
+    }
+    porCategoria.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
     const ca = [...caMap.values()].reduce((s, v) => s + v, 0);
     const jarvis = [...jarvisMap.values()].reduce((s, v) => s + v, 0);
     const delta = jarvis - ca;
@@ -96,6 +136,7 @@ export async function reconciliarDespesa(
       delta,
       ok: Math.abs(delta) <= TOL,
       porGrupo,
+      porCategoria,
     };
   } catch (e) {
     return {
@@ -106,9 +147,44 @@ export async function reconciliarDespesa(
       delta: 0,
       ok: false,
       porGrupo: [],
+      porCategoria: [],
       erro: (e as Error).message,
     };
   }
+}
+
+/**
+ * Quanto de cada categoria (chaveado por `ca_categoria_id`) foi lançado À MÃO no
+ * Jarvis na competência — isto é, despesa `fonte='manual'`, que por definição não
+ * existe no Conta Azul. Mesma regra de recorte do `despesaJarvisPorCategoria`.
+ */
+async function manualPorCategoria(
+  companyId: string,
+  competencia: string,
+): Promise<Map<string, number>> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_parcelas")
+    .select(
+      "valor_previsto, fin_despesas!inner ( fonte, cancelada, fin_categorias!inner ( ca_categoria_id ) )",
+    )
+    .eq("company_id", companyId)
+    .gte("data_competencia", `${competencia}-01`)
+    .lte("data_competencia", `${competencia}-31`)
+    .neq("status", "cancelada")
+    .eq("fin_despesas.cancelada", false)
+    .eq("fin_despesas.fonte", "manual");
+  if (error) throw new Error(`manualPorCategoria: ${error.message}`);
+  const mapa = new Map<string, number>();
+  for (const r of data ?? []) {
+    const d = r.fin_despesas as unknown as {
+      fin_categorias?: { ca_categoria_id?: string | null } | null;
+    };
+    const caId = d?.fin_categorias?.ca_categoria_id ?? null;
+    if (!caId) continue;
+    mapa.set(caId, (mapa.get(caId) ?? 0) + Number(r.valor_previsto ?? 0));
+  }
+  return mapa;
 }
 
 // ------------------------- Reconciliação de PERÍODO ------------------------- //
