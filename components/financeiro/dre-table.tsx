@@ -85,6 +85,7 @@ export function DreTable({
   atualizadoAte,
   despesaFonte = "contaazul",
   temOrcamento = false,
+  temPrevReal = false,
 }: {
   rows: DreRow[];
   loading?: boolean;
@@ -92,8 +93,13 @@ export function DreTable({
   atualizadoAte?: string | null;
   /** Fonte da despesa nesta competência (Passo 11): 'jarvis' pós-cutover. */
   despesaFonte?: "contaazul" | "jarvis";
-  /** Há metas nesta competência? Só então as colunas Orçado/Desvio aparecem. */
+  /** Há metas nesta competência? Só então as colunas Meta/Desvio aparecem. */
   temOrcamento?: boolean;
+  /**
+   * Fonte Jarvis com Previsto × Realizado de verdade (contas a pagar entram no
+   * Previsto; ao pagar viram Realizado). false = modo CA, valor único (layout antigo).
+   */
+  temPrevReal?: boolean;
 }) {
   // Grupos expandidos (por código). 03 (Custos) começa aberto, como na referência.
   const [open, setOpen] = useState<Set<string>>(new Set(["03"]));
@@ -121,11 +127,90 @@ export function DreTable({
   }
 
   const carimbo = atualizadoAte ? fmtCarimbo(atualizadoAte) : null;
-  // Sem metas: mantém o layout de 3 colunas de sempre (uma coluna de zeros
-  // pareceria "orçamos R$ 0"). Com metas: abre Orçado e Desvio.
-  const cols = temOrcamento
-    ? "grid-cols-[1fr_8rem_8rem_8.5rem_4.5rem]"
-    : "grid-cols-[1fr_9rem_6rem]";
+  // Layouts: modo CA (valor único) mantém os antigos; modo Previsto×Realizado
+  // abre as duas colunas com seus AV%. Meta/Desvio só quando há orçamento.
+  const cols = temPrevReal
+    ? temOrcamento
+      ? "grid-cols-[1fr_7.5rem_7.5rem_4rem_7.5rem_4rem_8rem]"
+      : "grid-cols-[1fr_8rem_4.5rem_8rem_4.5rem]"
+    : temOrcamento
+      ? "grid-cols-[1fr_8rem_8rem_8.5rem_4.5rem]"
+      : "grid-cols-[1fr_9rem_6rem]";
+
+  /**
+   * Células de valores de uma linha (tudo após "Categoria"), num layout só.
+   * Desvio compara o PREVISTO (comprometido/emitido) com a Meta — o realizado
+   * parcial do meio do mês enganaria (despesa ainda não paga pareceria "melhor").
+   */
+  const Cells = ({
+    valor,
+    previsto,
+    avReal,
+    avPrevisto,
+    orcado,
+    bold,
+    small,
+  }: {
+    valor: number;
+    previsto: number;
+    avReal: number;
+    avPrevisto: number;
+    orcado: number;
+    bold?: boolean;
+    small?: boolean;
+  }) => {
+    const txt = small ? "text-xs" : "text-sm";
+    if (!temPrevReal) {
+      // Layout antigo: [Meta?] Valor [Desvio?] AV%
+      return (
+        <>
+          {temOrcamento ? (
+            <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
+              {orcado ? brl.format(orcado) : "—"}
+            </span>
+          ) : null}
+          <span className="text-right">
+            <Valor value={valor} bold={bold} />
+          </span>
+          {temOrcamento ? (
+            <span className={cn("text-right", txt)}>
+              <Desvio valor={valor} orcado={orcado} bold={bold} />
+            </span>
+          ) : null}
+          <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
+            {fmtAv(avReal)}
+          </span>
+        </>
+      );
+    }
+    // Layout novo: [Meta?] Previsto AV% Realizado AV% [Desvio?]
+    return (
+      <>
+        {temOrcamento ? (
+          <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
+            {orcado ? brl.format(orcado) : "—"}
+          </span>
+        ) : null}
+        <span className="text-right">
+          <Valor value={previsto} bold={bold} />
+        </span>
+        <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
+          {fmtAv(avPrevisto)}
+        </span>
+        <span className="text-right">
+          <Valor value={valor} bold={bold} />
+        </span>
+        <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
+          {fmtAv(avReal)}
+        </span>
+        {temOrcamento ? (
+          <span className={cn("text-right", txt)}>
+            <Desvio valor={previsto} orcado={orcado} bold={bold} />
+          </span>
+        ) : null}
+      </>
+    );
+  };
 
   return (
     <div className="overflow-hidden rounded-xl border border-border bg-card">
@@ -160,10 +245,23 @@ export function DreTable({
         )}
       >
         <span>Categoria</span>
-        {temOrcamento ? <span className="text-right">Meta</span> : null}
-        <span className="text-right">{temOrcamento ? "Realizado" : "Valor"}</span>
-        {temOrcamento ? <span className="text-right">Desvio</span> : null}
-        <span className="text-right">AV %</span>
+        {temPrevReal ? (
+          <>
+            {temOrcamento ? <span className="text-right">Meta</span> : null}
+            <span className="text-right">Previsto</span>
+            <span className="text-right">AV %</span>
+            <span className="text-right">Realizado</span>
+            <span className="text-right">AV %</span>
+            {temOrcamento ? <span className="text-right">Desvio</span> : null}
+          </>
+        ) : (
+          <>
+            {temOrcamento ? <span className="text-right">Meta</span> : null}
+            <span className="text-right">{temOrcamento ? "Realizado" : "Valor"}</span>
+            {temOrcamento ? <span className="text-right">Desvio</span> : null}
+            <span className="text-right">AV %</span>
+          </>
+        )}
       </div>
 
       <div className="divide-y divide-border/60">
@@ -177,22 +275,14 @@ export function DreTable({
                 <span className="text-sm font-semibold text-foreground">
                   {row.label}
                 </span>
-                {temOrcamento ? (
-                  <span className="text-right text-sm text-muted-foreground tabular-nums">
-                    {row.orcado ? brl.format(row.orcado) : "—"}
-                  </span>
-                ) : null}
-                <span className="text-right">
-                  <Valor value={row.valor} bold />
-                </span>
-                {temOrcamento ? (
-                  <span className="text-right text-sm">
-                    <Desvio valor={row.valor} orcado={row.orcado} bold />
-                  </span>
-                ) : null}
-                <span className="text-right text-sm font-semibold text-muted-foreground">
-                  {fmtAv(row.av)}
-                </span>
+                <Cells
+                  valor={row.valor}
+                  previsto={row.previsto}
+                  avReal={row.av}
+                  avPrevisto={row.avPrev}
+                  orcado={row.orcado}
+                  bold
+                />
               </div>
             );
           }
@@ -224,22 +314,13 @@ export function DreTable({
                   <span className="text-xs text-muted-foreground">{row.codigo}</span>
                   <span>{row.label}</span>
                 </span>
-                {temOrcamento ? (
-                  <span className="text-right text-sm text-muted-foreground tabular-nums">
-                    {row.orcado ? brl.format(row.orcado) : "—"}
-                  </span>
-                ) : null}
-                <span className="text-right">
-                  <Valor value={row.valor} />
-                </span>
-                {temOrcamento ? (
-                  <span className="text-right text-sm">
-                    <Desvio valor={row.valor} orcado={row.orcado} />
-                  </span>
-                ) : null}
-                <span className="text-right text-sm text-muted-foreground">
-                  {fmtAv(row.av)}
-                </span>
+                <Cells
+                  valor={row.valor}
+                  previsto={row.previsto}
+                  avReal={row.av}
+                  avPrevisto={row.avPrev}
+                  orcado={row.orcado}
+                />
               </button>
 
               {isOpen && hasChildren
@@ -260,22 +341,15 @@ export function DreTable({
                       >
                         {leaf.label}
                       </span>
-                      {temOrcamento ? (
-                        <span className="text-right text-xs text-muted-foreground tabular-nums">
-                          {leaf.orcado ? brl.format(leaf.orcado) : "—"}
-                        </span>
-                      ) : null}
-                      <span className="text-right text-sm">
-                        <Valor value={leaf.valor} bold={leaf.sub} />
-                      </span>
-                      {temOrcamento ? (
-                        <span className="text-right text-xs">
-                          <Desvio valor={leaf.valor} orcado={leaf.orcado} bold={leaf.sub} />
-                        </span>
-                      ) : null}
-                      <span className="text-right text-xs text-muted-foreground">
-                        {fmtAv(leaf.av)}
-                      </span>
+                      <Cells
+                        valor={leaf.valor}
+                        previsto={leaf.previsto}
+                        avReal={leaf.av}
+                        avPrevisto={leaf.avPrev}
+                        orcado={leaf.orcado}
+                        bold={leaf.sub}
+                        small
+                      />
                     </div>
                   ))
                 : null}

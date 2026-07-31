@@ -15,6 +15,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import { Label } from "@/components/ui/label";
+import {
+  RateioEditorDialog,
+  rateioValido,
+  type RateioLinha,
+} from "@/components/financeiro/rateio-editor";
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
 import {
@@ -252,8 +257,12 @@ function RecorrenciaForm({
   const [valor, setValor] = useState(item ? String(item.valor_previsto) : "");
   const [dia, setDia] = useState(item ? String(item.dia_vencimento) : "5");
   const [periodicidade, setPeriodicidade] = useState(item?.periodicidade ?? "mensal");
+  const [rateio, setRateio] = useState<RateioLinha[]>(item?.rateio ?? []);
+  const [rateioOpen, setRateioOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const buNome = (id: string) => dim.bus.find((b) => b.id === id)?.nome ?? "—";
 
   const submit = async () => {
     setBusy(true);
@@ -261,6 +270,8 @@ function RecorrenciaForm({
     try {
       if (!categoriaId) throw new Error("Selecione a categoria.");
       if (!buId) throw new Error("Selecione a BU.");
+      if (!rateioValido(rateio))
+        throw new Error("Rateio inválido — a soma dos percentuais precisa ser 100%.");
       const body = {
         descricao,
         categoria_id: categoriaId,
@@ -269,6 +280,7 @@ function RecorrenciaForm({
         valor_previsto: Number(valor),
         dia_vencimento: Number(dia),
         periodicidade,
+        rateio: rateio.length ? rateio : null,
       };
       if (item) await send(`/api/financeiro/recorrencias/${item.id}`, "PATCH", body);
       else await send("/api/financeiro/recorrencias", "POST", body);
@@ -360,6 +372,39 @@ function RecorrenciaForm({
             Anual gera apenas no mês de criação da recorrência.
           </p>
         )}
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border px-3 py-2">
+          <span className="text-xs font-medium text-muted-foreground">Rateio por BU</span>
+          {rateio.length === 0 ? (
+            <span className="text-xs text-muted-foreground">— 100% na BU acima</span>
+          ) : (
+            <span className="text-xs">
+              {rateio.map((l) => `${buNome(l.bu_id)} ${l.percentual}%`).join(" · ")}
+            </span>
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7"
+            onClick={() => setRateioOpen(true)}
+          >
+            {rateio.length ? "Editar rateio" : "Dividir entre BUs"}
+          </Button>
+          {rateio.length > 0 && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 text-muted-foreground"
+              onClick={() => setRateio([])}
+            >
+              Remover
+            </Button>
+          )}
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Ao gerar o mês, a despesa nasce em Contas a Pagar já com esse rateio.
+        </p>
         {err && <p className="text-xs text-destructive">{err}</p>}
         <DialogFooter>
           <DialogClose render={<Button type="button" variant="outline" />}>Cancelar</DialogClose>
@@ -368,6 +413,22 @@ function RecorrenciaForm({
           </Button>
         </DialogFooter>
       </form>
+
+      <Dialog open={rateioOpen} onOpenChange={(o) => !o && setRateioOpen(false)}>
+        {rateioOpen && (
+          <RateioEditorDialog
+            bus={dim.bus}
+            titulo="Rateio da recorrência por BU"
+            initial={rateio}
+            onSave={(linhas) => {
+              setRateio(linhas);
+              if (linhas.length) setBuId(linhas[0].bu_id);
+              setRateioOpen(false);
+            }}
+            onCancel={() => setRateioOpen(false)}
+          />
+        )}
+      </Dialog>
     </DialogContent>
   );
 }

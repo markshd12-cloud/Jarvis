@@ -30,6 +30,8 @@ export interface FinRecorrencia {
   valor_previsto: number;
   dia_vencimento: number;
   periodicidade: Periodicidade;
+  /** Rateio por BU da despesa gerada ({bu_id, percentual}[], Σ=100%); null = 100% na bu_id. */
+  rateio: { bu_id: string; percentual: number }[] | null;
   ativo: boolean;
   created_at: string;
 }

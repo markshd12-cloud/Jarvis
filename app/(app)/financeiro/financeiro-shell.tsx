@@ -166,6 +166,8 @@ export function FinanceiroShell() {
             connected: false,
             competencia,
             receitaBruta: 0,
+            receitaBrutaPrev: 0,
+            temPrevReal: false,
             rows: [],
             semMapeamento: 0,
             atualizadoAte: null,
@@ -265,6 +267,7 @@ export function FinanceiroShell() {
             atualizadoAte={dre?.atualizadoAte ?? null}
             despesaFonte={dre?.despesaFonte ?? "contaazul"}
             temOrcamento={dre?.temOrcamento ?? false}
+            temPrevReal={dre?.temPrevReal ?? false}
           />
         </section>
       ) : null}

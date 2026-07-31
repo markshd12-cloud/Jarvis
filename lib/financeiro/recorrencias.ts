@@ -10,6 +10,13 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  buPrincipal,
+  inserirRateios,
+  rateioLinhaSchema,
+  validarRateio,
+  type RateioLinha,
+} from "./rateio";
 import { fkFriendly, PERIODICIDADES, type FinRecorrencia } from "./types";
 
 export const recorrenciaInputSchema = z.object({
@@ -20,6 +27,8 @@ export const recorrenciaInputSchema = z.object({
   valor_previsto: z.coerce.number().nonnegative(),
   dia_vencimento: z.coerce.number().int().min(1).max(31),
   periodicidade: z.enum(PERIODICIDADES as [string, ...string[]]),
+  // Rateio por BU da despesa gerada. Vazio/ausente = 100% na bu_id.
+  rateio: rateioLinhaSchema.array().nullish(),
 });
 export type RecorrenciaInput = z.infer<typeof recorrenciaInputSchema>;
 
@@ -39,10 +48,15 @@ export async function createRecorrencia(
   input: RecorrenciaInput,
 ): Promise<FinRecorrencia> {
   const v = recorrenciaInputSchema.parse(input);
+  if (v.rateio?.length) {
+    validarRateio(v.rateio);
+    // Com rateio, a bu_id vira a principal (maior %) — o rateio manda na quebra.
+    v.bu_id = buPrincipal(v.rateio) ?? v.bu_id;
+  }
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("fin_recorrencias")
-    .insert({ company_id: companyId, ...v })
+    .insert({ company_id: companyId, ...v, rateio: v.rateio?.length ? v.rateio : null })
     .select("*")
     .single();
   if (error) throw new Error(`createRecorrencia: ${error.message}`);
@@ -55,10 +69,14 @@ export async function updateRecorrencia(
   input: Partial<RecorrenciaInput>,
 ): Promise<FinRecorrencia> {
   const v = recorrenciaInputSchema.partial().parse(input);
+  if (v.rateio?.length) {
+    validarRateio(v.rateio);
+    v.bu_id = buPrincipal(v.rateio) ?? v.bu_id;
+  }
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("fin_recorrencias")
-    .update(v)
+    .update({ ...v, ...(v.rateio !== undefined ? { rateio: v.rateio?.length ? v.rateio : null } : {}) })
     .eq("company_id", companyId)
     .eq("id", id)
     .select("*")
@@ -163,20 +181,36 @@ export async function materializar(
       erros.push(`${r.descricao}: ${e1.message}`);
       continue;
     }
-    const { error: e2 } = await admin.from("fin_parcelas").insert({
-      company_id: companyId,
-      despesa_id: desp.id,
-      numero: 1,
-      bu_id: r.bu_id,
-      valor_previsto: r.valor_previsto,
-      data_competencia: dataComp,
-      data_vencimento: dataVenc,
-      status: "a_pagar",
-    });
+    const { data: parc, error: e2 } = await admin
+      .from("fin_parcelas")
+      .insert({
+        company_id: companyId,
+        despesa_id: desp.id,
+        numero: 1,
+        bu_id: r.bu_id,
+        valor_previsto: r.valor_previsto,
+        data_competencia: dataComp,
+        data_vencimento: dataVenc,
+        status: "a_pagar",
+      })
+      .select("id")
+      .single();
     if (e2) {
       await admin.from("fin_despesas").delete().eq("company_id", companyId).eq("id", desp.id);
       erros.push(`${r.descricao}: ${e2.message}`);
       continue;
+    }
+    // Rateio da recorrência → fin_despesa_rateio da parcela gerada (rateio manda;
+    // a bu_id acima é só a principal). Falha aqui não desfaz a despesa: registra
+    // no erro e a parcela fica 100% na BU principal até ser corrigida.
+    if (r.rateio?.length) {
+      try {
+        await inserirRateios(companyId, [
+          { parcelaId: parc.id as string, linhas: r.rateio as RateioLinha[] },
+        ]);
+      } catch (e) {
+        erros.push(`${r.descricao} (rateio): ${(e as Error).message}`);
+      }
     }
     gerados++;
   }

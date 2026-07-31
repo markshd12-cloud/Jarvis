@@ -79,7 +79,13 @@ export function OrcamentoPanel() {
           ]),
         ),
       );
-      setCats((cat.categorias ?? []).filter((c: FinCategoria) => c.ativo && c.tipo !== "receita"));
+      // RECEITA entra: a Meta do Faturamento Bruto do DRE nasce daqui (categoria
+      // de receita × BU × competência). Receitas primeiro na lista, pra achar fácil.
+      const todas = (cat.categorias ?? []).filter((c: FinCategoria) => c.ativo);
+      setCats([
+        ...todas.filter((c: FinCategoria) => c.tipo === "receita"),
+        ...todas.filter((c: FinCategoria) => c.tipo !== "receita"),
+      ]);
       setBus((bu.bus ?? []).filter((b: BusinessUnit) => b.ativo));
     } catch (e) {
       setError((e as Error).message);

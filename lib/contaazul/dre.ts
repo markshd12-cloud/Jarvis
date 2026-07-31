@@ -63,8 +63,13 @@ interface BuscaResp {
 
 export type DreChild = {
   label: string;
+  /** REALIZADO (pago/recebido) com sinal do DRE. No modo CA (pré-cutover) = valor único. */
   valor: number;
   av: number;
+  /** PREVISTO (comprometido/emitido) com sinal. No modo CA, igual a `valor`. */
+  previsto: number;
+  /** AV% do previsto (sobre a Receita Bruta prevista). */
+  avPrev: number;
   /**
    * Meta do mês (`fin_orcamentos`), já COM SINAL do DRE (receita +, despesa −).
    * 0 quando não há orçamento lançado para a categoria.
@@ -80,14 +85,33 @@ export type DreRow =
       label: string;
       valor: number;
       av: number;
+      previsto: number;
+      avPrev: number;
       orcado: number;
       children: DreChild[];
     }
-  | { kind: "subtotal"; label: string; valor: number; av: number; orcado: number };
+  | {
+      kind: "subtotal";
+      label: string;
+      valor: number;
+      av: number;
+      previsto: number;
+      avPrev: number;
+      orcado: number;
+    };
 export interface DreResult {
   connected: boolean;
   competencia: string;
+  /** Receita Bruta REALIZADA (base do AV% realizado). */
   receitaBruta: number;
+  /** Receita Bruta PREVISTA (base do AV% previsto). Igual à realizada no modo CA. */
+  receitaBrutaPrev: number;
+  /**
+   * true = fonte Jarvis com colunas Previsto × Realizado de verdade (contas a
+   * pagar entram no Previsto; ao pagar viram Realizado). false = modo CA
+   * (pré-cutover), valor único — a UI mantém o layout antigo.
+   */
+  temPrevReal: boolean;
   rows: DreRow[];
   /** Valor de lançamentos cuja categoria não está em nenhuma linha do DRE. */
   semMapeamento: number;
@@ -209,12 +233,12 @@ export async function despesaJarvisPorCategoria(
   companyId: string,
   competencia: string,
   buId?: string | null,
-): Promise<{ mapa: Map<string, number>; carimbos: string[] }> {
+): Promise<{ mapa: Map<string, number>; carimbos: string[]; realizado: Map<string, number> }> {
   const admin = createAdminClient();
   const { data, error } = await admin
     .from("fin_parcelas")
     .select(
-      "id, valor_previsto, bu_id, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
+      "id, valor_previsto, valor_realizado, status, bu_id, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
     )
     .eq("company_id", companyId)
     .gte("data_competencia", firstDay(competencia))
@@ -226,26 +250,34 @@ export async function despesaJarvisPorCategoria(
   const rateios = buId
     ? await listRateios(companyId, rows.map((r) => r.id as string))
     : null;
+  // `mapa` = PREVISTO (comprometido do mês); `realizado` = só parcelas PAGAS.
   const mapa = new Map<string, number>();
+  const realizado = new Map<string, number>();
   for (const r of rows) {
     const desp = r.fin_despesas as unknown as {
       fin_categorias?: { ca_categoria_id?: string | null } | null;
     };
     const caId = desp?.fin_categorias?.ca_categoria_id ?? null;
     if (!caId) continue;
-    let val = num(r.valor_previsto);
-    if (buId) {
+    /** Fatia atribuível à BU pedida (ou o valor cheio sem filtro). */
+    const fatiaDe = (val: number): number | null => {
+      if (!buId) return val;
       const buPad = r.bu_id as string | null;
-      if (!buPad) continue;
+      if (!buPad) return null;
       const fatia = expandirPorBu(cents(val), buPad, rateios!.get(r.id as string)).find(
         (f) => f.bu_id === buId,
       );
-      if (!fatia) continue; // esta parcela não toca a BU pedida
-      val = fatia.valorCents / 100;
+      return fatia ? fatia.valorCents / 100 : null;
+    };
+    const prev = fatiaDe(num(r.valor_previsto));
+    if (prev === null) continue; // esta parcela não toca a BU pedida
+    mapa.set(caId, (mapa.get(caId) ?? 0) + prev);
+    if (r.status === "paga") {
+      const real = fatiaDe(num(r.valor_realizado ?? r.valor_previsto));
+      if (real !== null) realizado.set(caId, (realizado.get(caId) ?? 0) + real);
     }
-    mapa.set(caId, (mapa.get(caId) ?? 0) + val);
   }
-  return { mapa, carimbos: [] };
+  return { mapa, carimbos: [], realizado };
 }
 
 /**
@@ -259,7 +291,7 @@ export async function receitaSnapshotPorCategoria(
   companyId: string,
   competencia: string,
   buId?: string | null,
-): Promise<Map<string, number>> {
+): Promise<{ prev: Map<string, number>; real: Map<string, number> }> {
   const admin = createAdminClient();
   // Mesma folga da despesa ([C-2, C+3]): recebível de competência C pode vencer
   // meses depois (parcelamento). Janela estreita perderia essa receita.
@@ -267,7 +299,9 @@ export async function receitaSnapshotPorCategoria(
   const ate = lastDay(ymAddMonths(competencia, 3));
   let q = admin
     .from("fin_receita_snapshot")
-    .select("valor, data_competencia, data_vencimento, fin_categorias!inner ( ca_categoria_id )")
+    .select(
+      "valor, recebido, data_competencia, data_vencimento, fin_categorias!inner ( ca_categoria_id )",
+    )
     .eq("company_id", companyId)
     .gte("data_vencimento", de)
     .lte("data_vencimento", ate);
@@ -276,16 +310,20 @@ export async function receitaSnapshotPorCategoria(
   else if (buId) q = q.eq("bu_id", buId);
   const { data, error } = await q;
   if (error) throw new Error(`receitaSnapshotPorCategoria: ${error.message}`);
-  const mapa = new Map<string, number>();
+  // `prev` = tudo que foi emitido na competência; `real` = só o já RECEBIDO.
+  const prev = new Map<string, number>();
+  const real = new Map<string, number>();
   for (const r of data ?? []) {
     const ym = ((r.data_competencia as string | null) ?? (r.data_vencimento as string | null) ?? "").slice(0, 7);
     if (ym !== competencia) continue;
     const cat = r.fin_categorias as unknown as { ca_categoria_id?: string | null } | null;
     const caId = cat?.ca_categoria_id ?? null;
     if (!caId) continue;
-    mapa.set(caId, (mapa.get(caId) ?? 0) + num(r.valor));
+    const v = num(r.valor);
+    prev.set(caId, (prev.get(caId) ?? 0) + v);
+    if (r.recebido) real.set(caId, (real.get(caId) ?? 0) + v);
   }
-  return mapa;
+  return { prev, real };
 }
 
 /**
@@ -400,6 +438,8 @@ async function computeDre(
     connected: false,
     competencia,
     receitaBruta: 0,
+    receitaBrutaPrev: 0,
+    temPrevReal: false,
     rows: [],
     semMapeamento: 0,
     atualizadoAte: null,
@@ -447,31 +487,42 @@ async function computeDre(
         : despesaCaPorCategoria(companyId, competencia),
       jarvisMode
         ? receitaSnapshotPorCategoria(companyId, competencia, bu)
-        : Promise.resolve<Map<string, number> | null>(null),
+        : Promise.resolve<{ prev: Map<string, number>; real: Map<string, number> } | null>(null),
       // Metas do mês. Falha aqui não derruba o DRE — só zera a coluna Orçado.
       orcadoPorCategoriaCa(companyId, competencia, bu).catch(() => new Map<string, number>()),
     ]);
     const struct = { itens: estrutura.itens };
     const temOrcamento = orcadoPorCat.size > 0;
 
-    // Valor (com sinal) por categoria financeira, só na competência pedida.
-    // Receita: +total (recebíveis recentes vêm sem `data_competencia` → caímos p/
-    // `data_vencimento`, igual ao relatório do CA). Despesa: −magnitude da fonte.
-    const valorPorCat = new Map<string, number>();
+    // PREVISTO × REALIZADO (com sinal) por categoria, só na competência pedida.
+    // Jarvis: previsto = comprometido/emitido; realizado = PAGO (parcelas paga)
+    // e RECEBIDO (snapshot recebido). Modo CA: valor único (prev = real), a UI
+    // mantém o layout antigo.
+    const prevPorCat = new Map<string, number>();
+    const realPorCat = new Map<string, number>();
+    const soma = (m: Map<string, number>, id: string, v: number) =>
+      m.set(id, (m.get(id) ?? 0) + v);
     if (jarvisMode) {
-      for (const [id, v] of receitaJarvis ?? new Map<string, number>())
-        valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + v);
+      for (const [id, v] of receitaJarvis!.prev) soma(prevPorCat, id, v);
+      for (const [id, v] of receitaJarvis!.real) soma(realPorCat, id, v);
+      for (const [id, mag] of despesa.mapa) soma(prevPorCat, id, -mag);
+      const despReal =
+        (despesa as { realizado?: Map<string, number> }).realizado ??
+        new Map<string, number>();
+      for (const [id, mag] of despReal) soma(realPorCat, id, -mag);
     } else {
       for (const e of receber) {
         const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
         if (ym !== competencia) continue;
         const id = e.categorias?.[0]?.id;
         if (!id) continue;
-        valorPorCat.set(id, (valorPorCat.get(id) ?? 0) + num(e.total));
+        soma(prevPorCat, id, num(e.total));
+        soma(realPorCat, id, num(e.total));
       }
-    }
-    for (const [id, mag] of despesa.mapa) {
-      valorPorCat.set(id, (valorPorCat.get(id) ?? 0) - mag);
+      for (const [id, mag] of despesa.mapa) {
+        soma(prevPorCat, id, -mag);
+        soma(realPorCat, id, -mag);
+      }
     }
 
     // Carimbo de frescor: o lançamento mais recente que a API expôs neste fetch.
@@ -490,8 +541,10 @@ async function computeDre(
       usados.add(c.id);
       return {
         label: c.nome,
-        valor: valorPorCat.get(c.id) ?? 0,
+        valor: realPorCat.get(c.id) ?? 0,
         av: 0,
+        previsto: prevPorCat.get(c.id) ?? 0,
+        avPrev: 0,
         orcado: orcadoPorCat.get(c.id) ?? 0,
       };
     };
@@ -499,40 +552,53 @@ async function computeDre(
     // Passe 1: valor de cada grupo (com filhos), preservando a ordem da API.
     type Calc =
       | { tot: DreItemApi }
-      | { item: DreItemApi; valor: number; orcado: number; children: DreChild[] };
+      | {
+          item: DreItemApi;
+          valor: number;
+          previsto: number;
+          orcado: number;
+          children: DreChild[];
+        };
     const calc: Calc[] = struct.itens.map((item) => {
       if (item.indica_totalizador) return { tot: item };
       const children: DreChild[] = [];
       let valor = 0;
+      let previsto = 0;
       let orcado = 0;
       for (const c of item.categorias_financeiras) {
         const ch = folha(c);
         valor += ch.valor;
+        previsto += ch.previsto;
         orcado += ch.orcado;
         children.push(ch);
       }
       for (const sub of item.subitens) {
         let subVal = 0;
+        let subPrev = 0;
         let subOrc = 0;
         const subLeaves: DreChild[] = [];
         for (const c of sub.categorias_financeiras) {
           const ch = folha(c);
           subVal += ch.valor;
+          subPrev += ch.previsto;
           subOrc += ch.orcado;
           subLeaves.push(ch);
         }
         valor += subVal;
+        previsto += subPrev;
         orcado += subOrc;
         children.push({
           label: `${sub.codigo ?? ""} ${sub.descricao}`.trim(),
           valor: subVal,
           av: 0,
+          previsto: subPrev,
+          avPrev: 0,
           orcado: subOrc,
           sub: true,
         });
         children.push(...subLeaves);
       }
-      return { item, valor, orcado, children };
+      return { item, valor, previsto, orcado, children };
     });
 
     const g01 = calc.find(
@@ -540,10 +606,13 @@ async function computeDre(
         "item" in c && c.item.codigo === "01",
     );
     const receitaBruta = g01?.valor ?? 0;
+    const receitaBrutaPrev = g01?.previsto ?? 0;
 
-    // Passe 2: linhas com AV e totalizadores (soma corrente).
+    // Passe 2: linhas com AV (realizado sobre RB realizada; previsto sobre RB
+    // prevista) e totalizadores (soma corrente dos dois lados).
     const rows: DreRow[] = [];
     let acc = 0;
+    let accPrev = 0;
     let accOrc = 0;
     for (const c of calc) {
       if ("tot" in c) {
@@ -552,10 +621,13 @@ async function computeDre(
           label: c.tot.descricao,
           valor: acc,
           av: av(acc, receitaBruta),
+          previsto: accPrev,
+          avPrev: av(accPrev, receitaBrutaPrev),
           orcado: accOrc,
         });
       } else {
         acc += c.valor;
+        accPrev += c.previsto;
         accOrc += c.orcado;
         rows.push({
           kind: "group",
@@ -563,22 +635,27 @@ async function computeDre(
           label: c.item.descricao,
           valor: c.valor,
           av: av(c.valor, receitaBruta),
+          previsto: c.previsto,
+          avPrev: av(c.previsto, receitaBrutaPrev),
           orcado: c.orcado,
           children: c.children.map((ch) => ({
             ...ch,
             av: av(ch.valor, receitaBruta),
+            avPrev: av(ch.previsto, receitaBrutaPrev),
           })),
         });
       }
     }
 
     let semMapeamento = 0;
-    for (const [id, v] of valorPorCat) if (!usados.has(id)) semMapeamento += v;
+    for (const [id, v] of prevPorCat) if (!usados.has(id)) semMapeamento += v;
 
     return {
       connected: true,
       competencia,
       receitaBruta,
+      receitaBrutaPrev,
+      temPrevReal: jarvisMode,
       rows,
       semMapeamento,
       atualizadoAte,
@@ -599,7 +676,7 @@ async function computeDre(
           // despesa e receita ZERO parece "prejuízo total", mas quase sempre é
           // só espelho sem recebível daquela competência (o CA ainda não emitiu,
           // ou ninguém sincronizou — não há sync automático).
-          jarvisMode && receitaBruta === 0 && Math.abs(acc) > 0.005
+          jarvisMode && receitaBrutaPrev === 0 && Math.abs(accPrev) > 0.005
             ? "⚠ Receita ZERADA nesta competência: o espelho não tem recebíveis dela. Se o Conta Azul já emitiu, vá em Receita → “Sincronizar do Conta Azul”. O resultado abaixo NÃO é prejuízo real enquanto a receita não entrar."
             : "",
         ]
