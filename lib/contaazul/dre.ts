@@ -261,8 +261,10 @@ export async function receitaSnapshotPorCategoria(
   buId?: string | null,
 ): Promise<Map<string, number>> {
   const admin = createAdminClient();
-  const de = firstDay(ymAddMonths(competencia, -1));
-  const ate = lastDay(ymAddMonths(competencia, 1));
+  // Mesma folga da despesa ([C-2, C+3]): recebível de competência C pode vencer
+  // meses depois (parcelamento). Janela estreita perderia essa receita.
+  const de = firstDay(ymAddMonths(competencia, -2));
+  const ate = lastDay(ymAddMonths(competencia, 3));
   let q = admin
     .from("fin_receita_snapshot")
     .select("valor, data_competencia, data_vencimento, fin_categorias!inner ( ca_categoria_id )")

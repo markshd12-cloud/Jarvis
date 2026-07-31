@@ -76,15 +76,23 @@ export interface SyncReceitaResult {
 }
 
 /**
- * Sincroniza a receita da janela (default: últimos 12 meses até +1 mês, por
+ * Sincroniza a receita da janela (default: últimos 12 meses até +4 meses, por
  * vencimento). Upsert por `ca_evento_id`. Degrada em erro do CA.
+ *
+ * ⚠️ A janela PRA FRENTE precisa ser superset da que o DRE usa. Pós-cutover o DRE
+ * lê a receita DAQUI (`receitaSnapshotPorCategoria`), buscando vencimento em
+ * [competência-1, competência+1] — então uma competência futura (ex.: o mês que
+ * vai virar) só aparece se o espelho já tiver os recebíveis dela. Era `+1`, que
+ * devolve o DIA 1 do mês seguinte: no dia 31/07 o espelho parava em 01/08 e o mês
+ * de agosto ficava ZERADO no DRE. `+4` cobre o mês corrente, o próximo e a folga
+ * do DRE (mesmo critério do import de despesa).
  */
 export async function sincronizarReceita(
   companyId: string,
   meses = 12,
 ): Promise<SyncReceitaResult> {
   const de = ymdAddMonths(-meses);
-  const ate = ymdAddMonths(1);
+  const ate = ymdAddMonths(4);
   const janela = { de, ate };
 
   let eventos: EventoReceita[];
