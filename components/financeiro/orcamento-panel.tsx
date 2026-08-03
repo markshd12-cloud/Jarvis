@@ -5,6 +5,10 @@ import { IconBulb, IconDeviceFloppy, IconPlus, IconTrash } from "@tabler/icons-r
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  ConfirmDialog,
+  type Confirmacao,
+} from "@/components/financeiro/confirm-dialog";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
@@ -64,6 +68,7 @@ export function OrcamentoPanel() {
   // adicionar linha nova (categoria sem histórico/meta)
   const [novaCat, setNovaCat] = useState("");
   const [novaBu, setNovaBu] = useState("");
+  const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -219,19 +224,22 @@ export function OrcamentoPanel() {
     }
   };
 
-  const remover = async (l: OrcamentoLinha) => {
+  const remover = (l: OrcamentoLinha) => {
     if (!l.id) {
-      // linha só local: some da lista
+      // linha só local (ainda não salva): some da lista, nada a confirmar
       setLinhas((prev) => prev.filter((x) => x !== l));
       return;
     }
-    setError(null);
-    try {
-      await send(`/api/financeiro/orcamentos/${l.id}`, "DELETE");
-      await refetch();
-    } catch (e) {
-      setError((e as Error).message);
-    }
+    setConfirmar({
+      msg: `Excluir a meta de “${catNome(l.categoria_id)}” (${buNome(l.bu_id)}) em ${competencia}? O Lançado e o Realizado não são afetados — só a meta.`,
+      acaoLabel: "Excluir meta",
+      onOk: () => {
+        setError(null);
+        void send(`/api/financeiro/orcamentos/${l.id}`, "DELETE")
+          .then(refetch)
+          .catch((e) => setError((e as Error).message));
+      },
+    });
   };
 
   const ordenadas = useMemo(
@@ -405,7 +413,7 @@ export function OrcamentoPanel() {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => void remover(l)}
+                          onClick={() => remover(l)}
                           title="Remover meta"
                         >
                           <IconTrash className="h-4 w-4" />
@@ -469,6 +477,8 @@ export function OrcamentoPanel() {
           <IconPlus className="h-4 w-4" /> Adicionar linha
         </Button>
       </div>
+
+      <ConfirmDialog confirmacao={confirmar} onClose={() => setConfirmar(null)} />
     </section>
   );
 }

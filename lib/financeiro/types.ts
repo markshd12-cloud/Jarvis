@@ -26,6 +26,8 @@ export interface FinRecorrencia {
   descricao: string;
   categoria_id: string;
   bu_id: string;
+  /** Centro de custo repassado à despesa gerada; null = sem centro. */
+  centro_custo_id: string | null;
   colaborador_id: string | null;
   valor_previsto: number;
   dia_vencimento: number;
@@ -34,6 +36,8 @@ export interface FinRecorrencia {
   rateio: { bu_id: string; percentual: number }[] | null;
   /** 1ª competência a gerar ('AAAA-MM'); null = sem restrição. */
   inicio_competencia: string | null;
+  /** Meses entre competência e vencimento. 0 = mesmo mês; 1 = paga no seguinte. */
+  defasagem_meses: number;
   ativo: boolean;
   created_at: string;
 }
@@ -169,6 +173,12 @@ export interface ParcelaRow {
   status: StatusParcela;
   metodo_pagamento: string | null;
   situacao: SituacaoParcela;
+  /**
+   * Rateio por BU desta parcela, já com o valor de cada fatia em reais. Vazio =
+   * sem rateio (100% na `bu_id`). Havendo rateio, ELE manda — a `bu_id` é só a
+   * BU principal (maior %), usada como âncora/fallback.
+   */
+  rateio: { bu_id: string; bu_nome: string; percentual: number; valor: number }[];
 }
 
 /** Meta orçamentária por categoria × BU × competência (Passo 9). bu null = "todas". */

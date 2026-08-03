@@ -21,6 +21,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  ConfirmDialog,
+  type Confirmacao,
+} from "@/components/financeiro/confirm-dialog";
 import { cn } from "@/lib/utils";
 import {
   FIN_TIPOS,
@@ -75,6 +79,7 @@ export function CadastrosPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
+  const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [dialog, setDialog] = useState<DialogState>(null);
 
   const refetch = useCallback(async () => {
@@ -144,13 +149,16 @@ export function CadastrosPanel() {
       send(`/api/financeiro/${base}/${item.id}`, "PATCH", { ativo: !item.ativo }),
     );
   const remove = (base: string, id: string, rotulo: string) => {
-    if (!window.confirm(`Excluir ${rotulo}? Esta ação não pode ser desfeita.`)) return;
-    void runAction(async () => {
-      const res = await fetch(`/api/financeiro/${base}/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        throw new Error(j.error ?? `HTTP ${res.status}`);
-      }
+    setConfirmar({
+      msg: `Excluir “${rotulo}”? Esta ação não pode ser desfeita. Se houver lançamento usando este cadastro, a exclusão é bloqueada — inative em vez de excluir.`,
+      onOk: () =>
+        void runAction(async () => {
+          const res = await fetch(`/api/financeiro/${base}/${id}`, { method: "DELETE" });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            throw new Error(j.error ?? `HTTP ${res.status}`);
+          }
+        }),
     });
   };
 
@@ -196,6 +204,8 @@ export function CadastrosPanel() {
           <CentroForm item={dialog.item} onSaved={onSaved} />
         )}
       </Dialog>
+
+      <ConfirmDialog confirmacao={confirmar} onClose={() => setConfirmar(null)} />
     </section>
   );
 }

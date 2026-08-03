@@ -62,6 +62,12 @@ export function DreConfigPanel({
   const [busy, setBusy] = useState<null | "import" | "cutover" | "recon" | "periodo">(null);
   // Grupos abertos no detalhamento do Δ (por categoria).
   const [abertos, setAbertos] = useState<Set<string>>(new Set());
+  /**
+   * Teto de competência do import ('AAAA-MM'; vazio = sem teto). Protege os meses
+   * que já estão sendo lançados à mão: recuperar histórico sem trazer de volta o
+   * que foi digitado no Jarvis.
+   */
+  const [ateComp, setAteComp] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,12 +130,17 @@ export function DreConfigPanel({
       const r: ImportDespesasResult = await fetch("/api/financeiro/despesas/importar", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ meses: 12 }),
+        body: JSON.stringify({
+          meses: 12,
+          ...(ateComp ? { ateCompetencia: ateComp } : {}),
+        }),
       }).then((res) => res.json());
       if (!r.connected) {
         setError(r.erro ?? "Conta Azul indisponível.");
       } else {
         let t = `${r.novos} nova(s) despesa(s) importada(s), ${r.jaImportados} já existia(m).`;
+        if (r.foraDoTeto)
+          t += ` ${r.foraDoTeto} ignorada(s) por serem depois de ${labelComp(r.ateCompetencia ?? "")}.`;
         if (r.semCategoria) t += ` ${r.semCategoria} sem categoria (puladas).`;
         if (r.buGeralFaltando) t += " ⚠ Rode o seed: falta a BU “Geral”.";
         setMsg(t);
@@ -203,16 +214,41 @@ export function DreConfigPanel({
                 BU/centro depois em Contas a Pagar.
               </p>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="ml-auto"
-              disabled={busy !== null}
-              onClick={() => void importar()}
-            >
-              <IconDownload className={busy === "import" ? "h-4 w-4 animate-pulse" : "h-4 w-4"} />
-              {busy === "import" ? "Importando…" : "Importar (12 meses)"}
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <label
+                className="text-[11px] text-muted-foreground"
+                title="Nada de competência POSTERIOR a este mês é importado — protege os meses já lançados à mão. Vazio = sem limite."
+              >
+                até a competência:
+              </label>
+              <input
+                type="month"
+                className={cn(selectCls, "w-36")}
+                value={ateComp}
+                onChange={(e) => setAteComp(e.target.value)}
+              />
+              {ateComp && (
+                <button
+                  type="button"
+                  className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+                  onClick={() => setAteComp("")}
+                  title="Sem limite"
+                >
+                  limpar
+                </button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={busy !== null}
+                onClick={() => void importar()}
+              >
+                <IconDownload
+                  className={busy === "import" ? "h-4 w-4 animate-pulse" : "h-4 w-4"}
+                />
+                {busy === "import" ? "Importando…" : "Importar (12 meses)"}
+              </Button>
+            </div>
           </div>
 
           {/* Passo 2 — reconciliar */}

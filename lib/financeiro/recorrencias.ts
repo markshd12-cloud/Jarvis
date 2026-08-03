@@ -23,6 +23,7 @@ export const recorrenciaInputSchema = z.object({
   descricao: z.string().trim().min(1, "descrição obrigatória"),
   categoria_id: z.string().uuid("categoria obrigatória"),
   bu_id: z.string().uuid("BU obrigatória"),
+  centro_custo_id: z.string().uuid().nullish(),
   colaborador_id: z.string().uuid().nullish(),
   valor_previsto: z.coerce.number().nonnegative(),
   dia_vencimento: z.coerce.number().int().min(1).max(31),
@@ -35,6 +36,9 @@ export const recorrenciaInputSchema = z.object({
     .string()
     .regex(/^\d{4}-\d{2}$/, "competência AAAA-MM")
     .nullish(),
+  // Meses entre a COMPETÊNCIA e o VENCIMENTO. 0 = mesmo mês; 1 = paga no mês
+  // seguinte (folha, aluguel, encargos). Ver 0033 e o doc da defasagem.
+  defasagem_meses: z.coerce.number().int().min(-12).max(12).optional(),
 });
 export type RecorrenciaInput = z.infer<typeof recorrenciaInputSchema>;
 
@@ -120,8 +124,32 @@ const ultimoDiaDoMes = (ano: number, mes1a12: number) =>
   new Date(Date.UTC(ano, mes1a12, 0)).getUTCDate();
 
 /**
+ * Data de VENCIMENTO a partir da competência + defasagem.
+ *
+ * A competência é o mês a que a despesa se refere; o vencimento pode cair meses
+ * depois (folha de julho paga em 05/agosto → defasagem 1). O dia é limitado ao
+ * último dia do mês de destino (dia 31 em fevereiro vira 28/29).
+ */
+export function vencimentoDaCompetencia(
+  competencia: string, // 'AAAA-MM'
+  diaVencimento: number,
+  defasagemMeses: number,
+): string {
+  const [ano, mes] = competencia.split("-").map(Number);
+  const d = new Date(Date.UTC(ano, mes - 1 + defasagemMeses, 1));
+  const vAno = d.getUTCFullYear();
+  const vMes = d.getUTCMonth() + 1;
+  const dia = Math.min(diaVencimento, ultimoDiaDoMes(vAno, vMes));
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return `${vAno}-${p2(vMes)}-${p2(dia)}`;
+}
+
+/**
  * Materializa as recorrências ativas na competência (mês). Idempotente: pula quem
  * já tem despesa gerada naquele mês. Retorna quantas geradas e quantas puladas.
+ *
+ * A COMPETÊNCIA é sempre o mês pedido; o VENCIMENTO é deslocado pela
+ * `defasagem_meses` da recorrência (folha de julho → vence 05/agosto).
  */
 export async function materializar(
   companyId: string,
@@ -129,7 +157,6 @@ export async function materializar(
 ): Promise<{ gerados: number; pulados: number; erros: string[] }> {
   if (!/^\d{4}-\d{2}$/.test(competencia))
     throw new Error("competência inválida (AAAA-MM)");
-  const [ano, mes] = competencia.split("-").map(Number);
 
   const admin = createAdminClient();
   const recs = (await listRecorrencias(companyId)).filter((r) => r.ativo);
@@ -168,9 +195,12 @@ export async function materializar(
       continue;
     }
 
-    const dia = Math.min(r.dia_vencimento, ultimoDiaDoMes(ano, mes));
-    const dataVenc = `${competencia}-${String(dia).padStart(2, "0")}`;
     const dataComp = `${competencia}-01`;
+    const dataVenc = vencimentoDaCompetencia(
+      competencia,
+      r.dia_vencimento,
+      r.defasagem_meses ?? 0,
+    );
 
     const { data: desp, error: e1 } = await admin
       .from("fin_despesas")
@@ -178,6 +208,7 @@ export async function materializar(
         company_id: companyId,
         descricao: r.descricao,
         categoria_id: r.categoria_id,
+        centro_custo_id: r.centro_custo_id ?? null,
         colaborador_id: r.colaborador_id,
         valor_total: r.valor_previsto,
         num_parcelas: 1,

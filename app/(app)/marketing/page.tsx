@@ -121,7 +121,11 @@ export default async function MarketingPage({
       meta={
         marketing ? (
           <div className="flex flex-col gap-8">
-            <MarketingMetrics data={marketing} allBrands={allBrands} />
+            <MarketingMetrics
+              data={marketing}
+              allBrands={allBrands}
+              basePath="/marketing"
+            />
             {metaDetail ? (
               <>
                 <hr className="border-border" />

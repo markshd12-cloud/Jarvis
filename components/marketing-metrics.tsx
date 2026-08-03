@@ -62,9 +62,18 @@ interface Selection {
   since: string;
   until: string;
   brand: string | null;
+  /** Página em que este painel está renderizado (`/dashboard` ou `/marketing`). */
+  base: string;
 }
 
-/** Monta o href do Dashboard preservando os filtros, com os `overrides`. */
+/**
+ * Monta o href preservando os filtros, com os `overrides`.
+ *
+ * ⚠️ O destino é a PÁGINA ATUAL (`sel.base`), não um caminho fixo: este painel é
+ * usado tanto no `/dashboard` quanto no `/marketing`. Com `/dashboard` cravado
+ * aqui, clicar em qualquer filtro dentro do Marketing (período OU marca) jogava o
+ * usuário pro Dashboard — que mostra os cards financeiros do Conta Azul.
+ */
 function buildHref(sel: Selection, overrides: Partial<Selection>): string {
   const m = { ...sel, ...overrides };
   const p = new URLSearchParams();
@@ -75,7 +84,7 @@ function buildHref(sel: Selection, overrides: Partial<Selection>): string {
   }
   if (m.brand) p.set("brand", m.brand);
   const qs = p.toString();
-  return qs ? `/dashboard?${qs}` : "/dashboard";
+  return qs ? `${m.base}?${qs}` : m.base;
 }
 
 function Chip({
@@ -254,12 +263,15 @@ function SpendDonut({
 export function MarketingMetrics({
   data,
   allBrands,
+  basePath = "/dashboard",
 }: {
   data: MarketingDashboard;
   allBrands: string[];
+  /** Página onde o painel está: os filtros recarregam AQUI, não em outra rota. */
+  basePath?: string;
 }) {
   const { total, previous, brands, range, since, until, brand, series } = data;
-  const sel: Selection = { range, since, until, brand };
+  const sel: Selection = { range, since, until, brand, base: basePath };
 
   return (
     <div className="flex flex-col gap-5">

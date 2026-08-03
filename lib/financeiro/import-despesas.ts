@@ -77,6 +77,10 @@ export interface ImportDespesasResult {
   semId: number;
   /** Eventos sem de-para de categoria (obrigatória → pulados). */
   semCategoria: number;
+  /** Eventos ignorados por serem de competência posterior ao teto pedido. */
+  foraDoTeto: number;
+  /** Teto de competência aplicado nesta rodada ('AAAA-MM'), ou null. */
+  ateCompetencia: string | null;
   /** Houve despesa sem BU e sem BU "Geral" p/ ancorar → rode o seed. */
   buGeralFaltando: boolean;
   erro?: string;
@@ -85,11 +89,21 @@ export interface ImportDespesasResult {
 /**
  * Importa as despesas do CA da janela (default: últimos 12 meses até +1 mês, por
  * vencimento). Insert-only por `ca_evento_id`. Degrada em erro do CA.
+ *
+ * `ateCompetencia` ('AAAA-MM', opcional): **teto de competência** — eventos de
+ * competência POSTERIOR são ignorados e nem chegam a ser gravados. Serve para
+ * recuperar histórico sem invadir os meses que já estão sendo lançados à mão no
+ * Jarvis (ex.: importar só até 07/2026 porque agosto em diante é digitado). O
+ * filtro é por COMPETÊNCIA (não vencimento): a janela de busca continua ampla,
+ * porque uma competência antiga pode ter vencimento à frente.
  */
 export async function importarDespesas(
   companyId: string,
   meses = 12,
+  ateCompetencia?: string,
 ): Promise<ImportDespesasResult> {
+  const teto =
+    ateCompetencia && /^\d{4}-\d{2}$/.test(ateCompetencia) ? ateCompetencia : null;
   // Janela por VENCIMENTO. Precisa ser SUPERSET da janela que cada competência do
   // DRE usa (a reconciliação/DRE buscam vencimento em [C-2, C+3]); senão o import
   // fica com MENOS eventos que o DRE mostra — ex.: despesa de competência C com
@@ -115,6 +129,8 @@ export async function importarDespesas(
       jaImportados: 0,
       semId: 0,
       semCategoria: 0,
+      foraDoTeto: 0,
+      ateCompetencia: teto,
       buGeralFaltando: false,
       erro,
     };
@@ -166,6 +182,7 @@ export async function importarDespesas(
   let semId = 0;
   let semCategoria = 0;
   let jaImportados = 0;
+  let foraDoTeto = 0;
   let buGeralFaltando = false;
 
   // Monta as linhas em memória; grava em 2 statements (batch) no fim.
@@ -184,6 +201,15 @@ export async function importarDespesas(
     if (jaSet.has(e.id) || visto.has(e.id)) {
       jaImportados++;
       continue;
+    }
+    // Teto de competência: nada acima dele é gravado (mesma regra de competência
+    // que o DRE usa — `data_competencia` com fallback pro vencimento).
+    if (teto) {
+      const comp = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+      if (!comp || comp > teto) {
+        foraDoTeto++;
+        continue;
+      }
     }
     const caCat = e.categorias?.[0]?.id ?? null;
     const map = caCat ? porCaCat.get(caCat) : undefined;
@@ -278,6 +304,8 @@ export async function importarDespesas(
     jaImportados,
     semId,
     semCategoria,
+    foraDoTeto,
+    ateCompetencia: teto,
     buGeralFaltando,
   };
 }

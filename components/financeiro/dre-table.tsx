@@ -22,6 +22,18 @@ function fmtAv(av: number): string {
   return `${av.toFixed(2).replace(".", ",")}%`;
 }
 
+/**
+ * % LIQUIDADO: quanto da competência já foi pago/recebido. Vai no lugar do AV%
+ * da coluna Liquidado — porque ali o que importa não é o peso sobre a receita,
+ * e sim **quanto daquele custo já saiu do caixa**. Sem isto, ver "Previsto
+ * 32.000 / Liquidado 0" parecia economia, quando é só conta ainda não paga.
+ */
+function fmtLiq(liquidado: number, previsto: number): string {
+  if (Math.abs(previsto) < 0.005) return "—";
+  const pct = (liquidado / previsto) * 100;
+  return `${Math.round(pct)}%`;
+}
+
 /** Carimbo de frescor dos dados da CA (data + hora curtas), ou null se inválido. */
 function fmtCarimbo(iso: string): string | null {
   const d = new Date(iso);
@@ -275,7 +287,7 @@ export function DreTable({
           <Valor value={valor} bold={bold} />
         </span>
         <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
-          {fmtAv(avReal)}
+          {fmtLiq(valor, previsto)}
         </span>
         {mostraMeta ? (
           <span className={cn("text-right", txt)}>
@@ -321,11 +333,27 @@ export function DreTable({
         <span>Categoria</span>
         {temPrevReal ? (
           <>
-            {mostraMeta ? <span className="text-right">Meta</span> : null}
-            <span className="text-right">Previsto</span>
+            {mostraMeta ? (
+              <span className="text-right" title="Meta de faturamento (só receita)">
+                Meta
+              </span>
+            ) : null}
+            <span
+              className="text-right"
+              title="O custo/receita GERADO neste mês (competência) — pago ou não. É o resultado do mês."
+            >
+              Previsto
+            </span>
             <span className="text-right">AV %</span>
-            <span className="text-right">Realizado</span>
-            <span className="text-right">AV %</span>
+            <span
+              className="text-right"
+              title="Quanto DESTA competência já foi pago/recebido. Não é o Fluxo de Caixa."
+            >
+              Liquidado
+            </span>
+            <span className="text-right" title="% da competência já liquidado">
+              % liq.
+            </span>
             {mostraMeta ? <span className="text-right">Desvio</span> : null}
           </>
         ) : (

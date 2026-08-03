@@ -15,9 +15,13 @@ export async function PATCH(
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   const { id } = await params;
   try {
-    const { acao, valor_realizado, data_pagamento } = await req.json();
+    const { acao, valor_realizado, data_pagamento, desconto } = await req.json();
     if (acao === "baixar")
-      await baixarParcela(gate.companyId, id, { valor_realizado, data_pagamento });
+      await baixarParcela(gate.companyId, id, {
+        valor_realizado,
+        data_pagamento,
+        desconto,
+      });
     else if (acao === "desfazer") await desfazerBaixa(gate.companyId, id);
     else return NextResponse.json({ error: "ação inválida" }, { status: 400 });
     return NextResponse.json({ ok: true });

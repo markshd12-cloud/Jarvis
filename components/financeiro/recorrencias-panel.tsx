@@ -13,6 +13,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  ConfirmDialog,
+  type Confirmacao,
+} from "@/components/financeiro/confirm-dialog";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import { Label } from "@/components/ui/label";
 import {
@@ -26,6 +30,7 @@ import {
   PERIODICIDADES,
   type BusinessUnit,
   type FinCategoria,
+  type FinCentro,
   type FinColaborador,
   type FinRecorrencia,
 } from "@/lib/financeiro/types";
@@ -54,6 +59,7 @@ async function send(url: string, method: "POST" | "PATCH" | "DELETE", body?: unk
 interface Dim {
   bus: BusinessUnit[];
   categorias: FinCategoria[];
+  centros: FinCentro[];
   colaboradores: FinColaborador[];
 }
 
@@ -64,16 +70,18 @@ export function RecorrenciasPanel() {
   const [error, setError] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [dialog, setDialog] = useState<FinRecorrencia | "novo" | null>(null);
+  const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [competencia, setCompetencia] = useState(new Date().toISOString().slice(0, 7));
 
   const refetch = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [rec, cat, bus, col] = await Promise.all([
+      const [rec, cat, bus, cen, col] = await Promise.all([
         fetch("/api/financeiro/recorrencias").then((r) => r.json()),
         fetch("/api/financeiro/categorias").then((r) => r.json()),
         fetch("/api/financeiro/bus").then((r) => r.json()),
+        fetch("/api/financeiro/centros").then((r) => r.json()),
         fetch("/api/financeiro/colaboradores").then((r) => r.json()),
       ]);
       if (rec.error) throw new Error(rec.error);
@@ -83,6 +91,7 @@ export function RecorrenciasPanel() {
         categorias: (cat.categorias ?? []).filter(
           (c: FinCategoria) => c.ativo && c.tipo !== "receita",
         ),
+        centros: (cen.centros ?? []).filter((c: FinCentro) => c.ativo),
         colaboradores: (col.colaboradores ?? []).filter((c: FinColaborador) => c.ativo),
       });
     } catch (e) {
@@ -119,11 +128,17 @@ export function RecorrenciasPanel() {
 
   const remove = (r: FinRecorrencia) => {
     setError(null);
-    void runAction(() => send(`/api/financeiro/recorrencias/${r.id}`, "DELETE"));
+    setConfirmar({
+      msg: `Excluir a recorrência “${r.descricao}”? As despesas já geradas por ela permanecem em Contas a Pagar (só o vínculo é desfeito). Esta ação não pode ser desfeita.`,
+      onOk: () =>
+        void runAction(() => send(`/api/financeiro/recorrencias/${r.id}`, "DELETE")),
+    });
   };
 
   const buNome = (id: string) => dim?.bus.find((b) => b.id === id)?.nome ?? "—";
   const catNome = (id: string) => dim?.categorias.find((c) => c.id === id)?.nome ?? "—";
+  const centroNome = (id: string | null) =>
+    id ? dim?.centros.find((c) => c.id === id)?.nome ?? null : null;
 
   if (loading && lista.length === 0)
     return <p className="text-sm text-muted-foreground">Carregando…</p>;
@@ -179,6 +194,14 @@ export function RecorrenciasPanel() {
               {r.descricao}
             </span>
             <span className="text-xs text-muted-foreground">{catNome(r.categoria_id)}</span>
+            {centroNome(r.centro_custo_id) && (
+              <span
+                className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
+                title="Centro de custo"
+              >
+                {centroNome(r.centro_custo_id)}
+              </span>
+            )}
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
               {buNome(r.bu_id)}
             </span>
@@ -237,6 +260,8 @@ export function RecorrenciasPanel() {
           />
         )}
       </Dialog>
+
+      <ConfirmDialog confirmacao={confirmar} onClose={() => setConfirmar(null)} />
     </section>
   );
 }
@@ -252,6 +277,7 @@ function RecorrenciaForm({
 }) {
   const [descricao, setDescricao] = useState(item?.descricao ?? "");
   const [categoriaId, setCategoriaId] = useState(item?.categoria_id ?? "");
+  const [centroId, setCentroId] = useState(item?.centro_custo_id ?? "");
   const [buId, setBuId] = useState(item?.bu_id ?? dim.bus[0]?.id ?? "");
   const [colaboradorId, setColaboradorId] = useState(item?.colaborador_id ?? "");
   const [valor, setValor] = useState(item ? String(item.valor_previsto) : "");
@@ -265,6 +291,14 @@ function RecorrenciaForm({
     const d = now.getDate() > 5 ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   });
+  /**
+   * Defasagem entre competência e vencimento, em meses. OBRIGATÓRIA: começa
+   * vazia em recorrência nova, para forçar a escolha — sem isso o sistema
+   * assumia "mesmo mês" em silêncio e o custo caía no mês errado.
+   */
+  const [defasagem, setDefasagem] = useState<string>(
+    item ? String(item.defasagem_meses ?? 0) : "",
+  );
   const [rateio, setRateio] = useState<RateioLinha[]>(item?.rateio ?? []);
   const [rateioOpen, setRateioOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -272,24 +306,52 @@ function RecorrenciaForm({
 
   const buNome = (id: string) => dim.bus.find((b) => b.id === id)?.nome ?? "—";
 
+  /**
+   * Prévia do que a recorrência vai gerar, com DATAS reais — é o que torna a
+   * escolha "mesmo mês / mês anterior" concreta em vez de abstrata (numa
+   * recorrência não cabe um campo de data: ela repete todo mês).
+   * Espelha `vencimentoDaCompetencia()` do servidor, inclusive o clamp de dia.
+   */
+  const previa = (() => {
+    if (defasagem === "" || !inicio) return null;
+    const [ano, mes] = inicio.split("-").map(Number);
+    const d = new Date(Date.UTC(ano, mes - 1 + (Number(defasagem) || 0), 1));
+    const vAno = d.getUTCFullYear();
+    const vMes = d.getUTCMonth() + 1;
+    const ultimo = new Date(Date.UTC(vAno, vMes, 0)).getUTCDate();
+    const dd = Math.min(Number(dia) || 1, ultimo);
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    return {
+      comp: `${p2(mes)}/${ano}`,
+      venc: `${p2(dd)}/${p2(vMes)}/${vAno}`,
+      vencMes: `${p2(vMes)}/${vAno}`,
+    };
+  })();
+
   const submit = async () => {
     setBusy(true);
     setErr(null);
     try {
       if (!categoriaId) throw new Error("Selecione a categoria.");
       if (!buId) throw new Error("Selecione a BU.");
+      if (defasagem === "")
+        throw new Error(
+          "Escolha a competência: o pagamento se refere ao mesmo mês ou ao mês anterior?",
+        );
       if (!rateioValido(rateio))
         throw new Error("Rateio inválido — a soma dos percentuais precisa ser 100%.");
       const body = {
         descricao,
         categoria_id: categoriaId,
         bu_id: buId,
+        centro_custo_id: centroId || null,
         colaborador_id: colaboradorId || null,
         valor_previsto: Number(valor),
         dia_vencimento: Number(dia),
         periodicidade,
         rateio: rateio.length ? rateio : null,
         inicio_competencia: inicio || null,
+        defasagem_meses: Number(defasagem),
       };
       if (item) await send(`/api/financeiro/recorrencias/${item.id}`, "PATCH", body);
       else await send("/api/financeiro/recorrencias", "POST", body);
@@ -337,16 +399,27 @@ function RecorrenciaForm({
             />
           </div>
         </div>
-        <div className="flex flex-col gap-1">
-          <Label>Colaborador/Fornecedor (se pessoal)</Label>
-          <SearchSelect
-            value={colaboradorId}
-            onChange={setColaboradorId}
-            options={dim.colaboradores.map((c) => ({ value: c.id, label: c.nome }))}
-            allowEmpty
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <Label>Centro de custo</Label>
+            <SearchSelect
+              value={centroId}
+              onChange={setCentroId}
+              options={dim.centros.map((c) => ({ value: c.id, label: c.nome }))}
+              allowEmpty
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Colaborador/Fornecedor (se pessoal)</Label>
+            <SearchSelect
+              value={colaboradorId}
+              onChange={setColaboradorId}
+              options={dim.colaboradores.map((c) => ({ value: c.id, label: c.nome }))}
+              allowEmpty
+            />
+          </div>
         </div>
-        <div className="grid grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           <div className="flex flex-col gap-1">
             <Label>Valor</Label>
             <MoneyInput value={valor} onChange={setValor} />
@@ -371,6 +444,26 @@ function RecorrenciaForm({
             />
           </div>
           <div className="flex flex-col gap-1">
+            <Label title="A que mês a despesa se refere. O vencimento é quando ela é paga.">
+              Competência *
+            </Label>
+            <select
+              className={cn(selectCls, defasagem === "" && "border-destructive")}
+              value={defasagem}
+              onChange={(e) => setDefasagem(e.target.value)}
+            >
+              <option value="" className={optionCls}>
+                — escolha —
+              </option>
+              <option value="0" className={optionCls}>
+                Mesmo mês do vencimento
+              </option>
+              <option value="1" className={optionCls}>
+                Mês anterior ao vencimento
+              </option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
             <Label>Periodicidade</Label>
             <select
               className={selectCls}
@@ -390,6 +483,27 @@ function RecorrenciaForm({
             Anual gera apenas no mês de criação da recorrência.
           </p>
         )}
+        {/* Prévia com DATAS reais: numa recorrência não cabe um campo de data
+            (ela repete todo mês), então mostramos concretamente o que vai gerar
+            — é o que substitui o "mês anterior" abstrato. */}
+        <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs">
+          {defasagem === "" || !previa ? (
+            <span className="text-muted-foreground">
+              Escolha a competência para ver o que será gerado.
+            </span>
+          ) : (
+            <>
+              <span className="text-muted-foreground">Vai gerar: </span>
+              <strong>competência {previa.comp}</strong>
+              <span className="text-muted-foreground"> · vencendo em </span>
+              <strong>{previa.venc}</strong>
+              <span className="text-muted-foreground">
+                {" "}
+                — entra no DRE de {previa.comp}, sai do caixa em {previa.vencMes}.
+              </span>
+            </>
+          )}
+        </div>
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-border px-3 py-2">
           <span className="text-xs font-medium text-muted-foreground">Rateio por BU</span>
           {rateio.length === 0 ? (

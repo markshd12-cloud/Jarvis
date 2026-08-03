@@ -8,7 +8,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Importa despesas do Conta Azul p/ fin_despesas/fin_parcelas (insert-only, dedup
-// por ca_evento_id). Gated por `financeiro`. Body: { meses?: number } (default 12).
+// por ca_evento_id). Gated por `financeiro`.
+// Body: { meses?: number (default 12), ateCompetencia?: 'AAAA-MM' }
+// `ateCompetencia` = teto: nada de competência posterior é gravado (recuperar
+// histórico sem invadir os meses já lançados à mão).
 export async function POST(req: NextRequest) {
   const gate = await finContext();
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
@@ -16,9 +19,13 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const meses =
     typeof body.meses === "number" && body.meses > 0 && body.meses <= 48 ? body.meses : 12;
+  const ateCompetencia =
+    typeof body.ateCompetencia === "string" && /^\d{4}-\d{2}$/.test(body.ateCompetencia)
+      ? body.ateCompetencia
+      : undefined;
 
   try {
-    const res = await importarDespesas(gate.companyId, meses);
+    const res = await importarDespesas(gate.companyId, meses, ateCompetencia);
     if (res.novos > 0) invalidateDre(gate.companyId); // competências cortadas mudaram
     return NextResponse.json(res);
   } catch (e) {

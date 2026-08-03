@@ -20,6 +20,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  ConfirmDialog,
+  type Confirmacao,
+} from "@/components/financeiro/confirm-dialog";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
@@ -66,6 +70,7 @@ export function ColaboradoresPanel() {
   const [error, setError] = useState<string | null>(null);
   const [actionErr, setActionErr] = useState<string | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
+  const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [dialog, setDialog] = useState<FinColaborador | "novo" | null>(null);
 
   const refetch = useCallback(async () => {
@@ -102,8 +107,11 @@ export function ColaboradoresPanel() {
   };
 
   const remove = (c: FinColaborador) => {
-    if (!window.confirm(`Excluir ${c.nome}? Esta ação não pode ser desfeita.`)) return;
-    void runAction(() => send(`/api/financeiro/colaboradores/${c.id}`, "DELETE"));
+    setConfirmar({
+      msg: `Excluir “${c.nome}”? Esta ação não pode ser desfeita. Se houver despesa vinculada, a exclusão é bloqueada — inative em vez de excluir.`,
+      onOk: () =>
+        void runAction(() => send(`/api/financeiro/colaboradores/${c.id}`, "DELETE")),
+    });
   };
 
   const importar = () =>
@@ -267,6 +275,8 @@ export function ColaboradoresPanel() {
           />
         )}
       </Dialog>
+
+      <ConfirmDialog confirmacao={confirmar} onClose={() => setConfirmar(null)} />
     </section>
   );
 }

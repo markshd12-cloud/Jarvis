@@ -17,6 +17,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { hojeSP } from "./competencia";
 import {
   buPrincipal,
+  expandirPorBu,
   inserirRateios,
   listRateios,
   rateioLinhaSchema,
@@ -289,11 +290,19 @@ export async function atualizarDespesa(
   return { id };
 }
 
-/** Baixa: marca a parcela como paga (default valor = previsto, data = hoje). */
+/**
+ * Baixa: marca a parcela como paga (default valor = previsto, data = hoje).
+ * `desconto` é informativo (quanto foi abatido na negociação); o que vale pro
+ * DRE/Fluxo é `valor_realizado` — o que de fato saiu do caixa.
+ */
 export async function baixarParcela(
   companyId: string,
   id: string,
-  opts: { valor_realizado?: number; data_pagamento?: string } = {},
+  opts: {
+    valor_realizado?: number;
+    data_pagamento?: string;
+    desconto?: number | null;
+  } = {},
 ): Promise<void> {
   const admin = createAdminClient();
   const { data: p, error: e0 } = await admin
@@ -303,11 +312,14 @@ export async function baixarParcela(
     .eq("id", id)
     .single();
   if (e0) throw new Error(`baixarParcela: ${e0.message}`);
+  const desconto =
+    opts.desconto != null && Number(opts.desconto) > 0 ? Number(opts.desconto) : null;
   const { error } = await admin
     .from("fin_parcelas")
     .update({
       valor_realizado: opts.valor_realizado ?? Number(p.valor_previsto),
       data_pagamento: opts.data_pagamento ?? hojeISO(),
+      desconto,
       status: "paga",
     })
     .eq("company_id", companyId)
@@ -315,12 +327,17 @@ export async function baixarParcela(
   if (error) throw new Error(`baixarParcela: ${error.message}`);
 }
 
-/** Desfaz a baixa: volta a parcela para a_pagar (limpa realizado e pagamento). */
+/** Desfaz a baixa: volta a parcela para a_pagar (limpa realizado, pagamento e desconto). */
 export async function desfazerBaixa(companyId: string, id: string): Promise<void> {
   const admin = createAdminClient();
   const { error } = await admin
     .from("fin_parcelas")
-    .update({ valor_realizado: null, data_pagamento: null, status: "a_pagar" })
+    .update({
+      valor_realizado: null,
+      data_pagamento: null,
+      desconto: null,
+      status: "a_pagar",
+    })
     .eq("company_id", companyId)
     .eq("id", id);
   if (error) throw new Error(`desfazerBaixa: ${error.message}`);
@@ -347,6 +364,27 @@ function ultimoDiaComp(ym: string): string {
 
 const one = <T>(v: T | T[] | null): T | null =>
   Array.isArray(v) ? (v[0] ?? null) : v;
+
+/**
+ * Fatias de uma parcela por BU, prontas pra exibir (nome + % + valor em reais).
+ * Sem rateio devolve `[]` — a UI cai no `bu_nome` de sempre. Usa a MESMA divisão
+ * em centavos das agregações, então a soma das fatias fecha com o valor da parcela.
+ */
+function fatiasDaParcela(
+  linhas: RateioLinha[] | undefined,
+  valor: number,
+  buPadrao: string,
+  buNomes: Map<string, string>,
+): ParcelaRow["rateio"] {
+  if (!linhas?.length) return [];
+  const pct = new Map(linhas.map((l) => [l.bu_id, l.percentual]));
+  return expandirPorBu(cents(valor), buPadrao, linhas).map((f) => ({
+    bu_id: f.bu_id,
+    bu_nome: buNomes.get(f.bu_id) ?? "—",
+    percentual: pct.get(f.bu_id) ?? 0,
+    valor: f.valorCents / 100,
+  }));
+}
 
 /**
  * Lista as parcelas (linhas de contas a pagar) com o contexto da despesa.
@@ -380,7 +418,9 @@ export async function listParcelas(
   else if (filtros.grupo === "a_vencer")
     q = q.is("data_pagamento", null).gte("data_vencimento", hoje);
 
-  if (filtros.bu_id) q = q.eq("bu_id", filtros.bu_id);
+  // ⚠️ NÃO filtra bu_id no banco: com rateio, a parcela pode pertencer
+  // parcialmente à BU pedida mesmo com outra BU principal. O filtro é aplicado
+  // depois, em JS, já com o rateio em mãos (havendo rateio, ele manda).
   if (filtros.categoria_id) q = q.eq("fin_despesas.categoria_id", filtros.categoria_id);
   if (filtros.centro_custo_id)
     q = q.eq("fin_despesas.centro_custo_id", filtros.centro_custo_id);
@@ -407,8 +447,21 @@ export async function listParcelas(
     if (lote.length < PAGE) break;
   }
 
+  // Rateio das parcelas listadas + nomes das BUs (p/ exibir a divisão na linha).
+  const rateios = await listRateios(
+    companyId,
+    rows.map((r) => r.id as string),
+  );
+  const { data: busData } = await admin
+    .from("business_units")
+    .select("id, nome")
+    .eq("company_id", companyId);
+  const buNomes = new Map(
+    (busData ?? []).map((b) => [b.id as string, b.nome as string]),
+  );
+
   const hoje = hojeISO();
-  return rows.map((r): ParcelaRow => {
+  const linhas = rows.map((r): ParcelaRow => {
     const bu = one<{ nome: string }>(r.business_units as never);
     const desp = one<{
       id: string;
@@ -440,8 +493,24 @@ export async function listParcelas(
       status: r.status as ParcelaRow["status"],
       metodo_pagamento: (r.metodo_pagamento as string | null) ?? null,
       situacao,
+      rateio: fatiasDaParcela(
+        rateios.get(r.id as string),
+        Number(r.valor_previsto),
+        r.bu_id as string,
+        buNomes,
+      ),
     };
   });
+
+  // Filtro por BU respeitando o rateio: havendo rateio, vale ele; senão, a bu_id.
+  // (Sem isto, filtrar por "Colégio" escondia uma parcela 50% Colégio cuja BU
+  // principal fosse CPPEM.)
+  if (!filtros.bu_id) return linhas;
+  return linhas.filter((l) =>
+    l.rateio.length > 0
+      ? l.rateio.some((x) => x.bu_id === filtros.bu_id)
+      : l.bu_id === filtros.bu_id,
+  );
 }
 
 // --------------------------- Trava anti-duplicata --------------------------- //

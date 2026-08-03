@@ -134,8 +134,13 @@ materializam `fin_alertas` — isso fica pro Dashboard TV / Passo 12).
 ## Itens fora da numeração (anotados)
 - **Export pra CA** — gerar planilha no formato `Planilha_Modelo_ContaAzul.xls` (é `.xls` binário OLE; abrir
   o modelo e passar os cabeçalhos quando formos construir). Garante reversibilidade "voltar pro CA".
-- **Cron de automação** — sync de receita (Passo 10) + materialização de recorrências (Passo 8) rodando
-  sozinhos por mês/dia. Hoje ambos são manuais (botão). As rotas já existem.
+- ~~**Cron de automação**~~ — ✅ **feito (2026-07-31)**: sync de receita a cada 3h e materialização de
+  recorrências diária, via `/root/jarvis-cron.sh` na VPS (alvos `financeiro` e `recorrencias`). O import de
+  DESPESA fica **de fora de propósito** (automatizá-lo duplicaria despesa lançada à mão no Jarvis).
+- **Competência × Caixa (defasagem)** — ⏳ **planejado, não implementado**. Despesas pagas 1 mês depois do
+  período (salário, aluguel, encargos, comissão) hoje entram no mês errado do DRE **e** do Fluxo de Caixa,
+  porque a recorrência força competência = mês do vencimento. Diagnóstico completo, decisões e plano em
+  [`financeiro-competencia-defasagem.md`](./financeiro-competencia-defasagem.md).
 
 ## Notas operacionais
 - **Turbopack:** rota/arquivo/método novo exige restart do `npm run dev`. Sequência de restarts corrompe o

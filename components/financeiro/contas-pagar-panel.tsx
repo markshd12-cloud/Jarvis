@@ -21,6 +21,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  ConfirmDialog,
+  type Confirmacao,
+} from "@/components/financeiro/confirm-dialog";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import {
   RateioEditorDialog,
@@ -126,7 +130,7 @@ export function ContasPagarPanel() {
   const [error, setError] = useState<string | null>(null);
   const [novo, setNovo] = useState(false);
   const [editar, setEditar] = useState<DespesaDetalhe | null>(null);
-  const [confirmar, setConfirmar] = useState<{ msg: string; onOk: () => void } | null>(null);
+  const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [baixando, setBaixando] = useState<ParcelaRow | null>(null);
   const [aberto, setAberto] = useState<Set<string>>(new Set());
   const [filtros, setFiltros] = useState({
@@ -406,7 +410,25 @@ export function ContasPagarPanel() {
                         </span>
                       )}
                       <span className="w-24">{fmtData(p.data_vencimento)}</span>
-                      <span className="text-muted-foreground">{p.bu_nome ?? "—"}</span>
+                      {p.rateio.length > 0 ? (
+                        // Com rateio, mostrar UMA BU seria mentira — a despesa é
+                        // dividida. Exibe cada fatia com o seu valor.
+                        <span
+                          className="flex flex-wrap items-center gap-1"
+                          title={`Rateado entre ${p.rateio.length} BUs`}
+                        >
+                          {p.rateio.map((f) => (
+                            <span
+                              key={f.bu_id}
+                              className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                            >
+                              {f.bu_nome} {f.percentual}% · {brl.format(f.valor)}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">{p.bu_nome ?? "—"}</span>
+                      )}
                       {p.metodo_pagamento && (
                         <span className="text-muted-foreground">{p.metodo_pagamento}</span>
                       )}
@@ -432,13 +454,13 @@ export function ContasPagarPanel() {
                         </Button>
                       ) : (
                         <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6 text-muted-foreground hover:text-emerald-600"
+                          size="sm"
+                          className="h-6 gap-1 bg-emerald-600 px-2 text-[11px] text-white hover:bg-emerald-700"
                           onClick={() => setBaixando(p)}
-                          title="Marcar como paga"
+                          title="Registrar o pagamento desta parcela"
                         >
                           <IconCheckupList className="h-3.5 w-3.5" />
+                          Pagar
                         </Button>
                       )}
                     </li>
@@ -477,28 +499,7 @@ export function ContasPagarPanel() {
         )}
       </Dialog>
 
-      <Dialog open={confirmar !== null} onOpenChange={(o) => !o && setConfirmar(null)}>
-        {confirmar && (
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Confirmar exclusão</DialogTitle>
-            </DialogHeader>
-            <p className="text-sm text-muted-foreground">{confirmar.msg}</p>
-            <DialogFooter>
-              <DialogClose render={<Button variant="outline" />}>Cancelar</DialogClose>
-              <Button
-                variant="destructive"
-                onClick={() => {
-                  confirmar.onOk();
-                  setConfirmar(null);
-                }}
-              >
-                Excluir
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        )}
-      </Dialog>
+      <ConfirmDialog confirmacao={confirmar} onClose={() => setConfirmar(null)} />
 
       <Dialog open={baixando !== null} onOpenChange={(o) => !o && setBaixando(null)}>
         {baixando && (
@@ -512,12 +513,37 @@ export function ContasPagarPanel() {
   );
 }
 
+/**
+ * Baixa da parcela. O DESCONTO é o campo de entrada (abatimento por pagamento
+ * adiantado/negociação): digitar o desconto recalcula o valor pago
+ * (`previsto − desconto`). O valor pago segue editável — mexer nele reescreve o
+ * desconto na direção inversa, então os dois nunca ficam incoerentes.
+ */
 function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => void }) {
   const hoje = new Date().toISOString().slice(0, 10);
+  const cent = (v: string) => Math.round((Number(v) || 0) * 100);
   const [data, setData] = useState(hoje);
   const [valor, setValor] = useState(parcela.valor_previsto.toFixed(2));
+  const [desconto, setDesconto] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const previstoC = Math.round(parcela.valor_previsto * 100);
+
+  /** Digitou o desconto → recalcula o valor pago. */
+  const mudarDesconto = (d: string) => {
+    setDesconto(d);
+    const restanteC = Math.max(0, previstoC - cent(d));
+    setValor((restanteC / 100).toFixed(2));
+  };
+  /** Digitou o valor pago → deduz o desconto (0 se pagou igual ou mais). */
+  const mudarValor = (v: string) => {
+    setValor(v);
+    const difC = previstoC - cent(v);
+    setDesconto(difC > 0 ? (difC / 100).toFixed(2) : "");
+  };
+
+  const pagouAMais = cent(valor) > previstoC;
 
   const confirmar = async () => {
     setBusy(true);
@@ -527,6 +553,7 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
         acao: "baixar",
         data_pagamento: data,
         valor_realizado: Number(valor),
+        desconto: cent(desconto) > 0 ? Number(desconto) : null,
       });
       onDone();
     } catch (e) {
@@ -537,30 +564,48 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
   };
 
   return (
-    <DialogContent className="max-w-sm">
+    <DialogContent className="max-w-md">
       <DialogHeader>
-        <DialogTitle>Marcar como paga</DialogTitle>
+        <DialogTitle>Registrar pagamento</DialogTitle>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">
         {parcela.descricao}
         {parcela.num_parcelas > 1 ? ` (${parcela.numero}/${parcela.num_parcelas})` : ""} —
-        previsto {brl.format(parcela.valor_previsto)}
+        previsto <strong>{brl.format(parcela.valor_previsto)}</strong>
       </p>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div className="flex flex-col gap-1">
           <Label>Data do pagamento</Label>
           <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
         </div>
         <div className="flex flex-col gap-1">
+          <Label title="Abatimento conseguido (pagamento adiantado, negociação)">
+            Desconto
+          </Label>
+          <MoneyInput value={desconto} onChange={mudarDesconto} placeholder="R$ 0,00" />
+        </div>
+        <div className="flex flex-col gap-1">
           <Label>Valor pago</Label>
-          <MoneyInput value={valor} onChange={setValor} />
+          <MoneyInput value={valor} onChange={mudarValor} />
         </div>
       </div>
+      {cent(desconto) > 0 && (
+        <p className="text-xs text-emerald-600 dark:text-emerald-400">
+          Desconto de {brl.format(Number(desconto))} — paga{" "}
+          {brl.format(Number(valor))} em vez de {brl.format(parcela.valor_previsto)}.
+        </p>
+      )}
+      {pagouAMais && (
+        <p className="text-xs text-amber-600 dark:text-amber-400">
+          Valor pago maior que o previsto (juros/multa?) — será registrado como pago,
+          sem desconto.
+        </p>
+      )}
       {err && <p className="text-xs text-destructive">{err}</p>}
       <DialogFooter>
         <DialogClose render={<Button variant="outline" />}>Cancelar</DialogClose>
         <Button onClick={confirmar} disabled={busy}>
-          {busy ? "Salvando…" : "Confirmar baixa"}
+          {busy ? "Salvando…" : "Confirmar pagamento"}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -635,6 +680,23 @@ function DespesaForm({
   );
   // Qual rateio o dialog edita: "def" (padrão) ou o índice da parcela; null = fechado.
   const [rateioAlvo, setRateioAlvo] = useState<number | "def" | null>(null);
+  /**
+   * Valor DE CADA parcela. Muitas dívidas são conhecidas assim ("12x de 12.500"),
+   * não pelo total — digitar aqui calcula o total (parcela × nº). É bidirecional:
+   * mexer no total recalcula a parcela, então os dois nunca discordam.
+   */
+  const [valorParcela, setValorParcela] = useState("");
+  /**
+   * 1ª COMPETÊNCIA (data): a que mês a 1ª parcela se refere. As demais seguem
+   * mês a mês, igual ao vencimento. É uma DATA (não "mês anterior/mesmo mês"):
+   * a pessoa lê direto o mês, sem precisar traduzir de cabeça — e é o mesmo
+   * formato da coluna Competência da tabela abaixo.
+   *
+   * Para a folha: 1º vencimento 05/08 e 1ª competência 05/07.
+   */
+  const [primComp, setPrimComp] = useState(
+    initial?.parcelas[0]?.data_competencia ?? hoje,
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Candidatos a duplicata (mesma categoria/valor/venc) achados antes de criar.
@@ -653,6 +715,10 @@ function DespesaForm({
       setErr("Rateio padrão inválido — a soma dos percentuais precisa ser 100%.");
       return;
     }
+    if (!primComp) {
+      setErr("Informe a 1ª competência (a que mês esta despesa se refere).");
+      return;
+    }
     setErr(null);
     const base = Math.floor(total / n);
     const resto = total - base * n;
@@ -660,8 +726,9 @@ function DespesaForm({
       Array.from({ length: n }, (_, i) => ({
         bu_id: defRateio.length ? defRateio[0].bu_id : defBu,
         valor: ((base + (i === n - 1 ? resto : 0)) / 100).toFixed(2),
+        // Vencimento e competência avançam mês a mês, cada um a partir da SUA data.
         data_vencimento: addMonths(primVenc, i),
-        data_competencia: addMonths(primVenc, i),
+        data_competencia: addMonths(primComp, i),
         metodo_pagamento: defMetodo,
         rateio: defRateio.map((l) => ({ ...l })), // cópia por parcela
       })),
@@ -670,6 +737,32 @@ function DespesaForm({
 
   const setLinha = (i: number, k: keyof LinhaParcela, v: string) =>
     setLinhas((s) => s.map((l, j) => (j === i ? { ...l, [k]: v } : l)));
+
+  const numP = () => Math.max(1, Math.floor(Number(numParcelas) || 1));
+  /** Digitou o valor da parcela → total = parcela × nº. */
+  const mudarValorParcela = (v: string) => {
+    setValorParcela(v);
+    const t = cents(Number(v) || 0) * numP();
+    setValorTotal(t > 0 ? (t / 100).toFixed(2) : "");
+  };
+  /** Digitou o total → valor da parcela = total ÷ nº (informativo). */
+  const mudarValorTotal = (v: string) => {
+    setValorTotal(v);
+    const p = Math.floor(cents(Number(v) || 0) / numP());
+    setValorParcela(p > 0 ? (p / 100).toFixed(2) : "");
+  };
+  /** Mudou o nº de parcelas: mantém o VALOR DA PARCELA e recalcula o total. */
+  const mudarNumParcelas = (v: string) => {
+    setNumParcelas(v);
+    const n = Math.max(1, Math.floor(Number(v) || 1));
+    if (cents(Number(valorParcela) || 0) > 0) {
+      const t = cents(Number(valorParcela)) * n;
+      setValorTotal((t / 100).toFixed(2));
+    } else if (cents(Number(valorTotal) || 0) > 0) {
+      const p = Math.floor(cents(Number(valorTotal)) / n);
+      setValorParcela((p / 100).toFixed(2));
+    }
+  };
 
   /** Grava o rateio editado no alvo (padrão ou parcela i). */
   const salvarRateio = (linhas2: RateioLinha[]) => {
@@ -815,10 +908,12 @@ function DespesaForm({
 
         <div className="rounded-lg border border-border p-3">
           <p className="mb-2 text-xs font-medium text-muted-foreground">Parcelamento</p>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
             <div className="flex flex-col gap-1">
-              <Label>Valor total</Label>
-              <MoneyInput value={valorTotal} onChange={setValorTotal} />
+              <Label title="Valor de CADA parcela — preenche o total automaticamente">
+                Valor da parcela
+              </Label>
+              <MoneyInput value={valorParcela} onChange={mudarValorParcela} />
             </div>
             <div className="flex flex-col gap-1">
               <Label>Nº parcelas</Label>
@@ -826,16 +921,48 @@ function DespesaForm({
                 type="number"
                 min="1"
                 value={numParcelas}
-                onChange={(e) => setNumParcelas(e.target.value)}
+                onChange={(e) => mudarNumParcelas(e.target.value)}
               />
             </div>
             <div className="flex flex-col gap-1">
-              <Label>1º vencimento</Label>
+              <Label title="Parcela × nº — ou digite aqui e a parcela é calculada">
+                Valor total
+              </Label>
+              <MoneyInput value={valorTotal} onChange={mudarValorTotal} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label title="Quando a parcela SERÁ PAGA (sai do caixa)">1º vencimento</Label>
               <Input
                 type="date"
                 value={primVenc}
-                onChange={(e) => setPrimVenc(e.target.value)}
+                onChange={(e) => {
+                  // Mantém a competência acompanhando o vencimento enquanto a
+                  // pessoa não a alterou de propósito (caso comum: são iguais).
+                  const igual = primComp === primVenc;
+                  setPrimVenc(e.target.value);
+                  if (igual) setPrimComp(e.target.value);
+                }}
               />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label title="A que mês esta despesa SE REFERE (entra no DRE deste mês)">
+                1ª competência
+              </Label>
+              <div className="flex items-center gap-1">
+                <Input
+                  type="date"
+                  value={primComp}
+                  onChange={(e) => setPrimComp(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="shrink-0 rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+                  onClick={() => setPrimComp(addMonths(primVenc, -1))}
+                  title="Folha, aluguel, encargos: paga em um mês, refere-se ao anterior"
+                >
+                  −1 mês
+                </button>
+              </div>
             </div>
             <div className="flex flex-col gap-1">
               <Label>BU padrão</Label>
