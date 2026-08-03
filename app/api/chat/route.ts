@@ -350,6 +350,19 @@ async function buildKnowledge(
         usefulMemories.map((m) => `- [${m.kind}] ${m.content}`).join("\n"),
     );
   }
+  // Busca semântica fora do ar (embedding indisponível): avisa o MODELO, para
+  // que ele seja honesto em vez de afirmar que "não existe" o que não pôde
+  // procurar. O resto do contexto (financeiro, tarefas, histórico) segue válido.
+  if (primary.indisponivel) {
+    blocks.push(
+      "## ⚠ Busca na base de conhecimento INDISPONÍVEL agora\n" +
+        "A busca semântica (documentos do Notion e memórias antigas) falhou nesta " +
+        "mensagem por indisponibilidade do serviço de embeddings. Responda com o " +
+        "que você tem (histórico da conversa e os blocos acima). Se a pergunta " +
+        "depender de documentos ou memórias, DIGA que não foi possível consultá-los " +
+        "agora — nunca afirme que a informação não existe.",
+    );
+  }
   return blocks.length
     ? "\n\nContexto recuperado:\n" + blocks.join("\n\n")
     : "";
@@ -737,6 +750,17 @@ export async function POST(req: Request) {
             count: 8,
             memThreshold: 0.35,
           });
+          // Indisponível ≠ vazio: devolve o motivo para o modelo não concluir
+          // que "não existe" aquilo que ele não conseguiu procurar.
+          if (found.indisponivel)
+            return {
+              erro: "busca_indisponivel",
+              mensagem:
+                "A busca na base de conhecimento está indisponível no momento " +
+                "(serviço de embeddings fora do ar). Não é possível consultar " +
+                "documentos nem memórias nesta mensagem — avise o usuário e " +
+                "responda com o que já está no contexto.",
+            };
           return [
             ...found.memories.map((m) => ({ tipo: m.kind, texto: m.content })),
             ...found.documents.map((d) => ({

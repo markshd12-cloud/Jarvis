@@ -34,10 +34,24 @@ export async function searchKnowledge(
     count = 8,
     memThreshold = 0.4,
   }: { count?: number; memThreshold?: number } = {},
-): Promise<{ memories: MemoryHit[]; documents: DocHit[] }> {
+): Promise<{ memories: MemoryHit[]; documents: DocHit[]; indisponivel?: boolean }> {
   if (!query.trim()) return { memories: [], documents: [] };
 
-  const embedding = await embedText(query, "RETRIEVAL_QUERY");
+  /**
+   * DEGRADAÇÃO: o embedding é o ÚNICO ponto do chat que depende do Google
+   * (Vertex). Quando ele cai — cota, rede ou bloqueio de cobrança —, a busca
+   * semântica fica indisponível, mas o resto do chat não tem por que morrer
+   * junto: histórico, contexto financeiro, tarefas e a geração da resposta
+   * seguem inteiros. Sinaliza com `indisponivel` para o chamador avisar o
+   * usuário, em vez de deixá-lo achar que o Jarvis "esqueceu" as coisas.
+   */
+  let embedding: number[];
+  try {
+    embedding = await embedText(query, "RETRIEVAL_QUERY");
+  } catch (error) {
+    console.error("[retrieval] embedding indisponível — seguindo sem RAG:", error);
+    return { memories: [], documents: [], indisponivel: true };
+  }
   const supabase = await createClient();
 
   const [mem, doc] = await Promise.all([
