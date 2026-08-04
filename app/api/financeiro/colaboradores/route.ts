@@ -16,7 +16,9 @@ export async function GET() {
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   const [colaboradores, members] = await Promise.all([
     listColaboradores(gate.companyId),
-    listMembers(gate.companyId),
+    // Grupo inteiro: professores/colaboradores têm login em CPPEM, UNICIVE ou
+    // COLÉGIO, e todos precisam ser vinculáveis a partir do financeiro.
+    listMembers(gate.companyId, { todasEmpresas: true }),
   ]);
   return NextResponse.json({ colaboradores, members });
 }

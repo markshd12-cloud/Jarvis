@@ -21,6 +21,10 @@ export interface CompanyRole {
 export interface CompanyMemberRow {
   id: string;
   email: string;
+  /** `profiles.full_name` — o nome oficial; null enquanto ninguém preencheu. */
+  nome: string | null;
+  /** `profiles.nickname` — apelido do chat, usado como plano B na exibição. */
+  nickname: string | null;
   role: string;
   roleId: string | null;
   roleName: string | null;
@@ -140,7 +144,10 @@ export async function getCompanyDetail(id: string): Promise<CompanyDetail | null
     admin.from("companies").select("id, name, created_at").eq("id", id).maybeSingle(),
     admin
       .from("profiles")
-      .select("id, email, role, role_id, roles ( name )")
+      // `nickname` entra como plano B do nome: é o "como me chamar" que a
+      // pessoa define em Personalizar, e por muito tempo foi o único nome
+      // existente (o convite nunca pediu `full_name`).
+      .select("id, email, full_name, nickname, role, role_id, roles ( name )")
       .eq("company_id", id)
       .order("created_at"),
     admin
@@ -162,6 +169,8 @@ export async function getCompanyDetail(id: string): Promise<CompanyDetail | null
       return {
         id: m.id,
         email: m.email ?? "",
+        nome: (m.full_name as string | null) ?? null,
+        nickname: (m.nickname as string | null) ?? null,
         role: m.role,
         roleId: m.role_id ?? null,
         roleName: roleRow?.name ?? null,

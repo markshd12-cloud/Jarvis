@@ -93,16 +93,25 @@ export async function listRateios(
   const map = new Map<string, RateioLinha[]>();
   if (parcelaIds.length === 0) return map;
   const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("fin_despesa_rateio")
-    .select("parcela_id, bu_id, percentual")
-    .eq("company_id", companyId)
-    .in("parcela_id", parcelaIds);
-  if (error) throw new Error(`listRateios: ${error.message}`);
-  for (const r of data ?? []) {
-    const arr = map.get(r.parcela_id as string) ?? [];
-    arr.push({ bu_id: r.bu_id as string, percentual: Number(r.percentual) });
-    map.set(r.parcela_id as string, arr);
+
+  // Em lotes: `.in()` vira `?parcela_id=in.(…)` na URL, e cada UUID custa ~39
+  // caracteres. Com as recorrências materializadas 12 meses à frente, listar
+  // "todos os meses" passou de 1.200 parcelas — uma URL de ~50 KB, que o proxy
+  // recusa antes de chegar ao banco. A resposta volta VAZIA e o painel quebrava
+  // com "Unexpected end of JSON input". 200 por vez mantém a URL abaixo de 8 KB.
+  const LOTE = 200;
+  for (let i = 0; i < parcelaIds.length; i += LOTE) {
+    const { data, error } = await admin
+      .from("fin_despesa_rateio")
+      .select("parcela_id, bu_id, percentual")
+      .eq("company_id", companyId)
+      .in("parcela_id", parcelaIds.slice(i, i + LOTE));
+    if (error) throw new Error(`listRateios: ${error.message}`);
+    for (const r of data ?? []) {
+      const arr = map.get(r.parcela_id as string) ?? [];
+      arr.push({ bu_id: r.bu_id as string, percentual: Number(r.percentual) });
+      map.set(r.parcela_id as string, arr);
+    }
   }
   return map;
 }

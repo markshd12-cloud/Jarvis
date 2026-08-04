@@ -28,6 +28,24 @@ interface EventoPagar {
   status?: string | null;
   situacao?: string | null;
   categorias?: Array<{ id?: string | null }> | null;
+  /** Pessoa da conta — os professores vivem aqui. Vem `{id:null,nome:null}` quando não há. */
+  fornecedor?: { id?: string | null; nome?: string | null } | null;
+}
+
+/**
+ * Normaliza nome p/ comparação: maiúsculas, sem acento, sem pontuação e sem o
+ * prefixo "PROF."/"PROFESSOR". Serve só para RECONHECER alguém que já existe —
+ * nunca para renomear (o nome do CA é preservado como veio).
+ */
+function chaveNome(nome: string): string {
+  return nome
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/^PROF(ESSOR[AO]?)?\.?\s+/, "")
+    .replace(/[^A-Z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 interface BuscaResp {
   itens?: EventoPagar[];
@@ -65,6 +83,86 @@ async function fetchPagar(companyId: string, de: string, ate: string): Promise<E
   return out;
 }
 
+/**
+ * Resolve o `colaborador_id` de cada fornecedor que aparece nos eventos —
+ * criando os que faltam como `tipo='fornecedor'`.
+ *
+ * Dedup em duas camadas, da mais forte para a mais fraca:
+ *  1. `ca_pessoa_id` — exato e estável, é o id da pessoa no próprio CA.
+ *  2. Nome normalizado — só para ADOTAR alguém que já existe sem o de-para (ex.:
+ *     um sócio importado dos usuários do Jarvis que também paga por fora). Nesse
+ *     caso apenas gravamos o `ca_pessoa_id` nele, sem duplicar nem renomear.
+ *
+ * Retorna Map<ca_pessoa_id, colaborador_id>.
+ */
+async function resolverFornecedores(
+  companyId: string,
+  eventos: EventoPagar[],
+): Promise<{ mapa: Map<string, string>; criados: number }> {
+  const admin = createAdminClient();
+
+  // Fornecedores distintos presentes nos eventos (id + nome preenchidos).
+  const distintos = new Map<string, string>(); // ca_pessoa_id -> nome
+  for (const e of eventos) {
+    const id = e.fornecedor?.id;
+    const nome = e.fornecedor?.nome?.trim();
+    if (id && nome) distintos.set(id, nome);
+  }
+  if (distintos.size === 0) return { mapa: new Map(), criados: 0 };
+
+  const { data: existentes, error } = await admin
+    .from("fin_colaboradores")
+    .select("id, nome, ca_pessoa_id")
+    .eq("company_id", companyId);
+  if (error) throw new Error(`resolverFornecedores: ${error.message}`);
+
+  const porCaId = new Map<string, string>();
+  const porNome = new Map<string, { id: string; temCaId: boolean }>();
+  for (const c of existentes ?? []) {
+    const caId = c.ca_pessoa_id as string | null;
+    if (caId) porCaId.set(caId, c.id as string);
+    const k = chaveNome(c.nome as string);
+    if (k && !porNome.has(k))
+      porNome.set(k, { id: c.id as string, temCaId: !!caId });
+  }
+
+  const mapa = new Map<string, string>();
+  const novos: { company_id: string; nome: string; tipo: string; ca_pessoa_id: string }[] = [];
+
+  for (const [caId, nome] of distintos) {
+    const jaPorId = porCaId.get(caId);
+    if (jaPorId) {
+      mapa.set(caId, jaPorId);
+      continue;
+    }
+    const porNomeHit = porNome.get(chaveNome(nome));
+    if (porNomeHit && !porNomeHit.temCaId) {
+      // Mesma pessoa já cadastrada sem de-para: adota o vínculo, não duplica.
+      await admin
+        .from("fin_colaboradores")
+        .update({ ca_pessoa_id: caId })
+        .eq("company_id", companyId)
+        .eq("id", porNomeHit.id);
+      mapa.set(caId, porNomeHit.id);
+      porCaId.set(caId, porNomeHit.id);
+      continue;
+    }
+    novos.push({ company_id: companyId, nome, tipo: "fornecedor", ca_pessoa_id: caId });
+  }
+
+  if (novos.length > 0) {
+    const { data: inseridos, error: eIns } = await admin
+      .from("fin_colaboradores")
+      .insert(novos)
+      .select("id, ca_pessoa_id");
+    if (eIns) throw new Error(`resolverFornecedores (criar): ${eIns.message}`);
+    for (const c of inseridos ?? [])
+      mapa.set(c.ca_pessoa_id as string, c.id as string);
+  }
+
+  return { mapa, criados: novos.length };
+}
+
 export interface ImportDespesasResult {
   connected: boolean;
   janela: { de: string; ate: string };
@@ -79,6 +177,10 @@ export interface ImportDespesasResult {
   semCategoria: number;
   /** Eventos ignorados por serem de competência posterior ao teto pedido. */
   foraDoTeto: number;
+  /** Fornecedores (professores etc.) criados a partir do campo `fornecedor` do CA. */
+  fornecedoresCriados: number;
+  /** Despesas que ficaram vinculadas a um fornecedor. */
+  comFornecedor: number;
   /** Teto de competência aplicado nesta rodada ('AAAA-MM'), ou null. */
   ateCompetencia: string | null;
   /** Houve despesa sem BU e sem BU "Geral" p/ ancorar → rode o seed. */
@@ -130,6 +232,8 @@ export async function importarDespesas(
       semId: 0,
       semCategoria: 0,
       foraDoTeto: 0,
+      fornecedoresCriados: 0,
+      comFornecedor: 0,
       ateCompetencia: teto,
       buGeralFaltando: false,
       erro,
@@ -193,6 +297,22 @@ export async function importarDespesas(
   }[] = [];
   const visto = new Set<string>(); // evita evento repetido dentro do MESMO fetch
 
+  /**
+   * Fornecedores (professores, prestadores) resolvidos ANTES de montar as
+   * despesas: o CA traz a pessoa no evento, e cadastrá-la à mão era inviável.
+   * Falha aqui não derruba o import — a despesa entra sem vínculo.
+   */
+  let fornecedores = new Map<string, string>();
+  let fornecedoresCriados = 0;
+  try {
+    const r = await resolverFornecedores(companyId, eventos);
+    fornecedores = r.mapa;
+    fornecedoresCriados = r.criados;
+  } catch (e) {
+    console.error("[import] fornecedores:", (e as Error).message);
+  }
+  let comFornecedor = 0;
+
   for (const e of eventos) {
     if (!e.id) {
       semId++;
@@ -228,6 +348,12 @@ export async function importarDespesas(
     const venc = (e.data_vencimento ?? e.data_competencia ?? "").slice(0, 10) || comp;
     const pago = foiPago(e);
 
+    // Vincula a pessoa da conta (professor/prestador), quando o CA a informa.
+    const colaboradorId = e.fornecedor?.id
+      ? fornecedores.get(e.fornecedor.id) ?? null
+      : null;
+    if (colaboradorId) comFornecedor++;
+
     visto.add(e.id);
     pend.push({
       ca_evento_id: e.id,
@@ -235,6 +361,7 @@ export async function importarDespesas(
         company_id: companyId,
         descricao: (e.descricao ?? "").trim() || "Despesa (Conta Azul)",
         categoria_id: map.id,
+        colaborador_id: colaboradorId,
         valor_total: valor,
         num_parcelas: 1,
         fonte: "ca_import",
@@ -305,6 +432,8 @@ export async function importarDespesas(
     semId,
     semCategoria,
     foraDoTeto,
+    fornecedoresCriados,
+    comFornecedor,
     ateCompetencia: teto,
     buGeralFaltando,
   };

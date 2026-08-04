@@ -139,6 +139,9 @@ export function DreConfigPanel({
         setError(r.erro ?? "Conta Azul indisponível.");
       } else {
         let t = `${r.novos} nova(s) despesa(s) importada(s), ${r.jaImportados} já existia(m).`;
+        if (r.fornecedoresCriados)
+          t += ` ${r.fornecedoresCriados} fornecedor(es) criado(s) a partir do CA.`;
+        if (r.comFornecedor) t += ` ${r.comFornecedor} despesa(s) vinculada(s) a uma pessoa.`;
         if (r.foraDoTeto)
           t += ` ${r.foraDoTeto} ignorada(s) por serem depois de ${labelComp(r.ateCompetencia ?? "")}.`;
         if (r.semCategoria) t += ` ${r.semCategoria} sem categoria (puladas).`;

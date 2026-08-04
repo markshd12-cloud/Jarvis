@@ -127,6 +127,11 @@ export interface MembroEmpresa {
   id: string;
   nome: string;
   email: string | null;
+  /** Empresa a que o usuário pertence. O grupo tem 3 (CPPEM/UNICIVE/COLEGIO) e o
+   *  financeiro roda em uma só, mas a mesma pessoa pode ser cadastrada em outra. */
+  empresa: string;
+  /** `true` quando o usuário é de OUTRA empresa que não a do financeiro. */
+  externa: boolean;
 }
 
 export type StatusParcela =

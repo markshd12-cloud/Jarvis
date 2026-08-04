@@ -58,6 +58,30 @@ const cents = (v: number) => Math.round(v * 100);
 const fmtData = (iso: string) => iso.split("-").reverse().join("/");
 
 
+/**
+ * GET + JSON com erro legível. `res.json()` direto joga "Unexpected end of JSON
+ * input" quando a resposta vem vazia (timeout, 502, payload grande demais) — uma
+ * mensagem que não diz nada a quem está usando o sistema.
+ */
+async function getJson<T = Record<string, unknown>>(url: string): Promise<T> {
+  const res = await fetch(url);
+  const txt = await res.text();
+  if (!txt)
+    throw new Error(
+      res.ok
+        ? "o servidor devolveu resposta vazia — tente um período menor"
+        : `falha ao carregar (HTTP ${res.status})`,
+    );
+  let j: { error?: string };
+  try {
+    j = JSON.parse(txt);
+  } catch {
+    throw new Error(`resposta inválida do servidor (HTTP ${res.status})`);
+  }
+  if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+  return j as T;
+}
+
 async function send(url: string, method: "POST" | "PATCH" | "DELETE", body?: unknown) {
   const res = await fetch(url, {
     method,
@@ -69,10 +93,20 @@ async function send(url: string, method: "POST" | "PATCH" | "DELETE", body?: unk
   return j;
 }
 
-/** Competência do mês corrente ('AAAA-MM'), no fuso do navegador. */
+/**
+ * Competência do mês corrente ('AAAA-MM') em **America/Sao_Paulo**, não no fuso
+ * do navegador. Dois motivos: é o mês da operação, e o componente também renderiza
+ * no servidor (UTC) — usar o fuso local faria o SSR e a hidratação discordarem na
+ * virada do mês, que é exatamente o bug que fez uma recorrência não gerar nada.
+ */
 function mesAtualComp(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  })
+    .format(new Date())
+    .slice(0, 7);
 }
 /** Soma n meses a uma competência 'AAAA-MM'. Vazio parte do mês corrente. */
 function addMesComp(ym: string, n: number): string {
@@ -146,22 +180,26 @@ export function ContasPagarPanel() {
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [baixando, setBaixando] = useState<ParcelaRow | null>(null);
   const [aberto, setAberto] = useState<Set<string>>(new Set());
-  const [filtros, setFiltros] = useState({
+  // Abre no MÊS ATUAL. Sem filtro de competência a consulta traz todas as parcelas
+  // de todos os meses — com as recorrências materializadas 12 meses à frente isso
+  // passou de milhares de linhas, a resposta estourava e o painel quebrava no
+  // `r.json()`. "Todos" continua a um clique de distância.
+  const [filtros, setFiltros] = useState(() => ({
     grupo: "a_vencer" as GrupoParcela,
     bu_id: "",
     categoria_id: "",
     busca: "",
-    competencia: "", // 'AAAA-MM' = só aquele mês; vazio = todos os meses
-  });
+    competencia: mesAtualComp(), // 'AAAA-MM' = só aquele mês; vazio = todos os meses
+  }));
 
   useEffect(() => {
     void (async () => {
       try {
         const [cat, bus, cen, col] = await Promise.all([
-          fetch("/api/financeiro/categorias").then((r) => r.json()),
-          fetch("/api/financeiro/bus").then((r) => r.json()),
-          fetch("/api/financeiro/centros").then((r) => r.json()),
-          fetch("/api/financeiro/colaboradores").then((r) => r.json()),
+          getJson<{ categorias?: FinCategoria[] }>("/api/financeiro/categorias"),
+          getJson<{ bus?: BusinessUnit[] }>("/api/financeiro/bus"),
+          getJson<{ centros?: FinCentro[] }>("/api/financeiro/centros"),
+          getJson<{ colaboradores?: FinColaborador[] }>("/api/financeiro/colaboradores"),
         ]);
         setDim({
           bus: (bus.bus ?? []).filter((b: BusinessUnit) => b.ativo),
@@ -187,9 +225,8 @@ export function ContasPagarPanel() {
       if (filtros.categoria_id) qs.set("categoria_id", filtros.categoria_id);
       if (filtros.busca.trim()) qs.set("busca", filtros.busca.trim());
       if (filtros.competencia) qs.set("competencia", filtros.competencia);
-      const j = await fetch(`/api/financeiro/despesas?${qs}`).then((r) => r.json());
-      if (j.error) throw new Error(j.error);
-      setParcelas(j.parcelas ?? []);
+      const j = await getJson(`/api/financeiro/despesas?${qs}`);
+      setParcelas((j.parcelas as ParcelaRow[]) ?? []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -410,13 +447,24 @@ export function ContasPagarPanel() {
                   ) : (
                     <span className="w-4 shrink-0" />
                   )}
-                  <span className="font-medium">{g.descricao}</span>
+                  <span className="min-w-0 truncate font-medium" title={g.descricao}>
+                    {g.descricao}
+                  </span>
                   {parcelado && (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                       {g.num_parcelas}x
                     </span>
                   )}
-                  <span className="text-xs text-muted-foreground">{g.categoria_nome ?? "—"}</span>
+                  {/* As três categorias de hora-aula (38 a 48 caracteres) só divergem
+                      no FINAL — "…do Colégio Cppem", "…do Cppem Presencial", "…e
+                      Mentores do Cppem Online". Cortar sem `title` deixa as três
+                      indistinguíveis na linha. */}
+                  <span
+                    className="min-w-0 shrink-2 truncate text-xs text-muted-foreground"
+                    title={g.categoria_nome ?? undefined}
+                  >
+                    {g.categoria_nome ?? "—"}
+                  </span>
                 </button>
                 <SituacaoBadge s={g.situacao} />
                 <span className="w-28 text-right tabular-nums">{brl.format(g.total)}</span>

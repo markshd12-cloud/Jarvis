@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconEye,
   IconEyeOff,
@@ -139,6 +139,11 @@ export function ColaboradoresPanel() {
     );
 
   const buNome = (id: string | null) => bus.find((b) => b.id === id)?.nome;
+  /** Empresa do login vinculado — só rotulada quando NÃO é a desta contabilidade. */
+  const empresaDoLogin = (profileId: string | null) => {
+    const m = members.find((x) => x.id === profileId);
+    return m?.externa ? m.empresa : null;
+  };
   const grupos = TIPOS_PESSOA.map((t) => ({
     tipo: t,
     itens: lista.filter((c) => c.tipo === t),
@@ -201,6 +206,9 @@ export function ColaboradoresPanel() {
                       title="Vinculado a um usuário do painel de Empresas"
                     >
                       login
+                      {empresaDoLogin(c.profile_id)
+                        ? ` · ${empresaDoLogin(c.profile_id)}`
+                        : ""}
                     </span>
                   )}
                   {c.cargo && (
@@ -310,10 +318,30 @@ function ColaboradorForm({
   const set = (k: keyof typeof f, v: string) => setF((s) => ({ ...s, [k]: v }));
 
   // Vincular a um usuário da empresa: prefill do nome + guarda o profile_id.
+  // Vincular já promove a fornecedor → colaborador: quem tem login É interno.
+  // Continua editável logo abaixo, caso o caso seja mesmo de fornecedor.
   const vincular = (id: string) => {
     const m = members.find((x) => x.id === id);
-    setF((s) => ({ ...s, profile_id: id, nome: m && !s.nome ? m.nome : s.nome }));
+    setF((s) => ({
+      ...s,
+      profile_id: id,
+      nome: m && !s.nome ? m.nome : s.nome,
+      tipo: id ? "colaborador" : s.tipo,
+    }));
   };
+
+  // Empresas na ordem que a API devolveu (a própria primeiro), sem reordenar.
+  const gruposDeMembros = useMemo(() => {
+    const g = new Map<string, MembroEmpresa[]>();
+    for (const m of members) {
+      const atual = g.get(m.empresa);
+      if (atual) atual.push(m);
+      else g.set(m.empresa, [m]);
+    }
+    return [...g];
+  }, [members]);
+
+  const vinculado = members.find((m) => m.id === f.profile_id);
 
   const submit = async () => {
     setBusy(true);
@@ -364,13 +392,26 @@ function ColaboradorForm({
             <option value="" className={optionCls}>
               — sem vínculo (ex.: fornecedor) —
             </option>
-            {members.map((m) => (
-              <option key={m.id} value={m.id} className={optionCls}>
-                {m.nome}
-                {m.email ? ` · ${m.email}` : ""}
-              </option>
+            {/* Agrupado por empresa: o mesmo grupo tem logins em CPPEM, UNICIVE e
+                COLÉGIO, e sem o rótulo dois "Bruno" viram a mesma linha. */}
+            {gruposDeMembros.map(([empresa, doGrupo]) => (
+              <optgroup key={empresa} label={empresa}>
+                {doGrupo.map((m) => (
+                  <option key={m.id} value={m.id} className={optionCls}>
+                    {m.nome}
+                    {m.email ? ` · ${m.email}` : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
+          {vinculado?.externa && (
+            <p className="text-xs text-muted-foreground">
+              Login cadastrado na {vinculado.empresa}. O vínculo é só de
+              identidade — a despesa continua no financeiro desta empresa, e a BU
+              é escolhida no lançamento.
+            </p>
+          )}
         </div>
         <div className="flex flex-col gap-1">
           <Label>Nome</Label>

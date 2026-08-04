@@ -57,9 +57,17 @@ export async function GET(req: NextRequest) {
       .toISOString()
       .slice(0, 10);
 
+    // ?recurso=pagar inspeciona contas A PAGAR (onde vive o fornecedor/professor);
+    // default = a receber (a investigação original, da data de recebimento).
+    const recurso = req.nextUrl.searchParams.get("recurso") === "pagar" ? "pagar" : "receber";
+    const path =
+      recurso === "pagar"
+        ? CONTA_AZUL_RESOURCES.contasAPagar.path!
+        : CONTA_AZUL_RESOURCES.contasAReceber.path!;
+
     const resp = await caGet<{ itens?: Record<string, unknown>[] }>(
       companyId,
-      CONTA_AZUL_RESOURCES.contasAReceber.path!,
+      path,
       { data_vencimento_de: de, data_vencimento_ate: ate, pagina: 1, tamanho_pagina: 100 },
     );
     const itens = resp.itens ?? [];
@@ -84,9 +92,53 @@ export async function GET(req: NextRequest) {
           )
         : {};
 
+    /**
+     * Estrutura do FORNECEDOR/CLIENTE (contas a pagar traz o professor aqui).
+     * Só as CHAVES e um exemplo do nome — para saber se dá pra importar a pessoa
+     * junto da despesa em vez de cadastrar à mão.
+     */
+    const pessoaDoExemplo = (() => {
+      const p = (exemplo?.fornecedor ?? exemplo?.cliente) as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      if (!p || typeof p !== "object") return { presente: false };
+      return {
+        presente: true,
+        campo: exemplo?.fornecedor ? "fornecedor" : "cliente",
+        chaves: Object.keys(p).sort(),
+        exemplo: {
+          nome: p.nome ?? p.name ?? p.razao_social ?? null,
+          id: p.id ?? null,
+        },
+      };
+    })();
+
     return NextResponse.json({
+      recurso,
       janela: { de, ate },
       lidos: itens.length,
+      pessoaDoExemplo,
+      /**
+       * Quantos eventos têm o NOME de fato preenchido — não basta o objeto
+       * existir: o CA devolve `{id: null, nome: null}` quando a conta não tem
+       * fornecedor vinculado, e isso é "verdadeiro" em JS.
+       */
+      pessoa: (() => {
+        const p = (e: Record<string, unknown>) =>
+          (e.fornecedor ?? e.cliente) as { id?: unknown; nome?: unknown } | null;
+        const comNome = itens.filter((e) => p(e)?.nome);
+        const comId = itens.filter((e) => p(e)?.id);
+        return {
+          total: itens.length,
+          comNome: comNome.length,
+          comId: comId.length,
+          /** Nomes distintos encontrados — é o que viraria cadastro. */
+          exemplos: [
+            ...new Set(comNome.map((e) => String(p(e)!.nome))),
+          ].slice(0, 15),
+        };
+      })(),
       comCaraDePago: itens.filter(pago).length,
       // TODAS as chaves do objeto — é aqui que se descobre um nome inesperado.
       chavesDoEvento: exemplo ? Object.keys(exemplo).sort() : [],

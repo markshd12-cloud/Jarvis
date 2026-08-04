@@ -2,11 +2,13 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { PlusIcon, SendIcon, XIcon } from "lucide-react";
+import { KeyRoundIcon, PencilIcon, PlusIcon, SendIcon, XIcon } from "lucide-react";
 
 import {
   assignMemberRoleAction,
   inviteMemberAction,
+  resetPasswordAction,
+  setMemberNameAction,
 } from "@/app/(app)/empresas/users-actions";
 import { Button } from "@/components/ui/button";
 import { Field, FieldLabel } from "@/components/ui/field";
@@ -80,6 +82,7 @@ function InviteForm({
   onSent: () => void;
 }) {
   const [email, setEmail] = useState("");
+  const [nome, setNome] = useState("");
   const [roleId, setRoleId] = useState(roles[0]?.id ?? "");
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -87,7 +90,7 @@ function InviteForm({
   const submit = () => {
     setError(null);
     startTransition(async () => {
-      const res = await inviteMemberAction({ companyId, email, roleId });
+      const res = await inviteMemberAction({ companyId, email, roleId, nome });
       if (res.error) setError(res.error);
       else onSent();
     });
@@ -115,6 +118,15 @@ function InviteForm({
       </div>
 
       <div className="flex flex-col gap-5 sm:flex-row sm:items-end">
+        <Field className="flex-1">
+          <FieldLabel htmlFor="invite-nome">Nome</FieldLabel>
+          <Input
+            id="invite-nome"
+            value={nome}
+            onChange={(e) => setNome(e.target.value)}
+            placeholder="Maria Silva"
+          />
+        </Field>
         <Field className="flex-1">
           <FieldLabel htmlFor="invite-email">E-mail</FieldLabel>
           <Input
@@ -171,6 +183,10 @@ function MemberRow({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const isSuperadmin = member.role === "superadmin";
+  // Nome oficial; cai no apelido do chat e, por último, no e-mail.
+  const nomeExibido = member.nome ?? member.nickname ?? null;
+  const [editando, setEditando] = useState(false);
+  const [nome, setNome] = useState(nomeExibido ?? "");
 
   const changeRole = (roleId: string) => {
     startTransition(async () => {
@@ -180,10 +196,99 @@ function MemberRow({
     });
   };
 
+  const salvarNome = () => {
+    startTransition(async () => {
+      const res = await setMemberNameAction({ userId: member.id, nome });
+      if (res.error) window.alert(res.error);
+      else {
+        setEditando(false);
+        router.refresh();
+      }
+    });
+  };
+
+  const resetarSenha = () => {
+    if (
+      !window.confirm(
+        `Enviar e-mail de redefinição de senha para ${member.email}?\n\n` +
+          "A pessoa escolhe a nova senha pelo link — você não define nem vê a senha dela.",
+      )
+    )
+      return;
+    startTransition(async () => {
+      const res = await resetPasswordAction({ userId: member.id });
+      window.alert(res.error ?? `E-mail de redefinição enviado para ${member.email}.`);
+    });
+  };
+
   return (
-    <li className="flex items-center justify-between gap-4 px-4 py-3">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-sm">{member.email || "(sem e-mail)"}</span>
+    <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        {editando ? (
+          <>
+            <Input
+              className="h-8 max-w-56"
+              value={nome}
+              onChange={(e) => setNome(e.target.value)}
+              placeholder="Nome da pessoa"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") salvarNome();
+                if (e.key === "Escape") setEditando(false);
+              }}
+            />
+            <Button type="button" size="sm" onClick={salvarNome} disabled={pending || !nome.trim()}>
+              Salvar
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setNome(nomeExibido ?? "");
+                setEditando(false);
+              }}
+              disabled={pending}
+            >
+              Cancelar
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-sm">
+                {nomeExibido ?? (
+                  <span className="text-muted-foreground italic">sem nome</span>
+                )}
+              </span>
+              <span className="truncate text-xs text-muted-foreground">
+                {member.email || "(sem e-mail)"}
+              </span>
+            </div>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Editar nome"
+              title="Editar nome"
+              onClick={() => setEditando(true)}
+              disabled={pending}
+            >
+              <PencilIcon />
+            </Button>
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Redefinir senha"
+              title="Enviar e-mail de redefinição de senha"
+              onClick={resetarSenha}
+              disabled={pending || !member.email}
+            >
+              <KeyRoundIcon />
+            </Button>
+          </>
+        )}
         {isSuperadmin && (
           <span className="shrink-0 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
             superadmin

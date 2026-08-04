@@ -73,20 +73,63 @@ export const colaboradorInputSchema = z.object({
 });
 export type ColaboradorInput = z.infer<typeof colaboradorInputSchema>;
 
-/** Usuários da empresa (profiles) — p/ o seletor de vínculo e a importação. */
-export async function listMembers(companyId: string): Promise<MembroEmpresa[]> {
+/**
+ * Usuários (profiles) — p/ o seletor de vínculo e a importação.
+ *
+ * `todasEmpresas` amplia para os usuários do GRUPO inteiro, não só os da empresa
+ * onde o financeiro roda. Motivo: a contabilidade é centralizada em uma empresa,
+ * mas o professor/colaborador que aparece na conta pode ter login cadastrado na
+ * UNICIVE ou no COLÉGIO — sem isso ele fica preso como "fornecedor" e nunca dá
+ * pra converter em colaborador. O índice único é `(company_id, profile_id)`, e a
+ * FK não restringe empresa, então o vínculo cruzado é válido no banco.
+ *
+ * A importação em massa (`importFromProfiles`) NÃO usa esse modo de propósito:
+ * ela só materializa os usuários da própria empresa.
+ */
+export async function listMembers(
+  companyId: string,
+  opts: { todasEmpresas?: boolean } = {},
+): Promise<MembroEmpresa[]> {
   const admin = createAdminClient();
-  const { data, error } = await admin
+
+  let q = admin
     .from("profiles")
-    .select("id, full_name, email")
-    .eq("company_id", companyId)
-    .order("full_name", { ascending: true, nullsFirst: false });
+    // `nickname` como plano B: por muito tempo o convite não pedia nome, então o
+    // apelido do chat era o ÚNICO nome existente. Sem ele, cair direto no e-mail
+    // fazia o financeiro listar "markshd1@hotmail.com" em vez de "Max".
+    .select("id, full_name, nickname, email, company_id");
+  if (!opts.todasEmpresas) q = q.eq("company_id", companyId);
+
+  const [{ data, error }, empresas] = await Promise.all([
+    q.order("full_name", { ascending: true, nullsFirst: false }),
+    admin.from("companies").select("id, name"),
+  ]);
   if (error) throw new Error(`listMembers: ${error.message}`);
-  return (data ?? []).map((p) => ({
-    id: p.id as string,
-    nome: (p.full_name as string | null) ?? (p.email as string | null) ?? "(sem nome)",
-    email: (p.email as string | null) ?? null,
-  }));
+  if (empresas.error) throw new Error(`listMembers: ${empresas.error.message}`);
+
+  const nomeEmpresa = new Map(
+    (empresas.data ?? []).map((c) => [c.id as string, c.name as string]),
+  );
+
+  return (data ?? [])
+    .map((p) => ({
+      id: p.id as string,
+      nome:
+        (p.full_name as string | null) ??
+        (p.nickname as string | null) ??
+        (p.email as string | null) ??
+        "(sem nome)",
+      email: (p.email as string | null) ?? null,
+      empresa: nomeEmpresa.get(p.company_id as string) ?? "(sem empresa)",
+      externa: (p.company_id as string) !== companyId,
+    }))
+    // Própria empresa primeiro — é de onde vem a maioria dos vínculos.
+    .sort(
+      (a, b) =>
+        Number(a.externa) - Number(b.externa) ||
+        a.empresa.localeCompare(b.empresa, "pt-BR") ||
+        a.nome.localeCompare(b.nome, "pt-BR"),
+    );
 }
 
 /**

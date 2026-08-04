@@ -205,10 +205,23 @@ export function RecorrenciasPanel() {
       <ul className="divide-y divide-border rounded-lg border border-border">
         {lista.map((r) => (
           <li key={r.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
-            <span className={cn(!r.ativo && "text-muted-foreground line-through")}>
+            <span
+              className={cn(
+                "min-w-0 truncate",
+                !r.ativo && "text-muted-foreground line-through",
+              )}
+              title={r.descricao}
+            >
               {r.descricao}
             </span>
-            <span className="text-xs text-muted-foreground">{catNome(r.categoria_id)}</span>
+            {/* `title` porque as categorias de hora-aula só diferem no FINAL
+                ("…do Colégio Cppem" / "…do Cppem Presencial" / "…do Cppem Online"). */}
+            <span
+              className="min-w-0 shrink-2 truncate text-xs text-muted-foreground"
+              title={catNome(r.categoria_id)}
+            >
+              {catNome(r.categoria_id)}
+            </span>
             {centroNome(r.centro_custo_id) && (
               <span
                 className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
