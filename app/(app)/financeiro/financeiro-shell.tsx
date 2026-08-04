@@ -405,6 +405,10 @@ export function FinanceiroShell() {
             temOrcamento={dre?.temOrcamento ?? false}
             temPrevReal={dre?.temPrevReal ?? false}
             competencia={competencia}
+            // BU e regime seguem para o detalhamento de cada linha: sem eles a
+            // soma do popup não fecharia com a linha que foi clicada.
+            buId={buId}
+            regime={regime}
             onMetaSaved={() => setReloadKey((k) => k + 1)}
           />
         </section>

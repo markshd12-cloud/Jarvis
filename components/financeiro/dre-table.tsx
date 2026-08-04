@@ -1,11 +1,17 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { ChevronRightIcon } from "lucide-react";
 
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { MoneyInput } from "@/components/financeiro/money-input";
 import { cn } from "@/lib/utils";
-import type { DreRow } from "@/lib/contaazul/dre";
+import type { DreDetalheItem, DreRow } from "@/lib/contaazul/dre";
 
 /**
  * Tabela do DRE Gerencial. Espelha a estrutura do relatório do Conta Azul:
@@ -147,6 +153,8 @@ export function DreTable({
   temOrcamento = false,
   temPrevReal = false,
   competencia,
+  buId = null,
+  regime = "competencia",
   onMetaSaved,
 }: {
   rows: DreRow[];
@@ -164,11 +172,22 @@ export function DreTable({
   temPrevReal?: boolean;
   /** Competência exibida ('AAAA-MM') — habilita digitar a Meta no Faturamento Bruto. */
   competencia?: string;
+  /** BU do DRE exibido — repassada ao detalhamento para a soma fechar. */
+  buId?: string | null;
+  /** Regime do DRE exibido — idem. */
+  regime?: "competencia" | "previsto-realizado";
   /** Chamado após salvar uma meta digitada no DRE (pra recarregar). */
   onMetaSaved?: () => void;
 }) {
+  /** Linha aberta no detalhamento ("de onde veio esse número"). */
+  const [detalhe, setDetalhe] = useState<{ caId: string; label: string } | null>(null);
   // Grupos expandidos (por código). 03 (Custos) começa aberto, como na referência.
   const [open, setOpen] = useState<Set<string>>(new Set(["03"]));
+  // Linhas sem nenhum movimento ficam escondidas por padrão: o plano de contas tem
+  // 117 categorias e num mês típico a maioria fica em R$ 0,00, o que enterra o que
+  // de fato aconteceu. Um clique traz tudo de volta (é preciso para conferir se uma
+  // categoria existe antes de lançar).
+  const [mostrarZerados, setMostrarZerados] = useState(false);
   const toggle = (code: string) =>
     setOpen((prev) => {
       const next = new Set(prev);
@@ -206,6 +225,40 @@ export function DreTable({
     : temOrcamento
       ? "grid-cols-[1fr_8rem_8rem_8.5rem_4.5rem]"
       : "grid-cols-[1fr_9rem_6rem]";
+
+  /**
+   * Grupo cujas folhas NUNCA são escondidas, mesmo zeradas.
+   *
+   * O Faturamento Bruto é a régua do DRE: cada linha zerada ali é uma fonte de
+   * receita que não vendeu neste mês, e sumir com ela esconde justamente a
+   * informação que o gestor precisa ver. Nas despesas vale o contrário — uma
+   * categoria sem lançamento é ruído.
+   */
+  const GRUPO_SEMPRE_VISIVEL = "01";
+
+  /** Sem previsto, sem realizado e sem meta = nada a dizer sobre esta linha. */
+  const semMovimento = (l: { valor: number; previsto: number; orcado: number }) =>
+    l.valor === 0 && l.previsto === 0 && l.orcado === 0;
+
+  /**
+   * Folhas visíveis de um grupo. Um cabeçalho de subgrupo (03.1/03.2) só some
+   * quando TODAS as folhas dele sumiram — senão sobraria um título órfão, ou
+   * folhas soltas sem o subgrupo a que pertencem.
+   */
+  const filhosVisiveis = (row: Extract<DreRow, { kind: "group" }>) => {
+    if (mostrarZerados || row.codigo === GRUPO_SEMPRE_VISIVEL) return row.children;
+    // Índice do próximo cabeçalho de subgrupo, para delimitar cada segmento.
+    return row.children.filter((leaf, i) => {
+      if (!semMovimento(leaf)) return true;
+      if (!leaf.sub) return false;
+      for (let j = i + 1; j < row.children.length; j++) {
+        const p = row.children[j];
+        if (p.sub) break; // começou outro subgrupo
+        if (!semMovimento(p)) return true; // tem folha com movimento: mantém o título
+      }
+      return false;
+    });
+  };
 
   /**
    * Células de valores de uma linha (tudo após "Categoria"), num layout só.
@@ -319,7 +372,25 @@ export function DreTable({
           cols,
         )}
       >
-        <span>Categoria</span>
+        <span className="flex items-center gap-2">
+          Categoria
+          {/* Só aparece quando há o que revelar/esconder — em um mês cheio some. */}
+          {rows.some(
+            (r) =>
+              r.kind === "group" &&
+              r.codigo !== GRUPO_SEMPRE_VISIVEL &&
+              r.children.some(semMovimento),
+          ) ? (
+            <button
+              type="button"
+              onClick={() => setMostrarZerados((v) => !v)}
+              className="rounded border border-border px-1.5 py-0.5 text-[10px] font-medium normal-case tracking-normal text-muted-foreground hover:text-foreground"
+              title="O Faturamento Bruto mostra todas as linhas sempre, mesmo zeradas."
+            >
+              {mostrarZerados ? "ocultar zerados" : "mostrar zerados"}
+            </button>
+          ) : null}
+        </span>
         {temPrevReal ? (
           <>
             {mostraMeta ? (
@@ -377,6 +448,8 @@ export function DreTable({
           }
 
           const isOpen = open.has(row.codigo);
+          const visiveis = filhosVisiveis(row);
+          const ocultas = row.children.length - visiveis.length;
           const hasChildren = row.children.length > 0;
           return (
             <div key={`g-${row.codigo}-${idx}`}>
@@ -411,8 +484,19 @@ export function DreTable({
                 />
               </button>
 
+              {isOpen && ocultas > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setMostrarZerados(true)}
+                  className="w-full border-b border-border/50 bg-background/40 px-4 py-1.5 pl-11 text-left text-[11px] text-muted-foreground hover:text-foreground"
+                >
+                  {ocultas} {ocultas === 1 ? "linha zerada" : "linhas zeradas"} oculta
+                  {ocultas === 1 ? "" : "s"} · mostrar
+                </button>
+              ) : null}
+
               {isOpen && hasChildren
-                ? row.children.map((leaf, i) => (
+                ? visiveis.map((leaf, i) => (
                     <div
                       key={`${row.codigo}-${i}`}
                       className={cn(
@@ -421,14 +505,30 @@ export function DreTable({
                         leaf.sub && "bg-muted/20",
                       )}
                     >
-                      <span
-                        className={cn(
-                          "text-sm text-muted-foreground",
-                          leaf.sub && "font-medium text-foreground",
-                        )}
-                      >
-                        {leaf.label}
-                      </span>
+                      {/* Só folhas de DESPESA abrem o detalhamento: ele lê
+                          `fin_parcelas`, então no Faturamento (01) devolveria uma
+                          lista vazia — pior que não ser clicável. */}
+                      {leaf.caId && !leaf.sub && row.codigo !== GRUPO_SEMPRE_VISIVEL ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setDetalhe({ caId: leaf.caId!, label: leaf.label })
+                          }
+                          className="justify-self-start text-left text-sm text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
+                          title="Ver as contas que compõem este valor"
+                        >
+                          {leaf.label}
+                        </button>
+                      ) : (
+                        <span
+                          className={cn(
+                            "text-sm text-muted-foreground",
+                            leaf.sub && "font-medium text-foreground",
+                          )}
+                        >
+                          {leaf.label}
+                        </span>
+                      )}
                       <Cells
                         valor={leaf.valor}
                         previsto={leaf.previsto}
@@ -458,6 +558,166 @@ export function DreTable({
           );
         })}
       </div>
+
+      {/* `key` por linha: trocar de categoria remonta o diálogo, então o estado
+          nasce limpo sem precisar zerá-lo à mão dentro do efeito. */}
+      <DetalheDialog
+        key={detalhe?.caId ?? "nenhum"}
+        alvo={detalhe}
+        competencia={competencia}
+        buId={buId}
+        regime={regime}
+        onClose={() => setDetalhe(null)}
+      />
     </div>
+  );
+}
+
+const fmtDia = (iso: string | null) =>
+  iso ? iso.slice(0, 10).split("-").reverse().join("/") : "—";
+
+/**
+ * "De onde veio esse número": lista as parcelas por trás de uma linha do DRE.
+ *
+ * Busca com a MESMA competência, BU e regime da tabela — é o que faz a soma
+ * daqui fechar com o valor da linha. Quando há rateio, mostra a fatia e o valor
+ * cheio lado a lado, senão a conta "não bate" aos olhos de quem confere.
+ */
+function DetalheDialog({
+  alvo,
+  competencia,
+  buId,
+  regime,
+  onClose,
+}: {
+  alvo: { caId: string; label: string } | null;
+  competencia?: string;
+  buId: string | null;
+  regime: "competencia" | "previsto-realizado";
+  onClose: () => void;
+}) {
+  const [dados, setDados] = useState<{
+    itens: DreDetalheItem[];
+    total: number;
+    totalRealizado: number;
+  } | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!alvo) return;
+    const qs = new URLSearchParams({ caId: alvo.caId });
+    if (competencia) qs.set("competencia", competencia);
+    if (buId) qs.set("bu", buId);
+    if (regime === "previsto-realizado") qs.set("regime", regime);
+    let vivo = true;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/financeiro/dre/detalhe?${qs}`);
+        const txt = await res.text();
+        if (!txt) throw new Error("resposta vazia do servidor");
+        const j = JSON.parse(txt);
+        if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+        if (vivo) setDados(j);
+      } catch (e) {
+        if (vivo) setErro((e as Error).message);
+      }
+    })();
+    return () => {
+      vivo = false;
+    };
+  }, [alvo, competencia, buId, regime]);
+
+  if (!alvo) return null;
+  const temRateio = dados?.itens.some((i) => i.rateada) ?? false;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      {/* `sm:max-w-*` porque a classe base do DialogContent traz `sm:max-w-sm`:
+          um `max-w-` sem prefixo não vence a variante responsiva e o diálogo
+          ficava preso em 384px, obrigando a rolar de lado. */}
+      <DialogContent className="w-[min(60rem,95vw)] sm:max-w-[min(60rem,95vw)]">
+        <DialogHeader>
+          <DialogTitle className="text-base">{alvo.label}</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          {competencia} ·{" "}
+          {regime === "previsto-realizado"
+            ? "agrupado pelo vencimento"
+            : "agrupado pela competência"}
+          {buId ? " · filtrado por BU" : ""}
+        </p>
+
+        {erro ? <p className="text-sm text-destructive">{erro}</p> : null}
+        {!dados && !erro ? (
+          <p className="text-sm text-muted-foreground">Carregando…</p>
+        ) : null}
+
+        {dados ? (
+          dados.itens.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nenhuma conta nesta competência.
+            </p>
+          ) : (
+            <>
+              {/* Lista, não tabela: com nomes longos ("PROF. GUILHERME FEITOSA")
+                  colunas fixas empurram o valor para fora e obrigam a rolar de
+                  lado. Aqui a descrição ocupa o espaço que sobra e o valor fica
+                  ancorado à direita, sem `overflow-x` em nenhuma largura. */}
+              <ul className="max-h-104 divide-y divide-border overflow-y-auto rounded-lg border border-border">
+                {dados.itens.map((i) => (
+                  <li
+                    key={i.parcelaId}
+                    className="fin-row flex items-baseline gap-3 px-3 py-2.5"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="block text-sm">{i.descricao}</span>
+                      <span className="block text-[11px] text-muted-foreground">
+                        vence {fmtDia(i.dataVencimento)}
+                        {i.numParcelas > 1 ? ` · ${i.numero}/${i.numParcelas}` : ""}
+                        {i.recorrente ? " · recorrência" : ""}
+                        {i.buNome ? ` · ${i.buNome}` : " · sem BU"}
+                        {i.centroNome ? ` · ${i.centroNome}` : ""}
+                      </span>
+                    </div>
+                    {i.status === "paga" ? (
+                      <span className="shrink-0 whitespace-nowrap rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+                        paga {fmtDia(i.dataPagamento)}
+                      </span>
+                    ) : (
+                      <span className="shrink-0 whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {i.status === "a_pagar" ? "a pagar" : i.status}
+                      </span>
+                    )}
+                    <span className="shrink-0 whitespace-nowrap text-right text-sm tabular-nums">
+                      {brl.format(i.valor)}
+                      {i.rateada ? (
+                        <span className="block text-[10px] font-normal text-muted-foreground">
+                          de {brl.format(i.valorCheio)}
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <span className="text-muted-foreground">
+                  {dados.itens.length} conta{dados.itens.length === 1 ? "" : "s"} ·
+                  realizado {brl.format(dados.totalRealizado)}
+                </span>
+                <span className="font-medium tabular-nums">
+                  Total {brl.format(dados.total)}
+                </span>
+              </div>
+              {temRateio ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Onde aparece <strong>“de R$ …”</strong>, a conta é rateada entre BUs
+                  e o valor acima é só a fatia que entra nesta linha.
+                </p>
+              ) : null}
+            </>
+          )
+        ) : null}
+      </DialogContent>
+    </Dialog>
   );
 }

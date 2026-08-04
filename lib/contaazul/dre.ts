@@ -332,6 +332,128 @@ export async function despesaJarvisPorCategoria(
   return { mapa, carimbos: [], realizado };
 }
 
+/** Uma parcela que compõe a linha do DRE, já com a fatia da BU aplicada. */
+export interface DreDetalheItem {
+  parcelaId: string;
+  despesaId: string;
+  descricao: string;
+  /** Valor que ESTA linha do DRE recebeu (já rateado, se houver rateio). */
+  valor: number;
+  /** Valor cheio da parcela — difere de `valor` quando há rateio/filtro de BU. */
+  valorCheio: number;
+  realizado: number | null;
+  status: string;
+  numero: number;
+  numParcelas: number;
+  dataCompetencia: string;
+  dataVencimento: string;
+  dataPagamento: string | null;
+  buNome: string | null;
+  /** true quando a parcela é dividida entre BUs (o valor acima é só a fatia). */
+  rateada: boolean;
+  centroNome: string | null;
+  fonte: string;
+  recorrente: boolean;
+}
+
+/**
+ * As parcelas que COMPÕEM uma linha de despesa do DRE — o "de onde veio esse
+ * número".
+ *
+ * Espelha `despesaJarvisPorCategoria` de propósito: mesma coluna de data por
+ * regime, mesmos filtros de cancelamento e a MESMA fatia de rateio. Se as duas
+ * divergirem, a soma do detalhe não bate com a linha, e um detalhamento que não
+ * fecha é pior que nenhum. Qualquer mudança numa tem de ser feita na outra.
+ */
+export async function detalheDespesaPorCategoria(
+  companyId: string,
+  caCategoriaId: string,
+  competencia: string,
+  buId?: string | null,
+  regime: DreRegime = "competencia",
+): Promise<{ itens: DreDetalheItem[]; total: number; totalRealizado: number }> {
+  const admin = createAdminClient();
+  const campoData =
+    regime === "previsto-realizado" ? "data_vencimento" : "data_competencia";
+  const { data, error } = await admin
+    .from("fin_parcelas")
+    .select(
+      `id, numero, valor_previsto, valor_realizado, status, bu_id,
+       data_competencia, data_vencimento, data_pagamento,
+       business_units ( nome ),
+       fin_despesas!inner ( id, descricao, num_parcelas, cancelada, fonte, recorrencia_id,
+         fin_centros_custo ( nome ),
+         fin_categorias!inner ( ca_categoria_id ) )`,
+    )
+    .eq("company_id", companyId)
+    .gte(campoData, firstDay(competencia))
+    .lte(campoData, lastDay(competencia))
+    .neq("status", "cancelada")
+    .eq("fin_despesas.cancelada", false)
+    .eq("fin_despesas.fin_categorias.ca_categoria_id", caCategoriaId)
+    .order(campoData, { ascending: true });
+  if (error) throw new Error(`detalheDespesaPorCategoria: ${error.message}`);
+
+  const rows = data ?? [];
+  const rateios = await listRateios(
+    companyId,
+    rows.map((r) => r.id as string),
+  );
+
+  const itens: DreDetalheItem[] = [];
+  for (const r of rows) {
+    const linhas = rateios.get(r.id as string) ?? [];
+    /** Mesma fatia do agregado: sem BU pedida, valor cheio. */
+    const fatiaDe = (val: number): number | null => {
+      if (!buId) return val;
+      const buPad = r.bu_id as string | null;
+      if (!buPad) return null;
+      const f = expandirPorBu(cents(val), buPad, linhas).find((x) => x.bu_id === buId);
+      return f ? f.valorCents / 100 : null;
+    };
+    const cheio = num(r.valor_previsto);
+    const valor = fatiaDe(cheio);
+    if (valor === null) continue; // não toca a BU pedida
+
+    const desp = r.fin_despesas as unknown as {
+      id: string;
+      descricao: string;
+      num_parcelas: number;
+      fonte: string;
+      recorrencia_id: string | null;
+      fin_centros_custo?: { nome?: string | null } | null;
+    };
+    const bu = r.business_units as unknown as { nome?: string | null } | null;
+    const pago = r.status === "paga";
+    itens.push({
+      parcelaId: r.id as string,
+      despesaId: desp.id,
+      descricao: desp.descricao,
+      valor,
+      valorCheio: cheio,
+      realizado: pago ? fatiaDe(num(r.valor_realizado ?? r.valor_previsto)) : null,
+      status: r.status as string,
+      numero: (r.numero as number) ?? 1,
+      numParcelas: desp.num_parcelas ?? 1,
+      dataCompetencia: r.data_competencia as string,
+      dataVencimento: r.data_vencimento as string,
+      dataPagamento: (r.data_pagamento as string | null) ?? null,
+      buNome: bu?.nome ?? null,
+      rateada: linhas.length > 0,
+      centroNome: desp.fin_centros_custo?.nome ?? null,
+      fonte: desp.fonte,
+      recorrente: !!desp.recorrencia_id,
+    });
+  }
+
+  itens.sort((a, b) => b.valor - a.valor);
+  return {
+    itens,
+    total: itens.reduce((s, i) => s + i.valor, 0),
+    totalRealizado: itens.reduce((s, i) => s + (i.realizado ?? 0), 0),
+  };
+}
+
 /**
  * Receita por categoria financeira do CA na competência, lida do NOSSO espelho
  * (`fin_receita_snapshot`, que já resolve a BU). Base da RECEITA no DRE por BU —
