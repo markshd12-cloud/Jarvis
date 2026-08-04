@@ -13,13 +13,26 @@ const schema = z.object({
   ca_categoria_id: z.string().min(1),
   competencia: z.string().regex(/^\d{4}-\d{2}$/, "competência AAAA-MM"),
   valor: z.coerce.number().nonnegative(),
+  /**
+   * BU do DRE em que a meta foi digitada. Ausente/null = "Todas".
+   *
+   * Antes era fixo em null, e isso quebrava a meta por empresa: o DRE filtrado
+   * por uma BU LÊ só as metas daquela BU (`orcadoPorCategoriaCa`), mas a
+   * gravação mandava tudo para "Todas". A meta era salva numa gaveta e
+   * procurada em outra — na volta a célula aparecia zerada, como se não tivesse
+   * salvado.
+   */
+  bu_id: z.string().uuid().nullish(),
 });
 
 /**
  * Grava a META de uma linha do DRE digitada DIRETO na tabela (Faturamento
  * Bruto). Resolve a folha do DRE (`ca_categoria_id`) para a nossa categoria e
- * faz o MESMO upsert do Orçamento & Limite (`fin_orcamentos`, BU "Todas") — as
- * duas telas ficam automaticamente em sincronia. Valor 0 zera a meta.
+ * faz o MESMO upsert do Orçamento & Limite (`fin_orcamentos`) — as duas telas
+ * ficam automaticamente em sincronia. Valor 0 zera a meta.
+ *
+ * A meta é gravada na MESMA BU em que o DRE está sendo visto, para que a leitura
+ * encontre o que a escrita gravou.
  */
 export async function POST(req: NextRequest) {
   const gate = await finContext();
@@ -41,7 +54,7 @@ export async function POST(req: NextRequest) {
       );
     const orc = await saveOrcamento(gate.companyId, {
       categoria_id: cat.id as string,
-      bu_id: null,
+      bu_id: v.bu_id ?? null,
       competencia: v.competencia,
       valor_orcado: v.valor,
       valor_limite: null,

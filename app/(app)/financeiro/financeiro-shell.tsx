@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDownIcon } from "lucide-react";
 import {
   IconAddressBook,
@@ -118,22 +119,84 @@ function ultimasCompetencias(): string[] {
 }
 
 export function FinanceiroShell() {
-  const [active, setActive] = useState<TabKey>("painel");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  /**
+   * Aba ativa na URL (`?aba=pagar`), não em estado volátil.
+   *
+   * Era `useState("painel")`: qualquer F5 — inclusive o que o próprio app provoca
+   * ao salvar — devolvia o usuário ao Painel, mesmo estando em Contas a Pagar.
+   * Na URL o recarregamento preserva o lugar, o botão Voltar do navegador passa a
+   * funcionar entre abas, e o endereço pode ser compartilhado.
+   */
+  /** Lê um parâmetro da URL, caindo no padrão quando ausente ou inválido. */
+  const param = (chave: string, valido: (v: string) => boolean, padrao: string) => {
+    const v = searchParams.get(chave);
+    return v && valido(v) ? v : padrao;
+  };
+
+  /**
+   * Grava parâmetros na URL. Valor vazio/null REMOVE a chave, para o endereço
+   * não acumular `bu=&regime=competencia` quando nada está filtrado.
+   *
+   * `replace` + `scroll: false`: mudar de aba ou de mês não é navegação de
+   * conteúdo novo — não deve empilhar histórico a cada clique nem jogar o scroll
+   * para o topo.
+   */
+  const setParams = (patch: Record<string, string | null>) => {
+    const qs = new URLSearchParams(searchParams.toString());
+    for (const [k, v] of Object.entries(patch)) {
+      if (!v) qs.delete(k);
+      else qs.set(k, v);
+    }
+    const s = qs.toString();
+    router.replace(s ? `${pathname}?${s}` : pathname, { scroll: false });
+  };
+
+  const active = useMemo<TabKey>(
+    () =>
+      param("aba", (v) => TABS.some((t) => t.key === v && t.ready), "painel") as TabKey,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [searchParams],
+  );
+  const setActive = (key: TabKey) => setParams({ aba: key });
+
   const competencias = ultimasCompetencias();
-  // Default = mês corrente (não o 1º da lista, que agora é 3 meses à frente).
-  const [competencia, setCompetencia] = useState(competenciaAtual);
-  // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho).
+  /**
+   * Competência, BU e regime também moram na URL. Sem isso, recarregar no DRE de
+   * julho filtrado por Colégio devolvia o mês corrente em "Todas" — perdendo a
+   * visão que estava sendo analisada. Default = mês corrente (não o 1º da lista,
+   * que agora é 3 meses à frente).
+   */
+  const competencia = param(
+    "comp",
+    (v) => /^\d{4}-\d{2}$/.test(v),
+    competenciaAtual(),
+  );
+  const setCompetencia = (v: string) => setParams({ comp: v });
+
+  // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho);
+  // "sem" = receita sem BU resolvida.
   const [bus, setBus] = useState<{ id: string; nome: string }[]>([]);
-  const [buId, setBuId] = useState("");
+  const buId = param("bu", (v) => v === "sem" || /^[0-9a-f-]{36}$/i.test(v), "");
+  const setBuId = (v: string) => setParams({ bu: v });
+
   /**
    * Recorte do DRE: qual data decide em que mês a linha entra.
    * - competência: o custo do mês (salário de julho pago em ago cai em JULHO)
    * - previsto-realizado: as contas que caem no mês (esse salário cai em AGOSTO)
    * O Fluxo de Caixa não é afetado — lá a saída é sempre na data do pagamento.
    */
-  const [regime, setRegime] = useState<"competencia" | "previsto-realizado">(
+  const regime = param(
+    "regime",
+    (v) => v === "previsto-realizado",
     "competencia",
-  );
+  ) as "competencia" | "previsto-realizado";
+  // 'competencia' é o padrão — não polui a URL.
+  const setRegime = (v: "competencia" | "previsto-realizado") =>
+    setParams({ regime: v === "competencia" ? null : v });
   const [dre, setDre] = useState<DreResult | null>(null);
   const [loading, setLoading] = useState(true);
   // Bump p/ recarregar o DRE após importar/mudar cutover (Passo 11).
@@ -407,7 +470,7 @@ export function FinanceiroShell() {
             competencia={competencia}
             // BU e regime seguem para o detalhamento de cada linha: sem eles a
             // soma do popup não fecharia com a linha que foi clicada.
-            buId={buId}
+            buId={buId || null}
             regime={regime}
             onMetaSaved={() => setReloadKey((k) => k + 1)}
           />

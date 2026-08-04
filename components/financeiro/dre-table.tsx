@@ -49,11 +49,14 @@ function fmtCarimbo(iso: string): string | null {
 function MetaCell({
   caId,
   competencia,
+  buId,
   initial,
   onSaved,
 }: {
   caId: string;
   competencia: string;
+  /** BU do DRE aberto — a meta grava nela, senão some ao recarregar. */
+  buId: string | null;
   initial: number;
   onSaved: () => void;
 }) {
@@ -70,7 +73,12 @@ function MetaCell({
       const res = await fetch("/api/financeiro/dre/meta", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ca_categoria_id: caId, competencia, valor: num }),
+        body: JSON.stringify({
+          ca_categoria_id: caId,
+          competencia,
+          valor: num,
+          bu_id: buId,
+        }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
@@ -88,6 +96,14 @@ function MetaCell({
         value={v}
         onChange={setV}
         onBlur={() => void salvar()}
+        // Enter = confirmar. Sem isto o evento escapava para o navegador (submit
+        // do formulário ancestral), a página recarregava antes do save terminar
+        // e o valor digitado se perdia. `blur()` dispara o mesmo caminho de save.
+        onKeyDown={(e) => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          e.currentTarget.blur();
+        }}
         placeholder="meta…"
         disabled={busy}
         className={cn(
@@ -214,7 +230,10 @@ export function DreTable({
   const carimbo = atualizadoAte ? fmtCarimbo(atualizadoAte) : null;
   // Meta digitável no Faturamento Bruto exige a coluna Meta SEMPRE visível no
   // modo Jarvis (senão a 1ª meta não teria onde ser digitada).
-  const podeEditarMeta = temPrevReal && !!competencia && !!onMetaSaved;
+  // "sem" = receita sem BU resolvida: não há BU a que atribuir uma meta, e o DRE
+  // já devolve orçado vazio nessa visão. Digitar ali só criaria meta invisível.
+  const podeEditarMeta =
+    temPrevReal && !!competencia && !!onMetaSaved && buId !== "sem";
   const mostraMeta = temOrcamento || podeEditarMeta;
   // Layouts: modo CA (valor único) mantém os antigos; modo Previsto×Realizado
   // abre as duas colunas com seus AV%. Meta/Desvio quando há orçamento (ou edição).
@@ -539,12 +558,13 @@ export function DreTable({
                         small
                         metaEditor={
                           // EXCLUSIVO do Faturamento Bruto (grupo 01): meta digitável
-                          // direto no DRE — grava no Orçamento & Limite (BU Todas).
+                          // direto no DRE — grava no Orçamento & Limite, na BU aberta.
                           podeEditarMeta && row.codigo === "01" && !leaf.sub && leaf.caId ? (
                             <MetaCell
-                              key={`${leaf.caId}-${competencia}-${leaf.orcado}`}
+                              key={`${leaf.caId}-${competencia}-${buId ?? "todas"}-${leaf.orcado}`}
                               caId={leaf.caId}
                               competencia={competencia!}
+                              buId={buId}
                               initial={leaf.orcado}
                               onSaved={onMetaSaved!}
                             />

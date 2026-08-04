@@ -19,6 +19,7 @@ export function MoneyInput({
   disabled,
   autoFocus,
   onBlur,
+  onKeyDown,
 }: {
   value: string;
   onChange: (decimal: string) => void;
@@ -27,6 +28,8 @@ export function MoneyInput({
   disabled?: boolean;
   autoFocus?: boolean;
   onBlur?: () => void;
+  /** Repassado ao input — permite tratar Enter como "confirmar" no chamador. */
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
 }) {
   const n = Number(value);
   const display = value === "" || !Number.isFinite(n) ? "" : fmt.format(n);
@@ -39,6 +42,7 @@ export function MoneyInput({
       disabled={disabled}
       autoFocus={autoFocus}
       onBlur={onBlur}
+      onKeyDown={onKeyDown}
       value={display}
       onChange={(e) => {
         // Máscara por dígitos: tudo que não for dígito cai fora; os dígitos são centavos.
