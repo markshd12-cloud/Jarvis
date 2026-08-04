@@ -27,6 +27,9 @@ import {
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
 import {
+  METODOS_PAGAMENTO,
+  PASSO_MESES,
+  PERIODICIDADE_LABEL,
   PERIODICIDADES,
   type BusinessUnit,
   type FinCategoria,
@@ -235,6 +238,7 @@ export function RecorrenciasPanel() {
             </span>
             <span className="text-[10px] text-muted-foreground">
               {r.periodicidade} · dia {r.dia_vencimento}
+              {r.metodo_pagamento ? ` · ${r.metodo_pagamento}` : ""}
             </span>
             <span className="ml-auto tabular-nums">{brl.format(r.valor_previsto)}</span>
             <div className="flex items-center gap-1">
@@ -314,6 +318,7 @@ function RecorrenciaForm({
   const [colaboradorId, setColaboradorId] = useState(item?.colaborador_id ?? "");
   const [valor, setValor] = useState(item ? String(item.valor_previsto) : "");
   const [periodicidade, setPeriodicidade] = useState(item?.periodicidade ?? "mensal");
+  const [metodo, setMetodo] = useState(item?.metodo_pagamento ?? "");
   /**
    * A recorrência é definida por DUAS DATAS — igual ao Contas a Pagar, para não
    * ter duas linguagens diferentes pro mesmo conceito. Da 1ª ocorrência o
@@ -406,6 +411,7 @@ function RecorrenciaForm({
         colaborador_id: colaboradorId || null,
         valor_previsto: Number(valor),
         periodicidade,
+        metodo_pagamento: metodo || null,
         rateio: rateio.length ? rateio : null,
         // Regra recorrente deduzida das duas datas da 1ª ocorrência.
         dia_vencimento: regra.dia_vencimento,
@@ -536,15 +542,45 @@ function RecorrenciaForm({
             >
               {PERIODICIDADES.map((p) => (
                 <option key={p} value={p} className={optionCls}>
-                  {p}
+                  {PERIODICIDADE_LABEL[p]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Método de pagamento</Label>
+            <select
+              className={selectCls}
+              value={metodo}
+              onChange={(e) => setMetodo(e.target.value)}
+            >
+              <option value="" className={optionCls}>
+                —
+              </option>
+              {METODOS_PAGAMENTO.map((m) => (
+                <option key={m} value={m} className={optionCls}>
+                  {m}
                 </option>
               ))}
             </select>
           </div>
         </div>
-        {periodicidade === "anual" && (
+        {/* Ciclo > mensal: o mês da 1ª competência define TODOS os seguintes, então
+            é preciso dizer quais são — senão parece que a recorrência "sumiu" nos
+            meses do intervalo. */}
+        {PASSO_MESES[periodicidade] > 1 && regra && (
           <p className="text-[11px] text-muted-foreground">
-            Anual gera apenas no mês de criação da recorrência.
+            A cada {PASSO_MESES[periodicidade]} meses a partir de{" "}
+            <strong>{regra.inicio_competencia}</strong> — próximas competências:{" "}
+            {(() => {
+              const passo = PASSO_MESES[periodicidade];
+              const [a, m] = regra.inicio_competencia.split("-").map(Number);
+              return Array.from({ length: 4 }, (_, k) => {
+                const d = new Date(Date.UTC(a, m - 1 + k * passo, 1));
+                return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+              }).join(", ");
+            })()}
+            …
           </p>
         )}
         {/* Prévia: confirma a REGRA deduzida das duas datas e deixa explícito

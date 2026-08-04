@@ -16,8 +16,42 @@ export type Natureza = "fixa" | "variavel";
 export type TipoPessoa = "colaborador" | "fornecedor";
 export const TIPOS_PESSOA: TipoPessoa[] = ["colaborador", "fornecedor"];
 
-export type Periodicidade = "mensal" | "anual";
-export const PERIODICIDADES: Periodicidade[] = ["mensal", "anual"];
+export type Periodicidade =
+  | "mensal"
+  | "bimestral"
+  | "trimestral"
+  | "semestral"
+  | "anual";
+/** Em ordem de ciclo — é a ordem que aparece no seletor. */
+export const PERIODICIDADES: Periodicidade[] = [
+  "mensal",
+  "bimestral",
+  "trimestral",
+  "semestral",
+  "anual",
+];
+
+/**
+ * Meses entre uma ocorrência e a seguinte. É a única regra de geração: a
+ * recorrência gera quando (meses desde `inicio_competencia`) % passo == 0.
+ * Para 'anual' (12) isso equivale ao "mesmo mês do início" de antes.
+ */
+export const PASSO_MESES: Record<Periodicidade, number> = {
+  mensal: 1,
+  bimestral: 2,
+  trimestral: 3,
+  semestral: 6,
+  anual: 12,
+};
+
+/** Rótulo para o usuário — diz o ciclo em vez de só nomeá-lo. */
+export const PERIODICIDADE_LABEL: Record<Periodicidade, string> = {
+  mensal: "mensal (todo mês)",
+  bimestral: "bimestral (a cada 2 meses)",
+  trimestral: "trimestral (a cada 3 meses)",
+  semestral: "semestral (a cada 6 meses)",
+  anual: "anual (1x por ano)",
+};
 
 /** Despesa fixa que se materializa em despesa+parcela por competência. */
 export interface FinRecorrencia {
@@ -38,6 +72,8 @@ export interface FinRecorrencia {
   inicio_competencia: string | null;
   /** Meses entre competência e vencimento. 0 = mesmo mês; 1 = paga no seguinte. */
   defasagem_meses: number;
+  /** Método repassado à parcela gerada (pix/boleto/…); null = não informado. */
+  metodo_pagamento: string | null;
   ativo: boolean;
   created_at: string;
 }

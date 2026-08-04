@@ -18,7 +18,13 @@ import {
   validarRateio,
   type RateioLinha,
 } from "./rateio";
-import { fkFriendly, PERIODICIDADES, type FinRecorrencia } from "./types";
+import {
+  fkFriendly,
+  PASSO_MESES,
+  PERIODICIDADES,
+  type FinRecorrencia,
+  type Periodicidade,
+} from "./types";
 
 export const recorrenciaInputSchema = z.object({
   descricao: z.string().trim().min(1, "descrição obrigatória"),
@@ -40,6 +46,9 @@ export const recorrenciaInputSchema = z.object({
   // Meses entre a COMPETÊNCIA e o VENCIMENTO. 0 = mesmo mês; 1 = paga no mês
   // seguinte (folha, aluguel, encargos). Ver 0033 e o doc da defasagem.
   defasagem_meses: z.coerce.number().int().min(-12).max(12).optional(),
+  // Repassado à parcela gerada. Texto livre como em fin_parcelas — a lista de
+  // sugestões é METODOS_PAGAMENTO. Ver 0034.
+  metodo_pagamento: z.string().trim().nullish(),
 });
 export type RecorrenciaInput = z.infer<typeof recorrenciaInputSchema>;
 
@@ -194,6 +203,39 @@ export async function deleteRecorrencia(companyId: string, id: string): Promise<
 const ultimoDiaDoMes = (ano: number, mes1a12: number) =>
   new Date(Date.UTC(ano, mes1a12, 0)).getUTCDate();
 
+/** Meses de `de` até `ate` ('AAAA-MM'). Negativo se `ate` for anterior. */
+export function mesesEntre(de: string, ate: string): number {
+  const [a1, m1] = de.split("-").map(Number);
+  const [a2, m2] = ate.split("-").map(Number);
+  return (a2 - a1) * 12 + (m2 - m1);
+}
+
+/**
+ * A competência cai no ciclo da recorrência?
+ *
+ * Regra única para todas as periodicidades: conta os meses desde a âncora e
+ * checa se são múltiplos do passo (mensal 1, bimestral 2, trimestral 3,
+ * semestral 6, anual 12). Mensal aceita tudo, então nem calcula.
+ *
+ * A âncora é `inicio_competencia`; sem ela, o mês de criação — que preserva o
+ * comportamento anterior do 'anual', o único ciclo > 1 que existia antes da 0035.
+ * Sem nenhuma das duas não há como saber onde o ciclo começa: gera todo mês, que
+ * é o que o sistema fazia antes e nunca esconde despesa.
+ */
+export function cabeNoCiclo(
+  r: Pick<FinRecorrencia, "periodicidade" | "inicio_competencia"> & {
+    created_at?: string | null;
+  },
+  competencia: string, // 'AAAA-MM'
+): boolean {
+  const passo = PASSO_MESES[r.periodicidade as Periodicidade] ?? 1;
+  if (passo === 1) return true;
+  const ancora = r.inicio_competencia ?? (r.created_at ?? "").slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(ancora)) return true;
+  const diff = mesesEntre(ancora, competencia);
+  return diff >= 0 && diff % passo === 0;
+}
+
 /**
  * Data de VENCIMENTO a partir da competência + defasagem.
  *
@@ -232,13 +274,31 @@ export async function materializar(
   const admin = createAdminClient();
   const recs = (await listRecorrencias(companyId)).filter((r) => r.ativo);
 
-  // Despesas já geradas por recorrência (qualquer competência) → mês da 1ª parcela.
-  const { data: jaGeradas, error: eJa } = await admin
-    .from("fin_despesas")
-    .select("id, recorrencia_id, fin_parcelas ( data_competencia )")
-    .eq("company_id", companyId)
-    .not("recorrencia_id", "is", null);
-  if (eJa) throw new Error(`materializar (existentes): ${eJa.message}`);
+  /**
+   * Despesas já geradas por recorrência (qualquer competência) → mês da 1ª parcela.
+   *
+   * PAGINADO. O PostgREST devolve no máximo 1000 linhas por requisição, em
+   * silêncio. Sem o laço, a partir da 1000ª despesa de recorrência as demais
+   * ficavam invisíveis para o `jaNoMes` abaixo — e a materialização recriava
+   * competências que já existiam, duplicando a despesa no DRE. O bug só aparece
+   * depois de ~84 recorrências (84 × 12 meses = 1008), então passou despercebido
+   * até a carteira crescer.
+   */
+  const jaGeradas: { id: string; recorrencia_id: string; fin_parcelas?: { data_competencia: string }[] }[] = [];
+  const PAGE = 1000;
+  for (let from = 0; ; from += PAGE) {
+    const { data, error: eJa } = await admin
+      .from("fin_despesas")
+      .select("id, recorrencia_id, fin_parcelas ( data_competencia )")
+      .eq("company_id", companyId)
+      .not("recorrencia_id", "is", null)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (eJa) throw new Error(`materializar (existentes): ${eJa.message}`);
+    const lote = (data ?? []) as typeof jaGeradas;
+    jaGeradas.push(...lote);
+    if (lote.length < PAGE) break;
+  }
 
   const jaNoMes = new Set<string>();
   for (const d of jaGeradas ?? []) {
@@ -256,11 +316,7 @@ export async function materializar(
   for (const r of recs) {
     // Ainda não começou: só gera de `inicio_competencia` em diante.
     if (r.inicio_competencia && competencia < r.inicio_competencia) continue;
-    // Anual: gera no MÊS do início (fallback: mês de criação, comportamento antigo).
-    if (r.periodicidade === "anual") {
-      const mesAlvo = (r.inicio_competencia ?? r.created_at ?? "").slice(5, 7);
-      if (mesAlvo !== competencia.slice(5, 7)) continue;
-    }
+    if (!cabeNoCiclo(r, competencia)) continue;
     if (jaNoMes.has(r.id)) {
       pulados++;
       continue;
@@ -301,6 +357,9 @@ export async function materializar(
         valor_previsto: r.valor_previsto,
         data_competencia: dataComp,
         data_vencimento: dataVenc,
+        // Vem do molde: preencher só na parcela não sobrevive a uma edição da
+        // recorrência, que apaga e refaz as futuras não pagas.
+        metodo_pagamento: r.metodo_pagamento ?? null,
         status: "a_pagar",
       })
       .select("id")
