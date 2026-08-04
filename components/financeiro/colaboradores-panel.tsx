@@ -191,7 +191,7 @@ export function ColaboradoresPanel() {
           ) : (
             <ul className="divide-y divide-border rounded-lg border border-border">
               {g.itens.map((c) => (
-                <li key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <li key={c.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
                   <span className={cn(!c.ativo && "text-muted-foreground line-through")}>
                     {c.nome}
                   </span>

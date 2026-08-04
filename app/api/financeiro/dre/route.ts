@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { getDre } from "@/lib/contaazul/dre";
+import { getDre, type DreRegime } from "@/lib/contaazul/dre";
 import { getCompanyId } from "@/lib/db/company";
 import { mesCorrente } from "@/lib/financeiro/competencia";
 import { getSessionContext } from "@/lib/db/permissions";
@@ -33,6 +33,13 @@ export async function GET(req: NextRequest) {
   const buId =
     buRaw === "sem" || /^[0-9a-f-]{36}$/i.test(buRaw) ? buRaw : null;
 
-  const dre = await getDre(companyId, competencia, buId);
+  // ?regime=previsto-realizado → agrupa pelo VENCIMENTO (as contas do mês).
+  // Ausente/qualquer outro valor → competência (o custo do mês). Ver DreRegime.
+  const regime: DreRegime =
+    req.nextUrl.searchParams.get("regime") === "previsto-realizado"
+      ? "previsto-realizado"
+      : "competencia";
+
+  const dre = await getDre(companyId, competencia, buId, regime);
   return NextResponse.json(dre);
 }

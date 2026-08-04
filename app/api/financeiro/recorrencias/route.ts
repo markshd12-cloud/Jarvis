@@ -1,12 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { invalidateDre } from "@/lib/contaazul/dre";
-import { mesCorrente } from "@/lib/financeiro/competencia";
 import { finContext } from "@/lib/financeiro/context";
 import {
   createRecorrencia,
   listRecorrencias,
-  materializar,
+  materializarHorizonte,
 } from "@/lib/financeiro/recorrencias";
 
 export const runtime = "nodejs";
@@ -24,23 +23,23 @@ export async function POST(req: NextRequest) {
   if (!gate.ok) return NextResponse.json({ error: gate.error }, { status: gate.status });
   try {
     const recorrencia = await createRecorrencia(gate.companyId, await req.json());
-    // Materializa NA HORA para a recorrência já aparecer em Contas a Pagar (e no
-    // DRE), sem depender do clique mensal/cron. A competência é a MAIOR entre o
-    // mês corrente e o INÍCIO: com início no futuro (ex.: criada dia 31 com
-    // vencimento dia 5 → início = mês seguinte), gerar só o mês corrente não
-    // produziria nada e a recorrência "sumiria" — então geramos o mês de início,
-    // que é uma dívida futura legítima (visível pelo filtro de competência).
-    // Idempotente; falha aqui não desfaz a criação.
-    let materializado: { competencia: string; gerados: number; pulados: number } | null = null;
+    /**
+     * Gera o ANO INTEIRO na hora. Uma despesa parcelada em 12x já nasce com as
+     * 12 parcelas visíveis nos meses futuros do DRE; a recorrência — que é ainda
+     * mais certa — aparecia só no mês corrente. O horizonte iguala as duas.
+     * Idempotente; falha aqui não desfaz a criação (o cron cobre depois).
+     */
+    let materializado: { gerados: number; pulados: number; meses: number } | null = null;
     try {
-      const inicio = recorrencia.inicio_competencia;
-      const atual = mesCorrente();
-      const comp = inicio && inicio > atual ? inicio : atual;
-      const m = await materializar(gate.companyId, comp);
-      materializado = { competencia: comp, gerados: m.gerados, pulados: m.pulados };
+      const m = await materializarHorizonte(gate.companyId);
+      materializado = {
+        gerados: m.gerados,
+        pulados: m.pulados,
+        meses: m.competencias.length,
+      };
       if (m.gerados > 0) invalidateDre(gate.companyId);
     } catch {
-      /* melhor-esforço — o cron/botão cobre depois */
+      /* melhor-esforço — o cron cobre depois */
     }
     return NextResponse.json({ recorrencia, materializado }, { status: 201 });
   } catch (e) {

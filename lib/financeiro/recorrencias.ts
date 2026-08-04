@@ -10,6 +10,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { mesCorrente } from "./competencia";
 import {
   buPrincipal,
   inserirRateios,
@@ -92,6 +93,18 @@ export async function updateRecorrencia(
     .select("*")
     .single();
   if (error) throw new Error(`updateRecorrencia: ${error.message}`);
+
+  /**
+   * Reflete a edição nos meses FUTUROS já gerados (não pagos): apaga e regera
+   * com os valores novos. Sem isto, mudar o salário deixaria o DRE do ano
+   * inteiro com o valor antigo — o horizonte de 12 meses transformaria um
+   * incômodo pequeno numa armadilha silenciosa.
+   *
+   * Passado e parcela paga NUNCA se mexem (ver `despesasFuturasIntocadas`).
+   */
+  await removerFuturosGerados(companyId, id);
+  await materializarHorizonte(companyId);
+
   return data as FinRecorrencia;
 }
 
@@ -107,6 +120,64 @@ export async function setRecorrenciaAtivo(
     .eq("company_id", companyId)
     .eq("id", id);
   if (error) throw new Error(`setRecorrenciaAtivo: ${error.message}`);
+}
+
+/**
+ * Despesas GERADAS por uma recorrência que ainda são "futuras e intocadas":
+ * competência >= o mês corrente e NENHUMA parcela paga. São as únicas seguras de
+ * regerar/remover — passado e pagamento nunca se mexem.
+ */
+async function despesasFuturasIntocadas(
+  companyId: string,
+  recorrenciaId: string,
+): Promise<{ ids: string[]; competencias: string[] }> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_despesas")
+    .select("id, fin_parcelas ( data_competencia, status )")
+    .eq("company_id", companyId)
+    .eq("recorrencia_id", recorrenciaId);
+  if (error) throw new Error(`despesasFuturasIntocadas: ${error.message}`);
+
+  const atual = mesCorrente();
+  const ids: string[] = [];
+  const competencias: string[] = [];
+  for (const d of data ?? []) {
+    const ps = (d.fin_parcelas ?? []) as { data_competencia: string; status: string }[];
+    if (!ps.length) continue;
+    if (ps.some((p) => p.status === "paga")) continue; // já pago: não se toca
+    const comp = String(ps[0].data_competencia).slice(0, 7);
+    if (comp < atual) continue; // passado: histórico, não se toca
+    ids.push(d.id as string);
+    competencias.push(comp);
+  }
+  return { ids, competencias };
+}
+
+/** Quantos meses futuros (não pagos) esta recorrência tem gerados. */
+export async function contarFuturosGerados(
+  companyId: string,
+  recorrenciaId: string,
+): Promise<number> {
+  return (await despesasFuturasIntocadas(companyId, recorrenciaId)).ids.length;
+}
+
+/** Remove as despesas futuras não pagas geradas por esta recorrência. */
+export async function removerFuturosGerados(
+  companyId: string,
+  recorrenciaId: string,
+): Promise<number> {
+  const { ids } = await despesasFuturasIntocadas(companyId, recorrenciaId);
+  if (!ids.length) return 0;
+  const admin = createAdminClient();
+  // Parcelas e rateios caem por cascade (0023).
+  const { error } = await admin
+    .from("fin_despesas")
+    .delete()
+    .eq("company_id", companyId)
+    .in("id", ids);
+  if (error) throw new Error(`removerFuturosGerados: ${error.message}`);
+  return ids.length;
 }
 
 /** Exclui. FK `on delete set null` nas despesas geradas — solta o vínculo, não apaga. */
@@ -255,4 +326,42 @@ export async function materializar(
   }
 
   return { gerados, pulados, erros };
+}
+
+/** Horizonte padrão: um ano à frente. */
+export const HORIZONTE_MESES = 12;
+
+/**
+ * Materializa um HORIZONTE de meses a partir do mês corrente (default: 12).
+ *
+ * Por quê: uma despesa parcelada em 12x já nasce com as 12 parcelas visíveis no
+ * DRE dos meses futuros; a recorrência, que é ainda MAIS certa (aluguel, folha),
+ * aparecia só no mês corrente e o resto do ano ficava vazio. O horizonte elimina
+ * essa assimetria — o DRE do ano inteiro passa a refletir o que já se sabe.
+ *
+ * Idempotente por construção (delega a `materializar`, que pula o mês já gerado),
+ * então rodar todo dia é seguro e mantém a janela rolando.
+ */
+export async function materializarHorizonte(
+  companyId: string,
+  meses = HORIZONTE_MESES,
+  aPartirDe?: string,
+): Promise<{ gerados: number; pulados: number; erros: string[]; competencias: string[] }> {
+  const base = aPartirDe ?? mesCorrente();
+  const [ano, mes] = base.split("-").map(Number);
+  let gerados = 0;
+  let pulados = 0;
+  const erros: string[] = [];
+  const competencias: string[] = [];
+
+  for (let i = 0; i < meses; i++) {
+    const d = new Date(Date.UTC(ano, mes - 1 + i, 1));
+    const comp = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    competencias.push(comp);
+    const r = await materializar(companyId, comp);
+    gerados += r.gerados;
+    pulados += r.pulados;
+    erros.push(...r.erros);
+  }
+  return { gerados, pulados, erros, competencias };
 }

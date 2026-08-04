@@ -69,6 +69,19 @@ async function send(url: string, method: "POST" | "PATCH" | "DELETE", body?: unk
   return j;
 }
 
+/** Competência do mês corrente ('AAAA-MM'), no fuso do navegador. */
+function mesAtualComp(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+/** Soma n meses a uma competência 'AAAA-MM'. Vazio parte do mês corrente. */
+function addMesComp(ym: string, n: number): string {
+  const base = ym || mesAtualComp();
+  const [y, m] = base.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 /** Soma n meses a uma data ISO (AAAA-MM-DD), com clamp de dia. */
 function addMonths(iso: string, n: number): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -298,6 +311,18 @@ export function ContasPagarPanel() {
         </div>
         <div className="flex items-center gap-1">
           <label className="text-[11px] text-muted-foreground">Competência:</label>
+          {/* Setas ◀ ▶ além do seletor: o campo `month` nativo é inconsistente
+              entre navegadores (às vezes o calendário nem abre). Com as setas dá
+              pra andar mês a mês sempre, e o botão "mês atual" resolve o resto. */}
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setF("competencia", addMesComp(filtros.competencia, -1))}
+            title="Mês anterior"
+          >
+            ◀
+          </Button>
           <Input
             type="month"
             className="h-8 w-40"
@@ -305,7 +330,16 @@ export function ContasPagarPanel() {
             onChange={(e) => setF("competencia", e.target.value)}
             title="Vazio = todos os meses"
           />
-          {filtros.competencia && (
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setF("competencia", addMesComp(filtros.competencia, 1))}
+            title="Próximo mês"
+          >
+            ▶
+          </Button>
+          {filtros.competencia ? (
             <button
               type="button"
               className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
@@ -313,6 +347,15 @@ export function ContasPagarPanel() {
               title="Limpar (todos os meses)"
             >
               todos
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+              onClick={() => setF("competencia", mesAtualComp())}
+              title="Filtrar pelo mês corrente"
+            >
+              mês atual
             </button>
           )}
         </div>
@@ -349,13 +392,13 @@ export function ContasPagarPanel() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-2.5">
         {grupos.map((g) => {
           const open = aberto.has(g.despesa_id);
           const parcelado = g.num_parcelas > 1;
           return (
-            <div key={g.despesa_id} className="rounded-lg border border-border">
-              <div className="flex items-center gap-2 px-3 py-2 text-sm">
+            <div key={g.despesa_id} className="fin-card">
+              <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
                 <button
                   className="flex flex-1 items-center gap-2 text-left"
                   onClick={() => parcelado && toggle(g.despesa_id)}
@@ -402,7 +445,7 @@ export function ContasPagarPanel() {
                   {g.parcelas.map((p) => (
                     <li
                       key={p.id}
-                      className="flex items-center gap-2 px-3 py-1.5 pl-9 text-xs"
+                      className="fin-row flex items-center gap-2 px-3 py-2.5 pl-9 text-xs"
                     >
                       {parcelado && (
                         <span className="w-8 text-muted-foreground">

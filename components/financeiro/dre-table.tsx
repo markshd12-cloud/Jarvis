@@ -22,17 +22,6 @@ function fmtAv(av: number): string {
   return `${av.toFixed(2).replace(".", ",")}%`;
 }
 
-/**
- * % LIQUIDADO: quanto da competência já foi pago/recebido. Vai no lugar do AV%
- * da coluna Liquidado — porque ali o que importa não é o peso sobre a receita,
- * e sim **quanto daquele custo já saiu do caixa**. Sem isto, ver "Previsto
- * 32.000 / Liquidado 0" parecia economia, quando é só conta ainda não paga.
- */
-function fmtLiq(liquidado: number, previsto: number): string {
-  if (Math.abs(previsto) < 0.005) return "—";
-  const pct = (liquidado / previsto) * 100;
-  return `${Math.round(pct)}%`;
-}
 
 /** Carimbo de frescor dos dados da CA (data + hora curtas), ou null se inválido. */
 function fmtCarimbo(iso: string): string | null {
@@ -287,7 +276,7 @@ export function DreTable({
           <Valor value={valor} bold={bold} />
         </span>
         <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
-          {fmtLiq(valor, previsto)}
+          {fmtAv(avReal)}
         </span>
         {mostraMeta ? (
           <span className={cn("text-right", txt)}>
@@ -347,13 +336,11 @@ export function DreTable({
             <span className="text-right">AV %</span>
             <span
               className="text-right"
-              title="Quanto DESTA competência já foi pago/recebido. Não é o Fluxo de Caixa."
+              title="O que já foi pago/recebido destas linhas. Não é o Fluxo de Caixa."
             >
-              Liquidado
+              Realizado
             </span>
-            <span className="text-right" title="% da competência já liquidado">
-              % liq.
-            </span>
+            <span className="text-right">AV %</span>
             {mostraMeta ? <span className="text-right">Desvio</span> : null}
           </>
         ) : (
@@ -397,9 +384,8 @@ export function DreTable({
                 type="button"
                 onClick={() => hasChildren && toggle(row.codigo)}
                 className={cn(
-                  "grid w-full items-center gap-2 px-4 py-2.5 text-left",
+                  "fin-row grid w-full items-center gap-2 px-4 py-2.5 text-left",
                   cols,
-                  hasChildren && "hover:bg-muted/30",
                 )}
               >
                 <span className="flex items-center gap-1.5 text-sm text-foreground">
@@ -430,7 +416,7 @@ export function DreTable({
                     <div
                       key={`${row.codigo}-${i}`}
                       className={cn(
-                        "grid items-center gap-2 bg-background/40 px-4 py-2 pl-11",
+                        "fin-row grid items-center gap-2 bg-background/40 px-4 py-2 pl-11",
                         cols,
                         leaf.sub && "bg-muted/20",
                       )}

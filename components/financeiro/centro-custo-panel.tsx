@@ -190,7 +190,7 @@ export function CentroCustoPanel() {
       )}
 
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
+        <table className="fin-table w-full text-sm">
           <thead className="border-b border-border text-left text-xs text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">Centro de Custo</th>

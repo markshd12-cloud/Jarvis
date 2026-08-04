@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { FloatingDock } from "@/components/ui/floating-dock";
+import { cn } from "@/lib/utils";
 import type { DreResult } from "@/lib/contaazul/dre";
 
 import { CadastrosPanel } from "@/components/financeiro/cadastros-panel";
@@ -97,6 +98,9 @@ function labelCompetencia(ym: string): string {
   return `${MESES_ABREV[(m - 1) % 12]}/${y}`;
 }
 
+const brl = (n: number) =>
+  n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+
 const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 /** Competência do mês corrente (o default do DRE). */
 function competenciaAtual(): string {
@@ -121,6 +125,15 @@ export function FinanceiroShell() {
   // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho).
   const [bus, setBus] = useState<{ id: string; nome: string }[]>([]);
   const [buId, setBuId] = useState("");
+  /**
+   * Recorte do DRE: qual data decide em que mês a linha entra.
+   * - competência: o custo do mês (salário de julho pago em ago cai em JULHO)
+   * - previsto-realizado: as contas que caem no mês (esse salário cai em AGOSTO)
+   * O Fluxo de Caixa não é afetado — lá a saída é sempre na data do pagamento.
+   */
+  const [regime, setRegime] = useState<"competencia" | "previsto-realizado">(
+    "competencia",
+  );
   const [dre, setDre] = useState<DreResult | null>(null);
   const [loading, setLoading] = useState(true);
   // Bump p/ recarregar o DRE após importar/mudar cutover (Passo 11).
@@ -152,7 +165,10 @@ export function FinanceiroShell() {
     if (active !== "dre") return;
     let cancel = false;
     setLoading(true);
-    fetch(`/api/financeiro/dre?competencia=${competencia}${buId ? `&bu=${buId}` : ""}`)
+    fetch(
+      `/api/financeiro/dre?competencia=${competencia}${buId ? `&bu=${buId}` : ""}` +
+        (regime === "previsto-realizado" ? "&regime=previsto-realizado" : ""),
+    )
       .then((r) => r.json())
       .then((data: DreResult) => {
         if (!cancel) {
@@ -181,7 +197,7 @@ export function FinanceiroShell() {
     return () => {
       cancel = true;
     };
-  }, [competencia, active, reloadKey, buId]);
+  }, [competencia, active, reloadKey, buId, regime]);
 
   const dockItems = TABS.map((tab) => ({
     title: tab.ready ? tab.label : `${tab.label} (em breve)`,
@@ -204,6 +220,39 @@ export function FinanceiroShell() {
 
       {active === "dre" ? (
         <section className="flex flex-col gap-4">
+          {/* Recorte do DRE. Dois botões (não dropdown): é a decisão que mais
+              muda a leitura da tela, então fica sempre visível qual está ativo. */}
+          <div className="flex rounded-lg border border-border p-0.5">
+            {(
+              [
+                {
+                  k: "competencia" as const,
+                  label: "Competência",
+                  hint: "Agrupa pelo mês a que a despesa SE REFERE — o salário de julho pago em agosto cai em julho. É o resultado econômico do mês.",
+                },
+                {
+                  k: "previsto-realizado" as const,
+                  label: "Previsto e Realizado",
+                  hint: "Agrupa pelo VENCIMENTO — as contas que caem neste mês. Esse mesmo salário cai em agosto.",
+                },
+              ]
+            ).map((o) => (
+              <button
+                key={o.k}
+                onClick={() => setRegime(o.k)}
+                title={o.hint}
+                className={cn(
+                  "rounded-md px-3 py-1 text-xs font-medium transition-colors",
+                  regime === o.k
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+
           {/* Filtros — Button + DropdownMenu padrão do Jarvis */}
           <div className="flex flex-wrap items-center gap-2">
             <DropdownMenu>
@@ -254,6 +303,93 @@ export function FinanceiroShell() {
               ) : null}
             </div>
           </div>
+
+          {/* "De onde veio": no recorte por vencimento, os lançamentos que caem
+              neste mês mas se referem a outro. Fica explícito porque a maioria
+              vem do import do CA, cuja competência não segue a regra da casa. */}
+          {dre?.foraDaCompetencia && dre.foraDaCompetencia.itens.length > 0
+            ? (() => {
+                const f = dre.foraDaCompetencia!;
+                const nImp = f.itens.filter((i) => i.importado).length;
+                const nProp = f.itens.length - nImp;
+                // Âmbar SÓ quando há item do import (competência definida fora,
+                // que pede conferência). Sem eles é a defasagem operando: neutro.
+                const alerta = nImp > 0;
+                return (
+                  <details
+                    className={cn(
+                      "rounded-lg border",
+                      alerta ? "border-amber-500/40 bg-amber-500/5" : "border-border bg-muted/20",
+                    )}
+                  >
+                    <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2 text-xs">
+                      <span className="text-muted-foreground">
+                        Vencem neste mês, mas são de outra competência:
+                      </span>
+                      {nProp > 0 && (
+                        <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-400">
+                          ✓ {nProp} seu(s) · {brl(f.totalProprio)} — defasagem configurada
+                        </span>
+                      )}
+                      {nImp > 0 && (
+                        <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-amber-700 dark:text-amber-400">
+                          ⚠ {nImp} do Conta Azul · {brl(f.totalImportado)} — conferir
+                        </span>
+                      )}
+                      <span className="ml-auto text-muted-foreground">ver detalhe ▾</span>
+                    </summary>
+                    <div className="max-h-64 overflow-y-auto border-t border-border">
+                      <table className="fin-table w-full text-[11px]">
+                        <thead className="text-left text-muted-foreground">
+                          <tr>
+                            <th className="px-3 py-1.5 font-medium">Origem</th>
+                            <th className="px-3 py-1.5 font-medium">Descrição</th>
+                            <th className="px-3 py-1.5 font-medium">Categoria</th>
+                            <th className="px-3 py-1.5 font-medium">Competência</th>
+                            <th className="px-3 py-1.5 font-medium">Vence</th>
+                            <th className="px-3 py-1.5 text-right font-medium">Valor</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {f.itens.map((i, n) => (
+                            <tr key={n}>
+                              <td className="px-3 py-1.5">
+                                <span
+                                  className={cn(
+                                    "rounded px-1.5 py-0.5 text-[10px]",
+                                    i.importado
+                                      ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                                      : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                                  )}
+                                  title={
+                                    i.importado
+                                      ? "Competência veio do Conta Azul — não segue a regra de defasagem da casa"
+                                      : "Lançado no Jarvis com a defasagem configurada"
+                                  }
+                                >
+                                  {i.importado ? "Conta Azul" : "Jarvis"}
+                                </span>
+                              </td>
+                              <td className="px-3 py-1.5">{i.descricao}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground">{i.categoria}</td>
+                              <td className="px-3 py-1.5 text-muted-foreground">
+                                {i.competencia.split("-").reverse().join("/")}
+                              </td>
+                              <td className="px-3 py-1.5 text-muted-foreground">
+                                {i.vencimento.split("-").reverse().join("/")}
+                              </td>
+                              <td className="px-3 py-1.5 text-right tabular-nums">
+                                {brl(i.valor)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                );
+              })()
+            : null}
 
           <DreConfigPanel
             competencia={competencia}

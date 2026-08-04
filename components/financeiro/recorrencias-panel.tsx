@@ -37,8 +37,12 @@ import {
 
 /**
  * Aba Recorrências (Passo 8). Despesas fixas que se materializam em despesa+parcela
- * por competência. "Gerar do mês" é idempotente (não duplica). Editar a recorrência
- * não mexe em parcelas já geradas.
+ * por competência, num HORIZONTE de 12 meses — para o DRE dos meses futuros já
+ * mostrar o que é certo, igual a uma compra parcelada (que nasce com todas as
+ * parcelas visíveis). A geração é automática: ao criar e, todo dia, pelo cron.
+ *
+ * Editar regera os meses futuros NÃO PAGOS; excluir/inativar pergunta antes de
+ * removê-los. Passado e parcela paga nunca se mexem.
  */
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const selectCls =
@@ -68,10 +72,8 @@ export function RecorrenciasPanel() {
   const [dim, setDim] = useState<Dim | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [aviso, setAviso] = useState<string | null>(null);
   const [dialog, setDialog] = useState<FinRecorrencia | "novo" | null>(null);
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
-  const [competencia, setCompetencia] = useState(new Date().toISOString().slice(0, 7));
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -115,25 +117,52 @@ export function RecorrenciasPanel() {
     }
   };
 
-  const gerar = () =>
-    void runAction(async () => {
-      const j = await send("/api/financeiro/recorrencias/materializar", "POST", {
-        competencia,
-      });
-      const [ano, mes] = competencia.split("-");
-      let msg = `${mes}/${ano}: ${j.gerados} despesa(s) gerada(s), ${j.pulados} já existia(m).`;
-      if (j.erros?.length) msg += ` Erros: ${j.erros.join("; ")}`;
-      setAviso(msg);
-    });
-
-  const remove = (r: FinRecorrencia) => {
+  /**
+   * Antes de excluir/inativar, pergunta o que fazer com os meses FUTUROS já
+   * gerados. Com horizonte de 12 meses, sumir (ou deixar) um ano de despesa sem
+   * avisar seria uma mudança grande e invisível no DRE.
+   */
+  const confirmarComFuturos = async (
+    r: FinRecorrencia,
+    acao: "excluir" | "inativar",
+  ) => {
     setError(null);
+    let futuros = 0;
+    try {
+      const j = await fetch(`/api/financeiro/recorrencias/${r.id}`).then((x) => x.json());
+      futuros = j.futuros ?? 0;
+    } catch {
+      /* sem a contagem, segue com a confirmação genérica */
+    }
+    const verbo = acao === "excluir" ? "Excluir" : "Inativar";
+    const url = (removerFuturos: boolean) =>
+      `/api/financeiro/recorrencias/${r.id}${removerFuturos ? "?removerFuturos=1" : ""}`;
+    const exec = (removerFuturos: boolean) =>
+      void runAction(() =>
+        acao === "excluir"
+          ? send(url(removerFuturos), "DELETE")
+          : send(url(removerFuturos), "PATCH", { ativo: false }),
+      );
+
+    if (futuros === 0) {
+      setConfirmar({
+        msg: `${verbo} a recorrência “${r.descricao}”? Não há meses futuros gerados pendentes.`,
+        acaoLabel: verbo,
+        onOk: () => exec(false),
+      });
+      return;
+    }
     setConfirmar({
-      msg: `Excluir a recorrência “${r.descricao}”? As despesas já geradas por ela permanecem em Contas a Pagar (só o vínculo é desfeito). Esta ação não pode ser desfeita.`,
-      onOk: () =>
-        void runAction(() => send(`/api/financeiro/recorrencias/${r.id}`, "DELETE")),
+      msg:
+        `${verbo} a recorrência “${r.descricao}”?\n\n` +
+        `Ela tem ${futuros} mês(es) FUTURO(S) já gerado(s) em Contas a Pagar, ainda não pagos. ` +
+        `Ao confirmar, esses meses serão REMOVIDOS (o histórico e o que já foi pago permanecem).`,
+      acaoLabel: `${verbo} e remover ${futuros} mês(es)`,
+      onOk: () => exec(true),
     });
   };
+
+  const remove = (r: FinRecorrencia) => void confirmarComFuturos(r, "excluir");
 
   const buNome = (id: string) => dim?.bus.find((b) => b.id === id)?.nome ?? "—";
   const catNome = (id: string) => dim?.categorias.find((c) => c.id === id)?.nome ?? "—";
@@ -164,32 +193,18 @@ export function RecorrenciasPanel() {
         </Button>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-2">
-        <span className="text-xs text-muted-foreground">Gerar despesas da competência:</span>
-        <Input
-          type="month"
-          className="h-8 w-40"
-          value={competencia}
-          onChange={(e) => setCompetencia(e.target.value)}
-        />
-        <Button size="sm" onClick={gerar} disabled={!dim}>
-          Gerar do mês
-        </Button>
-        <span className="text-[11px] text-muted-foreground">
-          (idempotente — rodar de novo não duplica)
-        </span>
-      </div>
+      <p className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-[11px] text-muted-foreground">
+        As despesas são geradas <strong>automaticamente para os próximos 12 meses</strong> —
+        ao criar a recorrência e, todo dia, pelo sync. Assim o DRE dos meses futuros já
+        mostra o que é certo, igual a uma compra parcelada. Editar uma recorrência
+        atualiza os meses futuros ainda não pagos.
+      </p>
 
-      {aviso && (
-        <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          {aviso}
-        </p>
-      )}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <ul className="divide-y divide-border rounded-lg border border-border">
         {lista.map((r) => (
-          <li key={r.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+          <li key={r.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
             <span className={cn(!r.ativo && "text-muted-foreground line-through")}>
               {r.descricao}
             </span>
@@ -224,9 +239,13 @@ export function RecorrenciasPanel() {
                 size="icon"
                 className="h-7 w-7"
                 onClick={() =>
-                  void runAction(() =>
-                    send(`/api/financeiro/recorrencias/${r.id}`, "PATCH", { ativo: !r.ativo }),
-                  )
+                  r.ativo
+                    ? // Inativar tira a recorrência dos meses futuros → confirma antes.
+                      void confirmarComFuturos(r, "inativar")
+                    : // Reativar apenas religa; o sync repõe o horizonte.
+                      void runAction(() =>
+                        send(`/api/financeiro/recorrencias/${r.id}`, "PATCH", { ativo: true }),
+                      )
                 }
                 title={r.ativo ? "Inativar" : "Reativar"}
               >
@@ -281,24 +300,48 @@ function RecorrenciaForm({
   const [buId, setBuId] = useState(item?.bu_id ?? dim.bus[0]?.id ?? "");
   const [colaboradorId, setColaboradorId] = useState(item?.colaborador_id ?? "");
   const [valor, setValor] = useState(item ? String(item.valor_previsto) : "");
-  const [dia, setDia] = useState(item ? String(item.dia_vencimento) : "5");
   const [periodicidade, setPeriodicidade] = useState(item?.periodicidade ?? "mensal");
-  // Início: default inteligente — se o dia de vencimento deste mês JÁ PASSOU,
-  // sugere o mês seguinte (senão a 1ª parcela nasceria vencida).
-  const [inicio, setInicio] = useState(() => {
-    if (item) return item.inicio_competencia ?? "";
+  /**
+   * A recorrência é definida por DUAS DATAS — igual ao Contas a Pagar, para não
+   * ter duas linguagens diferentes pro mesmo conceito. Da 1ª ocorrência o
+   * sistema deduz a regra que se repete todo mês:
+   *
+   *   dia_vencimento     = dia do 1º vencimento
+   *   inicio_competencia = mês da 1ª competência
+   *   defasagem_meses    = meses entre as duas datas
+   *
+   * Ex.: competência 05/07 + vencimento 05/08 → dia 5, início 07/2026, defasagem 1.
+   */
+  const [primComp, setPrimComp] = useState(() => {
+    if (item?.inicio_competencia) return `${item.inicio_competencia}-01`;
+    // Nova: se o dia 5 deste mês já passou, sugere o mês que vem (senão a 1ª
+    // parcela nasceria vencida).
     const now = new Date();
     const d = now.getDate() > 5 ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
   });
   /**
-   * Defasagem entre competência e vencimento, em meses. OBRIGATÓRIA: começa
-   * vazia em recorrência nova, para forçar a escolha — sem isso o sistema
-   * assumia "mesmo mês" em silêncio e o custo caía no mês errado.
+   * O dia do vencimento GRAVADO. Ao editar, o campo de data mostra o dia já
+   * limitado ao mês (dia 31 → 28 em fevereiro); se deduzíssemos o dia daí, uma
+   * simples reabertura do formulário rebaixaria "todo dia 31" para "todo dia 28"
+   * em silêncio. Então só recalculamos o dia se a pessoa MEXER na data.
    */
-  const [defasagem, setDefasagem] = useState<string>(
-    item ? String(item.defasagem_meses ?? 0) : "",
+  const [diaGravado, setDiaGravado] = useState<number | null>(
+    item?.dia_vencimento ?? null,
   );
+  const [primVenc, setPrimVenc] = useState(() => {
+    if (item?.inicio_competencia) {
+      const [a, m] = item.inicio_competencia.split("-").map(Number);
+      const d = new Date(Date.UTC(a, m - 1 + (item.defasagem_meses ?? 0), 1));
+      const ult = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+      const dd = Math.min(item.dia_vencimento, ult);
+      const p2 = (n: number) => String(n).padStart(2, "0");
+      return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(dd)}`;
+    }
+    const now = new Date();
+    const d = now.getDate() > 5 ? new Date(now.getFullYear(), now.getMonth() + 1, 1) : now;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-05`;
+  });
   const [rateio, setRateio] = useState<RateioLinha[]>(item?.rateio ?? []);
   const [rateioOpen, setRateioOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -307,24 +350,25 @@ function RecorrenciaForm({
   const buNome = (id: string) => dim.bus.find((b) => b.id === id)?.nome ?? "—";
 
   /**
-   * Prévia do que a recorrência vai gerar, com DATAS reais — é o que torna a
-   * escolha "mesmo mês / mês anterior" concreta em vez de abstrata (numa
-   * recorrência não cabe um campo de data: ela repete todo mês).
-   * Espelha `vencimentoDaCompetencia()` do servidor, inclusive o clamp de dia.
+   * Deduz a regra recorrente das duas datas da 1ª ocorrência.
+   * `defasagem` é a diferença em MESES (o dia não importa: a competência da
+   * parcela gerada é sempre o dia 01 do mês).
    */
-  const previa = (() => {
-    if (defasagem === "" || !inicio) return null;
-    const [ano, mes] = inicio.split("-").map(Number);
-    const d = new Date(Date.UTC(ano, mes - 1 + (Number(defasagem) || 0), 1));
-    const vAno = d.getUTCFullYear();
-    const vMes = d.getUTCMonth() + 1;
-    const ultimo = new Date(Date.UTC(vAno, vMes, 0)).getUTCDate();
-    const dd = Math.min(Number(dia) || 1, ultimo);
+  const regra = (() => {
+    if (!primComp || !primVenc) return null;
+    const [ca, cm] = primComp.split("-").map(Number);
+    const [va, vm, vd] = primVenc.split("-").map(Number);
+    const defasagem = va * 12 + vm - (ca * 12 + cm);
     const p2 = (n: number) => String(n).padStart(2, "0");
     return {
-      comp: `${p2(mes)}/${ano}`,
-      venc: `${p2(dd)}/${p2(vMes)}/${vAno}`,
-      vencMes: `${p2(vMes)}/${vAno}`,
+      inicio_competencia: `${ca}-${p2(cm)}`,
+      // Preserva o dia gravado enquanto a data não for editada (ver `diaGravado`).
+      dia_vencimento: diaGravado ?? vd,
+      defasagem_meses: defasagem,
+      // Rótulos p/ a prévia
+      compLabel: `${p2(cm)}/${ca}`,
+      vencLabel: `${p2(vd)}/${p2(vm)}/${va}`,
+      vencMesLabel: `${p2(vm)}/${va}`,
     };
   })();
 
@@ -334,9 +378,10 @@ function RecorrenciaForm({
     try {
       if (!categoriaId) throw new Error("Selecione a categoria.");
       if (!buId) throw new Error("Selecione a BU.");
-      if (defasagem === "")
+      if (!regra) throw new Error("Informe a 1ª competência e o 1º vencimento.");
+      if (regra.defasagem_meses < 0)
         throw new Error(
-          "Escolha a competência: o pagamento se refere ao mesmo mês ou ao mês anterior?",
+          "O vencimento não pode ser ANTES da competência. Verifique as duas datas.",
         );
       if (!rateioValido(rateio))
         throw new Error("Rateio inválido — a soma dos percentuais precisa ser 100%.");
@@ -347,11 +392,12 @@ function RecorrenciaForm({
         centro_custo_id: centroId || null,
         colaborador_id: colaboradorId || null,
         valor_previsto: Number(valor),
-        dia_vencimento: Number(dia),
         periodicidade,
         rateio: rateio.length ? rateio : null,
-        inicio_competencia: inicio || null,
-        defasagem_meses: Number(defasagem),
+        // Regra recorrente deduzida das duas datas da 1ª ocorrência.
+        dia_vencimento: regra.dia_vencimento,
+        inicio_competencia: regra.inicio_competencia,
+        defasagem_meses: regra.defasagem_meses,
       };
       if (item) await send(`/api/financeiro/recorrencias/${item.id}`, "PATCH", body);
       else await send("/api/financeiro/recorrencias", "POST", body);
@@ -425,43 +471,48 @@ function RecorrenciaForm({
             <MoneyInput value={valor} onChange={setValor} />
           </div>
           <div className="flex flex-col gap-1">
-            <Label>Dia venc.</Label>
-            <Input
-              type="number"
-              min="1"
-              max="31"
-              value={dia}
-              onChange={(e) => setDia(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label>Início</Label>
-            <Input
-              type="month"
-              value={inicio}
-              onChange={(e) => setInicio(e.target.value)}
-              title="1ª competência a gerar — evita a 1ª parcela nascer vencida"
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label title="A que mês a despesa se refere. O vencimento é quando ela é paga.">
-              Competência *
+            <Label title="A que mês a 1ª despesa SE REFERE (entra no DRE deste mês)">
+              1ª competência
             </Label>
-            <select
-              className={cn(selectCls, defasagem === "" && "border-destructive")}
-              value={defasagem}
-              onChange={(e) => setDefasagem(e.target.value)}
-            >
-              <option value="" className={optionCls}>
-                — escolha —
-              </option>
-              <option value="0" className={optionCls}>
-                Mesmo mês do vencimento
-              </option>
-              <option value="1" className={optionCls}>
-                Mês anterior ao vencimento
-              </option>
-            </select>
+            <div className="flex items-center gap-1">
+              <Input
+                type="date"
+                value={primComp}
+                onChange={(e) => setPrimComp(e.target.value)}
+              />
+              <button
+                type="button"
+                className="shrink-0 rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+                onClick={() => {
+                  // Folha/aluguel/encargos: refere-se ao mês anterior ao pagamento.
+                  const [a, m, d] = primVenc.split("-").map(Number);
+                  const dt = new Date(Date.UTC(a, m - 2, 1));
+                  const ult = new Date(
+                    Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0),
+                  ).getUTCDate();
+                  const p2 = (n: number) => String(n).padStart(2, "0");
+                  setPrimComp(
+                    `${dt.getUTCFullYear()}-${p2(dt.getUTCMonth() + 1)}-${p2(Math.min(d, ult))}`,
+                  );
+                }}
+                title="Folha, aluguel, encargos: paga em um mês, refere-se ao anterior"
+              >
+                −1 mês
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label title="Quando a 1ª parcela SERÁ PAGA. O dia se repete todo mês.">
+              1º vencimento
+            </Label>
+            <Input
+              type="date"
+              value={primVenc}
+              onChange={(e) => {
+                setPrimVenc(e.target.value);
+                setDiaGravado(null); // mexeu na data → o dia passa a vir dela
+              }}
+            />
           </div>
           <div className="flex flex-col gap-1">
             <Label>Periodicidade</Label>
@@ -483,24 +534,35 @@ function RecorrenciaForm({
             Anual gera apenas no mês de criação da recorrência.
           </p>
         )}
-        {/* Prévia com DATAS reais: numa recorrência não cabe um campo de data
-            (ela repete todo mês), então mostramos concretamente o que vai gerar
-            — é o que substitui o "mês anterior" abstrato. */}
+        {/* Prévia: confirma a REGRA deduzida das duas datas e deixa explícito
+            que ela se repete — é o que uma recorrência tem a mais que uma conta. */}
         <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs">
-          {defasagem === "" || !previa ? (
+          {!regra ? (
             <span className="text-muted-foreground">
-              Escolha a competência para ver o que será gerado.
+              Informe a 1ª competência e o 1º vencimento.
+            </span>
+          ) : regra.defasagem_meses < 0 ? (
+            <span className="text-destructive">
+              O vencimento está ANTES da competência — verifique as duas datas.
             </span>
           ) : (
             <>
-              <span className="text-muted-foreground">Vai gerar: </span>
-              <strong>competência {previa.comp}</strong>
-              <span className="text-muted-foreground"> · vencendo em </span>
-              <strong>{previa.venc}</strong>
+              <span className="text-muted-foreground">1ª ocorrência: </span>
+              <strong>competência {regra.compLabel}</strong>
+              <span className="text-muted-foreground"> · vence </span>
+              <strong>{regra.vencLabel}</strong>
               <span className="text-muted-foreground">
-                {" "}
-                — entra no DRE de {previa.comp}, sai do caixa em {previa.vencMes}.
+                {regra.defasagem_meses > 0
+                  ? ` — entra no DRE de ${regra.compLabel} e sai do caixa em ${regra.vencMesLabel}.`
+                  : " — mesmo mês no DRE e no caixa."}
               </span>
+              <div className="mt-1 text-muted-foreground">
+                Depois disso, repete todo mês no dia{" "}
+                <strong>{regra.dia_vencimento}</strong>
+                {regra.defasagem_meses > 0
+                  ? `, sempre referente a ${regra.defasagem_meses} mês(es) antes.`
+                  : "."}
+              </div>
             </>
           )}
         </div>

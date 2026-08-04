@@ -69,6 +69,13 @@ export function OrcamentoPanel() {
   const [novaCat, setNovaCat] = useState("");
   const [novaBu, setNovaBu] = useState("");
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
+  /**
+   * FILTROS da tabela (categoria/BU). Não confundir com os campos de "Adicionar
+   * linha" no rodapé: aqueles CRIAM uma meta; estes só filtram o que já está
+   * na tela. Ficam no topo, junto da competência, que é onde se procura filtro.
+   */
+  const [filtroCat, setFiltroCat] = useState("");
+  const [filtroBu, setFiltroBu] = useState("");
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -243,21 +250,27 @@ export function OrcamentoPanel() {
   };
 
   const ordenadas = useMemo(
-    () => [...linhas].sort((a, b) => catNome(a.categoria_id).localeCompare(catNome(b.categoria_id))),
+    () =>
+      [...linhas]
+        .filter((l) => (!filtroCat || l.categoria_id === filtroCat))
+        // BU "Todas" do orçamento é `null`; o filtro casa o id exato.
+        .filter((l) => (!filtroBu || l.bu_id === filtroBu))
+        .sort((a, b) => catNome(a.categoria_id).localeCompare(catNome(b.categoria_id))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [linhas, cats],
+    [linhas, cats, filtroCat, filtroBu],
   );
 
+  // Totais acompanham o FILTRO (senão o rodapé contradiz o que está na tela).
   const totais = useMemo(() => {
     let orcado = 0, previsto = 0, realizado = 0;
-    for (const l of linhas) {
+    for (const l of ordenadas) {
       const e = edit.get(key(l.categoria_id, l.bu_id));
       orcado += Number(e?.orcado) || 0;
       previsto += l.previsto;
       realizado += l.realizado;
     }
     return { orcado, previsto, realizado };
-  }, [linhas, edit]);
+  }, [ordenadas, edit]);
 
   return (
     <section className="flex flex-col gap-4">
@@ -298,6 +311,52 @@ export function OrcamentoPanel() {
         </div>
       </div>
 
+      {/* FILTROS da tabela — no topo, que é onde se procura por eles. Não
+          confundir com "Adicionar linha" (rodapé), que CRIA uma meta nova. */}
+      <div className="flex flex-wrap items-end gap-2 rounded-lg border border-border p-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] text-muted-foreground">Filtrar por categoria</label>
+          <div className="w-56">
+            <SearchSelect
+              value={filtroCat}
+              onChange={setFiltroCat}
+              options={cats.map((c) => ({ value: c.id, label: c.nome }))}
+              allowEmpty
+              emptyLabel="Todas as categorias"
+              placeholder="Todas as categorias"
+            />
+          </div>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] text-muted-foreground">Filtrar por BU</label>
+          <div className="w-44">
+            <SearchSelect
+              value={filtroBu}
+              onChange={setFiltroBu}
+              options={bus.map((b) => ({ value: b.id, label: b.nome }))}
+              allowEmpty
+              emptyLabel="Todas as BUs"
+              placeholder="Todas as BUs"
+            />
+          </div>
+        </div>
+        {(filtroCat || filtroBu) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setFiltroCat("");
+              setFiltroBu("");
+            }}
+          >
+            Limpar filtros
+          </Button>
+        )}
+        <span className="ml-auto text-[11px] text-muted-foreground">
+          {ordenadas.length} de {linhas.length} linha(s)
+        </span>
+      </div>
+
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-2">
         <Button variant="outline" size="sm" onClick={sugerir} disabled={busy || loading}>
           <IconBulb className="h-4 w-4" /> Sugerir do histórico
@@ -330,7 +389,7 @@ export function OrcamentoPanel() {
         <p className="text-sm text-muted-foreground">Carregando…</p>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-border">
-          <table className="w-full text-sm">
+          <table className="fin-table w-full text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs text-muted-foreground">
                 <th className="px-3 py-2 font-medium">Categoria</th>
@@ -450,6 +509,10 @@ export function OrcamentoPanel() {
 
       {/* Adicionar linha pra uma categoria sem histórico/meta ainda */}
       <div className="flex flex-wrap items-end gap-2 rounded-lg border border-dashed border-border p-2">
+        <p className="w-full text-[11px] font-medium text-muted-foreground">
+          ➕ Criar meta para uma categoria que ainda não está na lista{" "}
+          <span className="font-normal">(isto adiciona uma linha — não é filtro)</span>
+        </p>
         <div className="flex flex-col gap-1">
           <label className="text-[11px] text-muted-foreground">Categoria</label>
           <div className="w-56">

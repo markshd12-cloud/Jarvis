@@ -59,6 +59,20 @@ interface BuscaResp {
   itens?: EventoDre[];
 }
 
+/**
+ * Recorte do DRE — qual data decide em que mês a linha entra.
+ *
+ * - `competencia`: agrupa pelo mês a que a despesa/receita SE REFERE. O salário
+ *   de julho pago em 05/08 cai em JULHO. É o resultado econômico do mês.
+ * - `previsto-realizado`: agrupa pelo VENCIMENTO — "as contas que caem neste
+ *   mês", como sempre foi antes da defasagem existir. Esse mesmo salário cai em
+ *   AGOSTO.
+ *
+ * ⚠️ Não confundir com o Fluxo de Caixa, que não muda: lá o salário sai do caixa
+ * em agosto (data de pagamento), independentemente do recorte escolhido aqui.
+ */
+export type DreRegime = "competencia" | "previsto-realizado";
+
 // --------------------------- Tipos do resultado ----------------------------
 
 export type DreChild = {
@@ -144,6 +158,30 @@ export interface DreResult {
   estruturaFonte?: "ca" | "cache";
   /** Carimbo (ISO) do último sync bem-sucedido da estrutura. */
   estruturaSyncAt?: string | null;
+  /** Recorte usado nesta leitura (qual data decidiu o mês das linhas). */
+  regime?: DreRegime;
+  /**
+   * Só no recorte `previsto-realizado`: os lançamentos que entraram neste mês
+   * pelo VENCIMENTO mas cuja COMPETÊNCIA é de outro mês. É o "de onde veio" que
+   * o DRE sozinho não mostra — e importa porque boa parte deles vem do import
+   * do Conta Azul, cuja competência não segue a convenção de defasagem da casa.
+   */
+  foraDaCompetencia?: {
+    total: number;
+    /** Σ dos lançados no Jarvis — é a defasagem operando, não um problema. */
+    totalProprio: number;
+    /** Σ dos vindos do import do CA — competência definida lá fora, vale conferir. */
+    totalImportado: number;
+    itens: {
+      descricao: string;
+      categoria: string;
+      competencia: string;
+      vencimento: string;
+      valor: number;
+      /** true = veio do import do Conta Azul (fonte `ca_import`). */
+      importado: boolean;
+    }[];
+  };
   aviso?: string;
 }
 
@@ -202,6 +240,7 @@ async function fetchEventos(
 export async function despesaCaPorCategoria(
   companyId: string,
   competencia: string,
+  regime: DreRegime = "competencia",
 ): Promise<{ mapa: Map<string, number>; carimbos: string[] }> {
   const de = firstDay(ymAddMonths(competencia, -2));
   const ate = lastDay(ymAddMonths(competencia, 3));
@@ -214,7 +253,10 @@ export async function despesaCaPorCategoria(
   const mapa = new Map<string, number>();
   const carimbos: string[] = [];
   for (const e of pagar) {
-    const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+    const ym =
+      regime === "previsto-realizado"
+        ? (e.data_vencimento ?? "").slice(0, 7)
+        : (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
     if (ym !== competencia) continue;
     const id = e.categorias?.[0]?.id;
     if (!id) continue;
@@ -239,16 +281,20 @@ export async function despesaJarvisPorCategoria(
   companyId: string,
   competencia: string,
   buId?: string | null,
+  regime: DreRegime = "competencia",
 ): Promise<{ mapa: Map<string, number>; carimbos: string[]; realizado: Map<string, number> }> {
   const admin = createAdminClient();
+  // O RECORTE muda só a coluna de data usada pra decidir o mês da linha.
+  const campoData =
+    regime === "previsto-realizado" ? "data_vencimento" : "data_competencia";
   const { data, error } = await admin
     .from("fin_parcelas")
     .select(
       "id, valor_previsto, valor_realizado, status, bu_id, fin_despesas!inner ( cancelada, fin_categorias!inner ( ca_categoria_id ) )",
     )
     .eq("company_id", companyId)
-    .gte("data_competencia", firstDay(competencia))
-    .lte("data_competencia", lastDay(competencia))
+    .gte(campoData, firstDay(competencia))
+    .lte(campoData, lastDay(competencia))
     .neq("status", "cancelada")
     .eq("fin_despesas.cancelada", false);
   if (error) throw new Error(`despesaJarvisPorCategoria: ${error.message}`);
@@ -297,6 +343,7 @@ export async function receitaSnapshotPorCategoria(
   companyId: string,
   competencia: string,
   buId?: string | null,
+  regime: DreRegime = "competencia",
 ): Promise<{ prev: Map<string, number>; real: Map<string, number> }> {
   const admin = createAdminClient();
   // Mesma folga da despesa ([C-2, C+3]): recebível de competência C pode vencer
@@ -320,7 +367,14 @@ export async function receitaSnapshotPorCategoria(
   const prev = new Map<string, number>();
   const real = new Map<string, number>();
   for (const r of data ?? []) {
-    const ym = ((r.data_competencia as string | null) ?? (r.data_vencimento as string | null) ?? "").slice(0, 7);
+    // Recorte: por competência (mês a que se refere) ou por vencimento (o mês
+    // em que a conta cai). A janela de busca acima é ampla; o mês exato é aqui.
+    const ym =
+      regime === "previsto-realizado"
+        ? ((r.data_vencimento as string | null) ?? "").slice(0, 7)
+        : (((r.data_competencia as string | null) ??
+            (r.data_vencimento as string | null) ??
+            "") as string).slice(0, 7);
     if (ym !== competencia) continue;
     const cat = r.fin_categorias as unknown as { ca_categoria_id?: string | null } | null;
     const caId = cat?.ca_categoria_id ?? null;
@@ -402,6 +456,61 @@ export async function despesaCaPorMes(
 }
 
 /**
+ * Lista os lançamentos que caem no mês pelo VENCIMENTO mas se referem a OUTRA
+ * competência — o "veio de outro mês" do recorte `previsto-realizado`.
+ *
+ * Só faz sentido no modo Jarvis (nossas parcelas): os eventos do CA não trazem
+ * descrição no endpoint do DRE, e pré-cutover a lista seria incompleta.
+ */
+async function lancamentosForaDaCompetencia(
+  companyId: string,
+  competencia: string,
+): Promise<NonNullable<DreResult["foraDaCompetencia"]>> {
+  const admin = createAdminClient();
+  const vazio = { total: 0, totalProprio: 0, totalImportado: 0, itens: [] };
+  const { data, error } = await admin
+    .from("fin_parcelas")
+    .select(
+      "valor_previsto, data_competencia, data_vencimento, fin_despesas!inner ( descricao, fonte, cancelada, fin_categorias!inner ( nome ) )",
+    )
+    .eq("company_id", companyId)
+    .gte("data_vencimento", firstDay(competencia))
+    .lte("data_vencimento", lastDay(competencia))
+    .neq("status", "cancelada")
+    .eq("fin_despesas.cancelada", false);
+  if (error) return vazio;
+
+  const itens = (data ?? [])
+    .filter((r) => String(r.data_competencia).slice(0, 7) !== competencia)
+    .map((r) => {
+      const d = r.fin_despesas as unknown as {
+        descricao: string;
+        fonte?: string | null;
+        fin_categorias?: { nome?: string } | null;
+      };
+      return {
+        descricao: d.descricao,
+        categoria: d.fin_categorias?.nome ?? "—",
+        competencia: String(r.data_competencia),
+        vencimento: String(r.data_vencimento),
+        valor: num(r.valor_previsto),
+        importado: d.fonte === "ca_import",
+      };
+    })
+    // Importados primeiro (é o que pede conferência), depois por valor.
+    .sort((a, b) => Number(b.importado) - Number(a.importado) || b.valor - a.valor);
+
+  const soma = (f: (i: (typeof itens)[number]) => boolean) =>
+    itens.filter(f).reduce((s, i) => s + i.valor, 0);
+  return {
+    total: soma(() => true),
+    totalProprio: soma((i) => !i.importado),
+    totalImportado: soma((i) => i.importado),
+    itens,
+  };
+}
+
+/**
  * Resolve a árvore do DRE com resiliência (Opção A). Injeta as 3 dependências
  * (buscar do CA, ler cache, gravar cache) para ser testável sem CA/DB:
  *   - CA responde → usa E regrava o cache (best-effort; falha ao gravar não
@@ -438,6 +547,7 @@ async function computeDre(
   companyId: string,
   competencia: string,
   buId?: string | null,
+  regime: DreRegime = "competencia",
 ): Promise<DreResult> {
   const bu = buId ?? null;
   const vazio: DreResult = {
@@ -489,16 +599,21 @@ async function computeDre(
         ? Promise.resolve<EventoDre[]>([])
         : fetchEventos(companyId, CONTA_AZUL_RESOURCES.contasAReceber.path!, de, ate),
       jarvisMode
-        ? despesaJarvisPorCategoria(companyId, competencia, bu)
-        : despesaCaPorCategoria(companyId, competencia),
+        ? despesaJarvisPorCategoria(companyId, competencia, bu, regime)
+        : despesaCaPorCategoria(companyId, competencia, regime),
       jarvisMode
-        ? receitaSnapshotPorCategoria(companyId, competencia, bu)
+        ? receitaSnapshotPorCategoria(companyId, competencia, bu, regime)
         : Promise.resolve<{ prev: Map<string, number>; real: Map<string, number> } | null>(null),
       // Metas do mês. Falha aqui não derruba o DRE — só zera a coluna Orçado.
       orcadoPorCategoriaCa(companyId, competencia, bu).catch(() => new Map<string, number>()),
     ]);
     const struct = { itens: estrutura.itens };
     const temOrcamento = orcadoPorCat.size > 0;
+    // No recorte por vencimento, quais linhas vieram de outra competência.
+    const foraDaComp =
+      regime === "previsto-realizado" && jarvisMode
+        ? await lancamentosForaDaCompetencia(companyId, competencia)
+        : { total: 0, totalProprio: 0, totalImportado: 0, itens: [] };
 
     // PREVISTO × REALIZADO (com sinal) por categoria, só na competência pedida.
     // Jarvis: previsto = comprometido/emitido; realizado = PAGO (parcelas paga)
@@ -518,7 +633,10 @@ async function computeDre(
       for (const [id, mag] of despReal) soma(realPorCat, id, -mag);
     } else {
       for (const e of receber) {
-        const ym = (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
+        const ym =
+          regime === "previsto-realizado"
+            ? (e.data_vencimento ?? "").slice(0, 7)
+            : (e.data_competencia ?? e.data_vencimento ?? "").slice(0, 7);
         if (ym !== competencia) continue;
         const id = e.categorias?.[0]?.id;
         if (!id) continue;
@@ -671,6 +789,9 @@ async function computeDre(
       cutover,
       estruturaFonte: estrutura.fonte,
       estruturaSyncAt: estrutura.syncAt,
+      regime,
+      foraDaCompetencia:
+        regime === "previsto-realizado" && jarvisMode ? foraDaComp : undefined,
       aviso:
         [
           Math.abs(semMapeamento) > 0.005
@@ -700,16 +821,17 @@ async function computeDre(
 const TTL_MS = (Number(process.env.CONTA_AZUL_CACHE_TTL_SECONDS) || 600) * 1000;
 const cache = new Map<string, { at: number; data: DreResult }>();
 
-/** DRE cacheado por empresa+competência+BU (TTL simples). Só cacheia conectado. */
+/** DRE cacheado por empresa+competência+BU+regime (TTL simples). Só cacheia conectado. */
 export async function getDre(
   companyId: string,
   competencia: string,
   buId?: string | null,
+  regime: DreRegime = "competencia",
 ): Promise<DreResult> {
-  const key = `${companyId}:${competencia}:${buId ?? ""}`;
+  const key = `${companyId}:${competencia}:${buId ?? ""}:${regime}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.data;
-  const data = await computeDre(companyId, competencia, buId ?? null);
+  const data = await computeDre(companyId, competencia, buId ?? null, regime);
   if (data.connected) cache.set(key, { at: Date.now(), data });
   return data;
 }

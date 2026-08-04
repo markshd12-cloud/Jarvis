@@ -270,7 +270,7 @@ export function DreConfigPanel({
             </div>
             {recon && recon.connected ? (
               <div className="px-3 py-2">
-                <table className="w-full text-xs">
+                <table className="fin-table w-full text-xs">
                   <thead className="text-left text-muted-foreground">
                     <tr>
                       <th className="py-1 font-medium">Grupo</th>
@@ -410,7 +410,7 @@ export function DreConfigPanel({
             </div>
             {periodo && periodo.connected ? (
               <div className="px-3 py-2">
-                <table className="w-full text-xs">
+                <table className="fin-table w-full text-xs">
                   <thead className="text-left text-muted-foreground">
                     <tr>
                       <th className="py-1 font-medium">Competência</th>

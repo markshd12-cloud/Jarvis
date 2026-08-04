@@ -430,7 +430,7 @@ function BusSection({
       <SectionHeader titulo="Business Units" subtitulo="Unidades de negócio" onNew={onNew} />
       <ul className="divide-y divide-border rounded-lg border border-border">
         {bus.map((b) => (
-          <li key={b.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+          <li key={b.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
             <span
               className="h-3 w-3 shrink-0 rounded-full border border-border"
               style={{ background: b.cor ?? "transparent" }}
@@ -526,7 +526,7 @@ function CentrosSection({
       />
       <ul className="divide-y divide-border rounded-lg border border-border">
         {centros.map((c) => (
-          <li key={c.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+          <li key={c.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
             <span className={cn(!c.ativo && "text-muted-foreground line-through")}>
               {c.codigo ? `${c.codigo} · ` : ""}
               {c.nome}

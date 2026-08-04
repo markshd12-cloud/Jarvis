@@ -200,4 +200,46 @@
   .sectionbox {
     @apply flex w-full max-w-285;
   }
+
+  /* ------------------------------------------------------------------
+   * Linhas de lista/tabela com RETORNO VISUAL.
+   *
+   * Antes as linhas tinham o mesmo tom do fundo: sem saber onde o cursor
+   * estava, era fácil clicar (ou dar baixa/excluir) na linha errada.
+   *
+   * As cores saem de `color-mix` com `--foreground`, que é quase-preto no tema
+   * claro e quase-branco no escuro. Assim o realce é sempre um "véu" de
+   * contraste sobre o fundo vigente — um único código serve aos dois temas,
+   * sem `dark:` espalhado e sem tom fixo que suma num deles.
+   * ------------------------------------------------------------------ */
+
+  /* Linha clicável de uma lista (parcelas, recorrências…). */
+  .fin-row {
+    @apply transition-colors duration-150;
+  }
+  .fin-row:hover {
+    background-color: color-mix(in oklab, var(--foreground) 7%, transparent);
+  }
+
+  /* Cartão de um agrupamento (a "dívida" em Contas a Pagar). */
+  .fin-card {
+    @apply rounded-lg border border-border transition-colors duration-150;
+  }
+  .fin-card:hover {
+    border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
+    background-color: color-mix(in oklab, var(--foreground) 4%, transparent);
+  }
+
+  /* Tabela: zebra sutil + realce da linha sob o cursor.
+     A zebra dá referência horizontal em tabelas largas (o olho não “pula”
+     de linha ao correr da categoria até o valor). */
+  .fin-table tbody tr {
+    @apply transition-colors duration-150;
+  }
+  .fin-table tbody tr:nth-child(even) {
+    background-color: color-mix(in oklab, var(--foreground) 3%, transparent);
+  }
+  .fin-table tbody tr:hover {
+    background-color: color-mix(in oklab, var(--foreground) 7%, transparent);
+  }
 }

@@ -232,7 +232,7 @@ export function InadimplentesPanel() {
 
               {aberto && (
                 <div className="overflow-x-auto border-t border-border">
-                  <table className="w-full text-sm">
+                  <table className="fin-table w-full text-sm">
                     <thead className="text-left text-xs text-muted-foreground">
                       <tr>
                         <th className="px-3 py-2 font-medium">Descrição</th>

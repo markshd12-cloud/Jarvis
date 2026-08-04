@@ -116,7 +116,7 @@ export function ReceitaPanel() {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
+        <table className="fin-table w-full text-sm">
           <thead className="border-b border-border text-left text-xs text-muted-foreground">
             <tr>
               <th className="px-3 py-2 font-medium">Competência</th>

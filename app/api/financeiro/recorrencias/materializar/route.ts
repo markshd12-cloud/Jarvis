@@ -3,7 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { invalidateDre } from "@/lib/contaazul/dre";
 import { mesCorrente } from "@/lib/financeiro/competencia";
 import { finContext } from "@/lib/financeiro/context";
-import { materializar } from "@/lib/financeiro/recorrencias";
+import { materializar, materializarHorizonte } from "@/lib/financeiro/recorrencias";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -48,9 +48,14 @@ export async function POST(req: NextRequest) {
     }[] = [];
     for (const companyId of empresas) {
       try {
-        const r = await materializar(companyId, competencia);
+        // Horizonte ROLANTE: garante 12 meses à frente sempre preenchidos, para
+        // o DRE dos meses futuros já refletir o que é certo (aluguel, folha).
+        // Sem `competencia` explícita usa o mês corrente como base.
+        const r = body.competencia
+          ? await materializar(companyId, competencia)
+          : await materializarHorizonte(companyId);
         if (r.gerados > 0) invalidateDre(companyId);
-        resultados.push({ companyId, ...r });
+        resultados.push({ companyId, gerados: r.gerados, pulados: r.pulados, erros: r.erros });
       } catch (e) {
         resultados.push({
           companyId,
