@@ -663,6 +663,24 @@ export async function resolveEstrutura(
   }
 }
 
+/**
+ * `ca_categoria_id` → `bu_id` da nossa categoria. Só é lido quando o DRE está
+ * filtrado por BU — é o que permite sumir com as LINHAS de outra unidade, e não
+ * apenas zerá-las.
+ */
+async function buPorCategoriaCa(companyId: string): Promise<Map<string, string | null>> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("fin_categorias")
+    .select("ca_categoria_id, bu_id")
+    .eq("company_id", companyId)
+    .not("ca_categoria_id", "is", null);
+  if (error) throw new Error(`buPorCategoriaCa: ${error.message}`);
+  return new Map(
+    (data ?? []).map((r) => [r.ca_categoria_id as string, (r.bu_id as string | null) ?? null]),
+  );
+}
+
 // ------------------------------- Cálculo -----------------------------------
 
 async function computeDre(
@@ -707,7 +725,8 @@ async function computeDre(
     // tabelas → o Total (Todas) = Σ BUs + "Sem BU", e o custo por BU FECHA.
     // Só o consolidado ANTERIOR ao cutover segue no CA ao vivo (histórico).
     const jarvisMode = bu != null || usaJarvis;
-    const [estrutura, receber, despesa, receitaJarvis, orcadoPorCat] = await Promise.all([
+    const [estrutura, receber, despesa, receitaJarvis, orcadoPorCat, catBu] =
+      await Promise.all([
       // Estrutura resiliente (Opção A): CA vivo regrava o cache; CA fora usa a cópia.
       resolveEstrutura(
         async () =>
@@ -728,6 +747,8 @@ async function computeDre(
         : Promise.resolve<{ prev: Map<string, number>; real: Map<string, number> } | null>(null),
       // Metas do mês. Falha aqui não derruba o DRE — só zera a coluna Orçado.
       orcadoPorCategoriaCa(companyId, competencia, bu).catch(() => new Map<string, number>()),
+      // De-para categoria → BU, só quando há filtro (ver `daBu` abaixo).
+      bu ? buPorCategoriaCa(companyId) : Promise.resolve(null),
     ]);
     const struct = { itens: estrutura.itens };
     const temOrcamento = orcadoPorCat.size > 0;
@@ -783,6 +804,28 @@ async function computeDre(
       : null;
 
     const usados = new Set<string>();
+    /**
+     * A categoria deve APARECER na visão de BU atual?
+     *
+     * Filtrar o valor não basta: as categorias de receita são exclusivas de uma
+     * unidade ("1.8 - MENSALIDADE COLÉGIO"), então no DRE do CPPEM elas ficavam
+     * listadas zeradas, poluindo o Faturamento com linhas de outra empresa.
+     *
+     * Regra, por ordem:
+     * - sem filtro de BU ("Todas") → mostra tudo;
+     * - categoria SEM `bu_id` → mostra sempre. É o caso das 96 categorias de
+     *   despesa: elas não são de nenhuma unidade, e o valor delas já vem
+     *   filtrado pela BU da PARCELA (com rateio). Escondê-las esvaziaria o DRE;
+     * - categoria COM `bu_id` → só na visão daquela BU. Na visão "sem BU" some,
+     *   porque ali por definição não há unidade atribuída.
+     */
+    const daBu = (c: DreCategoriaFin): boolean => {
+      if (!catBu) return true;
+      const b = catBu.get(c.id);
+      if (b == null) return true;
+      return bu === "sem" ? false : b === bu;
+    };
+
     const folha = (c: DreCategoriaFin): DreChild => {
       usados.add(c.id);
       return {
@@ -812,7 +855,7 @@ async function computeDre(
       let valor = 0;
       let previsto = 0;
       let orcado = 0;
-      for (const c of item.categorias_financeiras) {
+      for (const c of item.categorias_financeiras.filter(daBu)) {
         const ch = folha(c);
         valor += ch.valor;
         previsto += ch.previsto;
@@ -824,7 +867,7 @@ async function computeDre(
         let subPrev = 0;
         let subOrc = 0;
         const subLeaves: DreChild[] = [];
-        for (const c of sub.categorias_financeiras) {
+        for (const c of sub.categorias_financeiras.filter(daBu)) {
           const ch = folha(c);
           subVal += ch.valor;
           subPrev += ch.previsto;
