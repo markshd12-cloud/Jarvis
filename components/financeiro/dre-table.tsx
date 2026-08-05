@@ -28,6 +28,15 @@ function fmtAv(av: number): string {
   return `${av.toFixed(2).replace(".", ",")}%`;
 }
 
+/**
+ * Respiro à direita de uma coluna, para separar GRUPOS de colunas que contam
+ * histórias diferentes (Meta × Realizado; Previsto+AV × Realizado+AV).
+ *
+ * Precisa ser a MESMA constante no cabeçalho, na célula e no editor de meta —
+ * quando cada um tinha o seu, o título saía de cima do número.
+ */
+const PAD_GRUPO = "pr-6";
+
 
 /** Carimbo de frescor dos dados da CA (data + hora curtas), ou null se inválido. */
 function fmtCarimbo(iso: string): string | null {
@@ -91,7 +100,8 @@ function MetaCell({
   };
 
   return (
-    <span className="flex justify-end">
+    // Mesmo padding da célula de leitura, senão o campo desalinha da coluna.
+    <span className={cn("flex justify-end", PAD_GRUPO)}>
       <MoneyInput
         value={v}
         onChange={setV}
@@ -134,9 +144,38 @@ function Valor({ value, bold }: { value: number; bold?: boolean }) {
  * despesa −). Por isso a leitura é a MESMA dos dois lados: **positivo = melhor
  * que o planejado** (faturou mais OU gastou menos). Sem meta lançada → "—".
  */
-function Desvio({ valor, orcado, bold }: { valor: number; orcado: number; bold?: boolean }) {
+function Desvio({
+  valor,
+  orcado,
+  temMeta,
+  bold,
+}: {
+  valor: number;
+  orcado: number;
+  /** Sem meta cadastrada não há desvio a calcular. Meta ZERO tem. */
+  temMeta: boolean;
+  bold?: boolean;
+}) {
+  if (!temMeta) {
+    return <span className="text-xs text-muted-foreground/50">—</span>;
+  }
+  // Meta zero é alvo real ("não gastar aqui"): o desvio é o próprio realizado, e
+  // qualquer gasto é estouro. Sem o `temMeta` acima isso cairia no "—".
   if (orcado === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>;
+    const d = valor;
+    return (
+      <span
+        className={cn(
+          "tabular-nums",
+          bold && "font-semibold",
+          d >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-500 dark:text-red-400",
+        )}
+        title={d >= 0 ? "Dentro da meta zero" : "Estouro sobre meta zero"}
+      >
+        {d > 0 ? "+" : ""}
+        {brl.format(d)}
+      </span>
+    );
   }
   const d = valor - orcado;
   const pct = (d / Math.abs(orcado)) * 100;
@@ -171,6 +210,8 @@ export function DreTable({
   competencia,
   buId = null,
   regime = "competencia",
+  fechamento = false,
+  liquidacao,
   onMetaSaved,
 }: {
   rows: DreRow[];
@@ -192,7 +233,17 @@ export function DreTable({
   buId?: string | null;
   /** Regime do DRE exibido — idem. */
   regime?: "competencia" | "previsto-realizado";
-  /** Chamado após salvar uma meta digitada no DRE (pra recarregar). */
+  /**
+   * Modo FECHAMENTO: troca as colunas para Meta | Realizado | AV% | Desvio.
+   *
+   * A árvore, os filtros (zerados, BU), o drill-down e a expansão de grupos são
+   * os mesmos nos dois modos de propósito — duplicá-los num componente separado
+   * significaria corrigir cada defeito duas vezes.
+   */
+  fechamento?: boolean;
+  /** % liquidado da competência (0..1 por lado). Alimenta o selo do fechamento. */
+  liquidacao?: { despesa: number | null; receita: number | null };
+  /** Chamado após salvar uma meta digitada (pra recarregar). */
   onMetaSaved?: () => void;
 }) {
   /** Linha aberta no detalhamento ("de onde veio esse número"). */
@@ -228,21 +279,26 @@ export function DreTable({
   }
 
   const carimbo = atualizadoAte ? fmtCarimbo(atualizadoAte) : null;
-  // Meta digitável no Faturamento Bruto exige a coluna Meta SEMPRE visível no
-  // modo Jarvis (senão a 1ª meta não teria onde ser digitada).
-  // "sem" = receita sem BU resolvida: não há BU a que atribuir uma meta, e o DRE
-  // já devolve orçado vazio nessa visão. Digitar ali só criaria meta invisível.
+  /** 0..1 → "87,6%"; null (nada previsto naquele lado) → "—". */
+  const pctLiq = (v: number | null | undefined) =>
+    v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`;
+  // 90% é o corte: abaixo disso o desvio ainda está sendo formado e enganaria.
+  const baixaLiquidacao =
+    fechamento &&
+    !!liquidacao &&
+    ((liquidacao.despesa ?? 1) < 0.9 || (liquidacao.receita ?? 1) < 0.9);
+  // A meta só é digitável no fechamento, e não na visão "Sem BU" — ali não há
+  // unidade a que atribuí-la, e o orçado volta vazio de qualquer forma.
   const podeEditarMeta =
-    temPrevReal && !!competencia && !!onMetaSaved && buId !== "sem";
-  const mostraMeta = temOrcamento || podeEditarMeta;
-  // Layouts: modo CA (valor único) mantém os antigos; modo Previsto×Realizado
-  // abre as duas colunas com seus AV%. Meta/Desvio quando há orçamento (ou edição).
-  const cols = temPrevReal
-    ? mostraMeta
-      ? "grid-cols-[1fr_7.5rem_7.5rem_4rem_7.5rem_4rem_8rem]"
-      : "grid-cols-[1fr_8rem_4.5rem_8rem_4.5rem]"
-    : temOrcamento
-      ? "grid-cols-[1fr_8rem_8rem_8.5rem_4.5rem]"
+    fechamento && temPrevReal && !!competencia && !!onMetaSaved && buId !== "sem";
+  // Três layouts, um por modo. O DRE não tem mais colunas condicionais: o que
+  // decide é o modo, não a existência de meta.
+  // As colunas que levam PAD_GRUPO vêm mais largas: o padding come espaço útil,
+  // e sem folga o número encostaria no título da coluna seguinte.
+  const cols = fechamento
+    ? "grid-cols-[1fr_10.5rem_8.5rem_4.5rem_8.5rem]"
+    : temPrevReal
+      ? "grid-cols-[1fr_8rem_6rem_8rem_4.5rem]"
       : "grid-cols-[1fr_9rem_6rem]";
 
   /**
@@ -280,9 +336,15 @@ export function DreTable({
   };
 
   /**
-   * Células de valores de uma linha (tudo após "Categoria"), num layout só.
-   * Desvio compara o PREVISTO (comprometido/emitido) com a Meta — o realizado
-   * parcial do meio do mês enganaria (despesa ainda não paga pareceria "melhor").
+   * Células de valores de uma linha (tudo após "Categoria").
+   *
+   * FECHAMENTO: Meta | Realizado | AV% | Desvio — a leitura de "entregamos o que
+   * prometemos?". O desvio aqui compara o REALIZADO com a meta, que é o sentido
+   * do fechamento; o selo de liquidação acima avisa quando o mês ainda não
+   * liquidou o bastante para essa conta valer.
+   *
+   * OPERACIONAL: Previsto | AV% | Realizado | AV% — o acompanhamento do mês.
+   * Sem Meta e sem Desvio: eles vivem no painel de Fechamento.
    */
   const Cells = ({
     valor,
@@ -290,6 +352,7 @@ export function DreTable({
     avReal,
     avPrevisto,
     orcado,
+    temMeta,
     bold,
     small,
     metaEditor,
@@ -299,49 +362,76 @@ export function DreTable({
     avReal: number;
     avPrevisto: number;
     orcado: number;
+    temMeta: boolean;
     bold?: boolean;
     small?: boolean;
-    /** Substitui a célula Meta por um editor (Faturamento Bruto no modo Jarvis). */
+    /** Substitui a célula Meta por um editor (Faturamento Bruto, no fechamento). */
     metaEditor?: ReactNode;
   }) => {
     const txt = small ? "text-xs" : "text-sm";
-    if (!temPrevReal) {
-      // Layout antigo: [Meta?] Valor [Desvio?] AV%
+
+    if (fechamento) {
       return (
         <>
-          {temOrcamento ? (
-            <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
-              {orcado ? brl.format(orcado) : "—"}
+          {/* Afasta a Meta do Realizado: coladas, os dois números viravam um
+              bloco só e a leitura "planejado × aconteceu" se perdia. */}
+          {metaEditor ?? (
+            <span
+              className={cn(
+                PAD_GRUPO,
+                "text-right tabular-nums",
+                txt,
+                // A meta é dado de primeira classe aqui — não pode ser mais fraca
+                // que o realizado ao lado. Só o "sem meta" fica apagado.
+                temMeta ? "text-foreground" : "text-muted-foreground/60 italic",
+              )}
+            >
+              {temMeta ? brl.format(orcado) : "sem meta"}
             </span>
-          ) : null}
+          )}
           <span className="text-right">
             <Valor value={valor} bold={bold} />
           </span>
-          {temOrcamento ? (
-            <span className={cn("text-right", txt)}>
-              <Desvio valor={valor} orcado={orcado} bold={bold} />
-            </span>
-          ) : null}
+          <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
+            {fmtAv(avReal)}
+          </span>
+          <span className={cn("text-right", txt)}>
+            <Desvio valor={valor} orcado={orcado} temMeta={temMeta} bold={bold} />
+          </span>
+        </>
+      );
+    }
+
+    if (!temPrevReal) {
+      // Modo Conta Azul (pré-cutover): valor único, sem previsto separado.
+      return (
+        <>
+          <span className="text-right">
+            <Valor value={valor} bold={bold} />
+          </span>
           <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
             {fmtAv(avReal)}
           </span>
         </>
       );
     }
-    // Layout novo: [Meta?] Previsto AV% Realizado AV% [Desvio?]
+
     return (
       <>
-        {mostraMeta ? (
-          metaEditor ?? (
-            <span className={cn("text-right tabular-nums text-muted-foreground", txt)}>
-              {orcado ? brl.format(orcado) : "—"}
-            </span>
-          )
-        ) : null}
         <span className="text-right">
           <Valor value={previsto} bold={bold} />
         </span>
-        <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
+        {/* O respiro vai no AV% do PREVISTO: ele fecha o par "previsto + sua
+            análise", separando-o do par do realizado. Sem isso as quatro colunas
+            viram uma fileira só de números. */}
+        <span
+          className={cn(
+            PAD_GRUPO,
+            "text-right text-muted-foreground",
+            txt,
+            bold && "font-semibold",
+          )}
+        >
           {fmtAv(avPrevisto)}
         </span>
         <span className="text-right">
@@ -350,11 +440,6 @@ export function DreTable({
         <span className={cn("text-right text-muted-foreground", txt, bold && "font-semibold")}>
           {fmtAv(avReal)}
         </span>
-        {mostraMeta ? (
-          <span className={cn("text-right", txt)}>
-            <Desvio valor={previsto} orcado={orcado} bold={bold} />
-          </span>
-        ) : null}
       </>
     );
   };
@@ -379,10 +464,41 @@ export function DreTable({
           </span>
         </div>
       ) : null}
-      {!temOrcamento ? (
+      {/* SELO DE LIQUIDAÇÃO — a trava de honestidade do fechamento.
+          No dia 4 a despesa está 0% liquidada (vencimentos começam no dia 5) e o
+          desvio mostraria −100% em tudo, parecendo catástrofe. Os dois lados vêm
+          separados porque a receita costuma liquidar acima de 97% e a despesa
+          depende da rotina de baixa. */}
+      {fechamento && liquidacao ? (
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2 text-[11px]",
+            baixaLiquidacao
+              ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+              : "border-border bg-muted/30 text-muted-foreground",
+          )}
+        >
+          <span className="font-medium">
+            {pctLiq(liquidacao.despesa)} da despesa liquidada
+          </span>
+          <span className="opacity-70">·</span>
+          <span className="font-medium">
+            {pctLiq(liquidacao.receita)} da receita recebida
+          </span>
+          {baixaLiquidacao ? (
+            <span className="w-full sm:w-auto sm:ml-auto">
+              O mês ainda não liquidou — o desvio abaixo <strong>não</strong> reflete o
+              resultado final.
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      {/* O aviso de "sem metas" só faz sentido onde a meta é mostrada. */}
+      {fechamento && !temOrcamento ? (
         <div className="border-b border-border bg-muted/20 px-4 py-1.5 text-[11px] text-muted-foreground">
-          Sem metas nesta competência — cadastre em <strong>Orçamento &amp; Limite</strong> para
-          ver as colunas <strong>Meta</strong> e <strong>Desvio</strong> aqui.
+          Nenhuma meta nesta competência — cadastre em{" "}
+          <strong>Orçamento &amp; Limite</strong> (despesa) ou digite direto na coluna{" "}
+          <strong>Meta</strong> abaixo (faturamento).
         </div>
       ) : null}
       <div
@@ -410,20 +526,37 @@ export function DreTable({
             </button>
           ) : null}
         </span>
-        {temPrevReal ? (
+        {fechamento ? (
           <>
-            {mostraMeta ? (
-              <span className="text-right" title="Meta de faturamento (só receita)">
-                Meta
-              </span>
-            ) : null}
+            <span
+              className={cn(PAD_GRUPO, "text-right")}
+              title="O que foi planejado para esta competência."
+            >
+              Meta
+            </span>
+            <span
+              className="text-right"
+              title="O que de fato foi pago/recebido. Não é o Fluxo de Caixa."
+            >
+              Realizado
+            </span>
+            <span className="text-right">AV %</span>
+            <span
+              className="text-right"
+              title="Realizado − Meta. Positivo = melhor que o planejado, nos dois lados."
+            >
+              Desvio
+            </span>
+          </>
+        ) : temPrevReal ? (
+          <>
             <span
               className="text-right"
               title="O custo/receita GERADO neste mês (competência) — pago ou não. É o resultado do mês."
             >
               Previsto
             </span>
-            <span className="text-right">AV %</span>
+            <span className={cn(PAD_GRUPO, "text-right")}>AV %</span>
             <span
               className="text-right"
               title="O que já foi pago/recebido destas linhas. Não é o Fluxo de Caixa."
@@ -431,13 +564,10 @@ export function DreTable({
               Realizado
             </span>
             <span className="text-right">AV %</span>
-            {mostraMeta ? <span className="text-right">Desvio</span> : null}
           </>
         ) : (
           <>
-            {temOrcamento ? <span className="text-right">Meta</span> : null}
-            <span className="text-right">{temOrcamento ? "Realizado" : "Valor"}</span>
-            {temOrcamento ? <span className="text-right">Desvio</span> : null}
+            <span className="text-right">Valor</span>
             <span className="text-right">AV %</span>
           </>
         )}
@@ -460,6 +590,7 @@ export function DreTable({
                   avReal={row.av}
                   avPrevisto={row.avPrev}
                   orcado={row.orcado}
+                  temMeta={row.temMeta}
                   bold
                 />
               </div>
@@ -500,6 +631,7 @@ export function DreTable({
                   avReal={row.av}
                   avPrevisto={row.avPrev}
                   orcado={row.orcado}
+                  temMeta={row.temMeta}
                 />
               </button>
 
@@ -554,6 +686,7 @@ export function DreTable({
                         avReal={leaf.av}
                         avPrevisto={leaf.avPrev}
                         orcado={leaf.orcado}
+                  temMeta={leaf.temMeta}
                         bold={leaf.sub}
                         small
                         metaEditor={
@@ -587,6 +720,7 @@ export function DreTable({
         competencia={competencia}
         buId={buId}
         regime={regime}
+        somentePagas={fechamento}
         onClose={() => setDetalhe(null)}
       />
     </div>
@@ -608,12 +742,15 @@ function DetalheDialog({
   competencia,
   buId,
   regime,
+  somentePagas = false,
   onClose,
 }: {
   alvo: { caId: string; label: string } | null;
   competencia?: string;
   buId: string | null;
   regime: "competencia" | "previsto-realizado";
+  /** Fechamento: lista só o que foi pago, para fechar com a coluna Realizado. */
+  somentePagas?: boolean;
   onClose: () => void;
 }) {
   const [dados, setDados] = useState<{
@@ -629,6 +766,9 @@ function DetalheDialog({
     if (competencia) qs.set("competencia", competencia);
     if (buId) qs.set("bu", buId);
     if (regime === "previsto-realizado") qs.set("regime", regime);
+    // No fechamento a linha exibe o REALIZADO, então o detalhe só pode listar o
+    // que foi pago — senão a soma do popup passa da linha clicada.
+    if (somentePagas) qs.set("pagas", "1");
     let vivo = true;
     void (async () => {
       try {
@@ -645,7 +785,7 @@ function DetalheDialog({
     return () => {
       vivo = false;
     };
-  }, [alvo, competencia, buId, regime]);
+  }, [alvo, competencia, buId, regime, somentePagas]);
 
   if (!alvo) return null;
   const temRateio = dados?.itens.some((i) => i.rateada) ?? false;
@@ -719,13 +859,18 @@ function DetalheDialog({
                   </li>
                 ))}
               </ul>
+              {/* O total precisa ser o MESMO número da linha clicada: no
+                  fechamento a linha mostra o realizado; no operacional, o
+                  previsto. Mostrar o outro aqui faria a soma "não bater". */}
               <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                 <span className="text-muted-foreground">
-                  {dados.itens.length} conta{dados.itens.length === 1 ? "" : "s"} ·
-                  realizado {brl.format(dados.totalRealizado)}
+                  {dados.itens.length} conta{dados.itens.length === 1 ? "" : "s"}
+                  {somentePagas ? " paga" : ""}
+                  {somentePagas && dados.itens.length !== 1 ? "s" : ""}
+                  {somentePagas ? "" : ` · realizado ${brl.format(dados.totalRealizado)}`}
                 </span>
                 <span className="font-medium tabular-nums">
-                  Total {brl.format(dados.total)}
+                  Total {brl.format(somentePagas ? dados.totalRealizado : dados.total)}
                 </span>
               </div>
               {temRateio ? (

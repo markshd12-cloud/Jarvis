@@ -38,6 +38,10 @@ export async function GET(req: NextRequest) {
       ? "previsto-realizado"
       : "competencia";
 
+  // ?pagas=1 → só o que foi liquidado. É o que o painel de Fechamento usa, para
+  // a soma do detalhe fechar com a coluna Realizado da linha clicada.
+  const somentePagas = req.nextUrl.searchParams.get("pagas") === "1";
+
   try {
     const r = await detalheDespesaPorCategoria(
       gate.companyId,
@@ -45,8 +49,9 @@ export async function GET(req: NextRequest) {
       competencia,
       buId,
       regime,
+      somentePagas,
     );
-    return NextResponse.json({ ...r, competencia, regime });
+    return NextResponse.json({ ...r, competencia, regime, somentePagas });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }

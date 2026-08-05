@@ -68,6 +68,12 @@ type TabKey =
   | "clientes"
   | "classificacao";
 
+/**
+ * Recorte escolhido no DRE. Os dois primeiros trocam a data que decide o mês da
+ * linha; `meta-realizado` mantém a competência e troca as COLUNAS (fechamento).
+ */
+type RegimeUi = "competencia" | "previsto-realizado" | "meta-realizado";
+
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 
 const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode }[] =
@@ -184,19 +190,40 @@ export function FinanceiroShell() {
   const setBuId = (v: string) => setParams({ bu: v });
 
   /**
-   * Recorte do DRE: qual data decide em que mês a linha entra.
+   * Recorte do DRE. Os dois primeiros mudam qual DATA decide o mês da linha; o
+   * terceiro muda as COLUNAS.
    * - competência: o custo do mês (salário de julho pago em ago cai em JULHO)
    * - previsto-realizado: as contas que caem no mês (esse salário cai em AGOSTO)
+   * - meta-realizado: fechamento — Meta × Realizado, sempre por competência
    * O Fluxo de Caixa não é afetado — lá a saída é sempre na data do pagamento.
    */
   const regime = param(
     "regime",
-    (v) => v === "previsto-realizado",
+    (v) => v === "previsto-realizado" || v === "meta-realizado",
     "competencia",
-  ) as "competencia" | "previsto-realizado";
-  // 'competencia' é o padrão — não polui a URL.
-  const setRegime = (v: "competencia" | "previsto-realizado") =>
+  ) as RegimeUi;
+  /**
+   * 'competencia' é o padrão — não polui a URL.
+   *
+   * Trocar de regime NÃO mexe na competência. Cheguei a fazer o fechamento
+   * pular para o mês anterior (o corrente está perto de 0% liquidado), mas o
+   * `comp` fica na URL: voltar para Competência mantinha o mês antigo, e o
+   * usuário ficava preso em julho sem ter pedido. Quem avisa que o mês ainda
+   * não liquidou é o selo no topo da tabela — sem sequestrar a navegação.
+   */
+  const setRegime = (v: RegimeUi) =>
     setParams({ regime: v === "competencia" ? null : v });
+
+  /** Fechamento troca as colunas, não o agrupamento. */
+  const fechamento = regime === "meta-realizado";
+  /**
+   * Regime enviado à API e usado no drill-down. O fechamento é SEMPRE por
+   * competência: a meta é cadastrada por competência (`fin_orcamentos`), então
+   * compará-la com um realizado agrupado por vencimento misturaria recortes.
+   */
+  const regimeApi: "competencia" | "previsto-realizado" = fechamento
+    ? "competencia"
+    : regime;
   const [dre, setDre] = useState<DreResult | null>(null);
   const [loading, setLoading] = useState(true);
   // Bump p/ recarregar o DRE após importar/mudar cutover (Passo 11).
@@ -225,12 +252,14 @@ export function FinanceiroShell() {
     buId === "sem" ? "Sem BU" : buId ? (bus.find((b) => b.id === buId)?.nome ?? "BU") : "Todas";
 
   useEffect(() => {
+    // Fechamento consome exatamente o mesmo endpoint — só muda a leitura das
+    // colunas. Sem incluí-lo aqui, a aba abriria vazia.
     if (active !== "dre") return;
     let cancel = false;
     setLoading(true);
     fetch(
       `/api/financeiro/dre?competencia=${competencia}${buId ? `&bu=${buId}` : ""}` +
-        (regime === "previsto-realizado" ? "&regime=previsto-realizado" : ""),
+        (regimeApi === "previsto-realizado" ? "&regime=previsto-realizado" : ""),
     )
       .then((r) => r.json())
       .then((data: DreResult) => {
@@ -251,6 +280,7 @@ export function FinanceiroShell() {
             semMapeamento: 0,
             atualizadoAte: null,
             temOrcamento: false,
+            liquidacao: { despesa: null, receita: null },
             despesaFonte: "contaazul",
             cutover: null,
           });
@@ -260,7 +290,7 @@ export function FinanceiroShell() {
     return () => {
       cancel = true;
     };
-  }, [competencia, active, reloadKey, buId, regime]);
+  }, [competencia, active, reloadKey, buId, regimeApi]);
 
   const dockItems = TABS.map((tab) => ({
     title: tab.ready ? tab.label : `${tab.label} (em breve)`,
@@ -297,6 +327,11 @@ export function FinanceiroShell() {
                   k: "previsto-realizado" as const,
                   label: "Previsto e Realizado",
                   hint: "Agrupa pelo VENCIMENTO — as contas que caem neste mês. Esse mesmo salário cai em agosto.",
+                },
+                {
+                  k: "meta-realizado" as const,
+                  label: "Meta e Realizado",
+                  hint: "FECHAMENTO: o que foi planejado contra o que de fato aconteceu. Sempre por competência (a meta é cadastrada por competência). Abre no mês anterior — o mês corrente ainda não liquidou.",
                 },
               ]
             ).map((o) => (
@@ -471,7 +506,9 @@ export function FinanceiroShell() {
             // BU e regime seguem para o detalhamento de cada linha: sem eles a
             // soma do popup não fecharia com a linha que foi clicada.
             buId={buId || null}
-            regime={regime}
+            regime={regimeApi}
+            fechamento={fechamento}
+            liquidacao={dre?.liquidacao}
             onMetaSaved={() => setReloadKey((k) => k + 1)}
           />
         </section>

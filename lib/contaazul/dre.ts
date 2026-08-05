@@ -89,6 +89,13 @@ export type DreChild = {
    * 0 quando não há orçamento lançado para a categoria.
    */
   orcado: number;
+  /**
+   * A categoria TEM meta cadastrada? Distingue "meta = R$ 0,00" (alvo real: não
+   * gastar nada) de "ninguém cadastrou" — `orcado` vale 0 nos dois casos e não
+   * dá para inferir pelo valor. Sem isso, uma meta zero estourada apareceria
+   * como "sem informação" em vez de estouro.
+   */
+  temMeta: boolean;
   /** Cabeçalho de subgrupo (03.1/03.2) — renderiza um pouco mais forte. */
   sub?: boolean;
   /**
@@ -108,6 +115,8 @@ export type DreRow =
       previsto: number;
       avPrev: number;
       orcado: number;
+      /** Alguma folha do grupo tem meta cadastrada. */
+      temMeta: boolean;
       children: DreChild[];
     }
   | {
@@ -118,6 +127,8 @@ export type DreRow =
       previsto: number;
       avPrev: number;
       orcado: number;
+      /** Algum grupo acumulado até aqui tem meta cadastrada. */
+      temMeta: boolean;
     };
 export interface DreResult {
   connected: boolean;
@@ -146,6 +157,19 @@ export interface DreResult {
    * em vez de uma coluna de zeros (que pareceria "orçamos R$ 0").
    */
   temOrcamento: boolean;
+  /**
+   * Quanto da competência já virou dinheiro: `realizado / previsto`, de 0 a 1,
+   * por lado.
+   *
+   * É o que impede o painel de Fechamento de mentir. No dia 4 do mês a despesa
+   * está em 0% liquidado (os vencimentos começam no dia 5), então Meta ×
+   * Realizado mostraria −100% em tudo e pareceria catástrofe. Os dois lados vêm
+   * separados porque se comportam diferente: a receita costuma liquidar acima de
+   * 97%, a despesa varia com a rotina de baixa.
+   *
+   * `null` no lado sem nenhum previsto (divisão sem sentido).
+   */
+  liquidacao: { despesa: number | null; receita: number | null };
   /** Fonte da DESPESA nesta competência: 'jarvis' (≥ cutover) ou 'contaazul'. */
   despesaFonte: "contaazul" | "jarvis";
   /** Competência de cutover configurada (AAAA-MM), ou null se tudo vem do CA. */
@@ -371,11 +395,17 @@ export async function detalheDespesaPorCategoria(
   competencia: string,
   buId?: string | null,
   regime: DreRegime = "competencia",
+  /**
+   * Só as parcelas PAGAS. É o que o painel de Fechamento pede: lá a linha exibe
+   * o Realizado, então a soma do detalhe tem de fechar com ela — listar o que
+   * ainda não foi pago daria um total maior que a linha clicada.
+   */
+  somentePagas = false,
 ): Promise<{ itens: DreDetalheItem[]; total: number; totalRealizado: number }> {
   const admin = createAdminClient();
   const campoData =
     regime === "previsto-realizado" ? "data_vencimento" : "data_competencia";
-  const { data, error } = await admin
+  let consulta = admin
     .from("fin_parcelas")
     .select(
       `id, numero, valor_previsto, valor_realizado, status, bu_id,
@@ -390,8 +420,9 @@ export async function detalheDespesaPorCategoria(
     .lte(campoData, lastDay(competencia))
     .neq("status", "cancelada")
     .eq("fin_despesas.cancelada", false)
-    .eq("fin_despesas.fin_categorias.ca_categoria_id", caCategoriaId)
-    .order(campoData, { ascending: true });
+    .eq("fin_despesas.fin_categorias.ca_categoria_id", caCategoriaId);
+  if (somentePagas) consulta = consulta.eq("status", "paga");
+  const { data, error } = await consulta.order(campoData, { ascending: true });
   if (error) throw new Error(`detalheDespesaPorCategoria: ${error.message}`);
 
   const rows = data ?? [];
@@ -700,6 +731,7 @@ async function computeDre(
     semMapeamento: 0,
     atualizadoAte: null,
     temOrcamento: false,
+    liquidacao: { despesa: null, receita: null },
     despesaFonte: "contaazul",
     cutover: null,
   };
@@ -766,14 +798,32 @@ async function computeDre(
     const realPorCat = new Map<string, number>();
     const soma = (m: Map<string, number>, id: string, v: number) =>
       m.set(id, (m.get(id) ?? 0) + v);
+    /**
+     * Acumuladores da liquidação, em MAGNITUDE (sem o sinal do DRE) e separados
+     * por lado — não dá para deduzir do `prevPorCat`, onde receita e despesa já
+     * se cancelaram.
+     */
+    const liq = { despPrev: 0, despReal: 0, recPrev: 0, recReal: 0 };
     if (jarvisMode) {
-      for (const [id, v] of receitaJarvis!.prev) soma(prevPorCat, id, v);
-      for (const [id, v] of receitaJarvis!.real) soma(realPorCat, id, v);
-      for (const [id, mag] of despesa.mapa) soma(prevPorCat, id, -mag);
+      for (const [id, v] of receitaJarvis!.prev) {
+        soma(prevPorCat, id, v);
+        liq.recPrev += v;
+      }
+      for (const [id, v] of receitaJarvis!.real) {
+        soma(realPorCat, id, v);
+        liq.recReal += v;
+      }
+      for (const [id, mag] of despesa.mapa) {
+        soma(prevPorCat, id, -mag);
+        liq.despPrev += mag;
+      }
       const despReal =
         (despesa as { realizado?: Map<string, number> }).realizado ??
         new Map<string, number>();
-      for (const [id, mag] of despReal) soma(realPorCat, id, -mag);
+      for (const [id, mag] of despReal) {
+        soma(realPorCat, id, -mag);
+        liq.despReal += mag;
+      }
     } else {
       for (const e of receber) {
         const ym =
@@ -835,6 +885,10 @@ async function computeDre(
         previsto: prevPorCat.get(c.id) ?? 0,
         avPrev: 0,
         orcado: orcadoPorCat.get(c.id) ?? 0,
+        // `has`, não `get`: o Map só recebe categorias que TÊM linha em
+        // fin_orcamentos, então a presença é a resposta — inclusive quando o
+        // valor cadastrado é 0.
+        temMeta: orcadoPorCat.has(c.id),
         caId: c.id,
       };
     };
@@ -884,6 +938,7 @@ async function computeDre(
           previsto: subPrev,
           avPrev: 0,
           orcado: subOrc,
+          temMeta: subLeaves.some((l) => l.temMeta),
           sub: true,
         });
         children.push(...subLeaves);
@@ -904,6 +959,7 @@ async function computeDre(
     let acc = 0;
     let accPrev = 0;
     let accOrc = 0;
+    let accTemMeta = false;
     for (const c of calc) {
       if ("tot" in c) {
         rows.push({
@@ -914,11 +970,14 @@ async function computeDre(
           previsto: accPrev,
           avPrev: av(accPrev, receitaBrutaPrev),
           orcado: accOrc,
+          temMeta: accTemMeta,
         });
       } else {
         acc += c.valor;
         accPrev += c.previsto;
         accOrc += c.orcado;
+        const grupoTemMeta = c.children.some((ch) => ch.temMeta);
+        accTemMeta = accTemMeta || grupoTemMeta;
         rows.push({
           kind: "group",
           codigo: c.item.codigo ?? "",
@@ -928,6 +987,7 @@ async function computeDre(
           previsto: c.previsto,
           avPrev: av(c.previsto, receitaBrutaPrev),
           orcado: c.orcado,
+          temMeta: grupoTemMeta,
           children: c.children.map((ch) => ({
             ...ch,
             av: av(ch.valor, receitaBruta),
@@ -946,6 +1006,14 @@ async function computeDre(
       receitaBruta,
       receitaBrutaPrev,
       temPrevReal: jarvisMode,
+      // Pré-cutover o CA devolve valor único (previsto = realizado): não existe
+      // liquidação a medir, então `null` em vez de um 100% enganoso.
+      liquidacao: jarvisMode
+        ? {
+            despesa: liq.despPrev > 0 ? liq.despReal / liq.despPrev : null,
+            receita: liq.recPrev > 0 ? liq.recReal / liq.recPrev : null,
+          }
+        : { despesa: null, receita: null },
       rows,
       semMapeamento,
       atualizadoAte,
