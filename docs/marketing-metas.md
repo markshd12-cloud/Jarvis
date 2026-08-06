@@ -16,22 +16,33 @@ Nada foi implementado ainda.
 | CPL (custo por lead) | ✅ viável | `marketing_daily_insights`, por marca |
 | CAC | ✅ viável | `getCac()` (`lib/marketing/cac.ts`), por BU |
 | Seguidores Instagram | ✅ viável | `social_daily_insights`, snapshot diário |
-| Seguidores YouTube | ✅ viável | idem, 2 canais |
-| **Receita do YouTube** | ❌ **bloqueada** | não existe dado |
+| Seguidores YouTube | ✅ **em produção** | `youtube-analytics.ts`, 2 canais (OAuth do dono) |
+| **Receita do YouTube** | ⏸️ dado existe, meta não cadastrável | `estimatedRevenue`, só 1 canal monetizado |
 
-### Por que a receita do YouTube está bloqueada
+### Seguidores do YouTube — resolvido em 2026-08-05
 
-Não é questão de programar. Receita vem da **YouTube Analytics API (nível B)**,
-que exige **OAuth do dono do canal** — a service account do Vertex que usamos
-para o nível A (dados públicos) não serve.
+Ficou fora do primeiro lote por um motivo real: a Data API **arredonda inscritos
+para 3 dígitos significativos acima de 1.000, inclusive para o dono do canal**. O
+CPPEM marcava 387.000 imóvel, e "ganho no mês" daria sempre zero.
 
-É o **Passo 8** do `marketing-status.md`, e ele parou num ponto concreto: falta
-criar o **ID do cliente OAuth**, que o Google bloqueia enquanto a tela de
-consentimento não estiver configurada. Já confirmado que todos os canais estão
-sob `administrador@cppem.com.br` e que a YouTube Analytics API está ativada.
+Com a Analytics API (nível B, OAuth), julho aparece como **382 ganhos e 767
+perdidos — líquido de −385**. O canal encolhia e o painel dizia que estava
+estável.
 
-Dá para deixar a meta cadastrável desde já, exibindo "sem dados" até a
-integração existir — mas o número real depende de destravar isso primeiro.
+A meta usa o **líquido**, mesma leitura do Instagram: perder 767 e ganhar 382 não
+é crescimento, e uma meta sobre o bruto premiaria um canal que sangra.
+
+### Receita do YouTube — o dado destravou, a meta não
+
+O nível B trouxe `estimatedRevenue`, e o CPPEM **é monetizado**: R$ 125,86 em
+julho. O Colégio não é (a API devolve `rows: []`).
+
+Não virou meta porque um único canal com receita de dois dígitos não sustenta um
+alvo mensal — cadastrar geraria uma linha que ninguém acompanha. O número aparece
+no card do canal, e a meta entra se e quando a receita virar volume relevante.
+
+> Cuidado ao mexer: `estimatedRevenue` **responde em USD sem o parâmetro
+> `currency`**. Ver o Erro 2 em `youtube-nivel-b-setup.md`.
 
 ---
 

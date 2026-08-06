@@ -1,25 +1,38 @@
 /**
- * CAC — Custo de Aquisição por Cliente. Ver `docs/cac-plano.md`.
+ * CAC — Custo de Aquisição por Cliente. Ver `docs/cac-fontes.md`.
  *
  *   CAC = (custo de Marketing + custo de Comercial) ÷ nº de vendas do período
  *
- * Decisões implementadas (2026-07-21):
- *  1. **Conta Azul é a VERDADE do custo** (dinheiro real, sem dupla contagem com
- *     o Meta Ads, cuja fatura já entra como despesa no CA).
- *  2. Custo compartilhado é **rateado por receita da BU** (driver configurável).
- *  4. "Vendas" = **faturadas + a faturar** (`qtd` total do Conta Azul).
+ * ## A fonte do custo MUDA no meio do caminho (2026-08-05)
  *
- * ## Como o custo vira "por BU" sem depender do Passo 11
- * O nome do centro de custo vem da PRÓPRIA despesa no CA (`centros_de_custo[0].nome`)
- * e costuma embutir a unidade: "Unicive marketing", "cppem comercial", "cppem
- * marketing". `classificarCentro()` extrai **BU** e **tipo** (marketing/comercial)
- * do nome:
- *  - com BU no nome  → **custo DIRETO** daquela BU;
- *  - sem BU ("Marketing", "Comercial") → **compartilhado**, rateado pelo driver.
- * Isso funciona hoje, sem esperar categorias mapeadas nem `centro_custo_id`.
+ * Até **julho/2026** as despesas viviam no Conta Azul. De **agosto** em diante
+ * elas foram importadas para o banco próprio e canceladas no CA, então cada mês
+ * tem exatamente uma fonte válida — somar as duas contaria o mesmo dinheiro
+ * duas vezes, e ler só o CA perdia quase tudo.
+ *
+ * O sintoma que revelou isso: o CAC mostrava **R$ 3.707,76** de custo em agosto
+ * quando o real era **R$ 65.363,45**. Um CAC calculado sobre 6% do custo, que
+ * ainda por cima *melhorava* a cada mês, porque o denominador (vendas) continuava
+ * cheio enquanto o numerador esvaziava.
+ *
+ * ## Três regimes, como no DRE
+ *
+ *  - **Meta** — o alvo cadastrado na aba Metas do Marketing.
+ *  - **Previsto** — o que o financeiro planejou (`valor_previsto` / `total` no CA).
+ *  - **Realizado** — o que foi efetivamente pago (exige `data_pagamento`).
+ *
+ * Os três são calculados SEMPRE; o regime só escolhe qual vira o número de
+ * destaque. Assim a comparação fica à mão sem recarregar a página.
+ *
+ * ## BU
+ *
+ * No banco próprio a BU vem de `fin_parcelas.bu_id` — chave estrangeira, exata.
+ * Na parte histórica do CA não existe esse campo, e a unidade é adivinhada pelo
+ * NOME do centro ("Unicive marketing" → Unicive); centro sem unidade no nome
+ * conta como compartilhado e é rateado pelo driver.
  *
  * ⚠️ Ainda NÃO há nº de vendas por BU (o CA não informa a BU da venda), então o
- * CAC por BU não sai em R$ — a ponte é `pctSobreReceita`. Ver decisão 3 na doc.
+ * CAC por BU não sai em R$ — a ponte é `pctSobreReceita`.
  *
  * Server-only, por empresa. Gate no chamador: `marketing` E `financeiro`.
  */
@@ -31,8 +44,28 @@ import { resumoVendas } from "@/lib/financeiro/vendas";
 import { getMetaMetrics } from "@/lib/marketing/metrics";
 import { createAdminClient } from "@/lib/supabase/admin";
 
+import { custoBancoProprio } from "./cac-banco-proprio";
+
+/**
+ * Primeira competência lida no BANCO PRÓPRIO. Antes disso, Conta Azul.
+ *
+ * É a virada combinada com o financeiro: as recorrências importadas foram
+ * canceladas no CA a partir de agosto/2026. Mover esta constante sem conferir o
+ * que existe em cada lado gera buraco (mês sem fonte) ou dupla contagem.
+ */
+export const CORTE_BANCO_PROPRIO = "2026-08";
+
 /** Como distribuir o custo COMPARTILHADO entre as BUs. */
 export type CacDriver = "receita" | "midia";
+
+/** Qual base de custo vira o número de destaque. Espelha o DRE. */
+export type CacRegime = "meta" | "previsto" | "realizado";
+
+/** Janela de análise, em competências 'AAAA-MM' (inclusiva nas duas pontas). */
+export interface CacPeriodo {
+  de: string;
+  ate: string;
+}
 
 /** Tipo de custo que entra no CAC. */
 export type CacTipo = "marketing" | "comercial";
@@ -72,11 +105,18 @@ export function classificarCentro(nome: string): { bu: string | null; tipo: CacT
   return { bu, tipo };
 }
 
+/** De onde veio o custo daquele mês/centro. */
+export type CacFonte = "conta-azul" | "banco-proprio";
+
 export interface CacCentro {
   centro: string;
   bu: string | null;
   tipo: CacTipo;
+  /** Valor no regime selecionado. */
   valor: number;
+  previsto: number;
+  realizado: number;
+  fonte: CacFonte;
 }
 
 export interface CacBu {
@@ -97,19 +137,35 @@ export interface CacBu {
 
 export interface CacMes {
   mes: string; // 'AAAA-MM'
+  /** Custo no regime selecionado. */
   custo: number;
+  custoPrevisto: number;
+  custoRealizado: number;
   vendas: number;
   cac: number | null;
+  /** Qual base alimentou o mês — útil para explicar degraus na série. */
+  fonte: CacFonte;
 }
 
 export interface CacResumo {
   connected: boolean;
   ano: number;
+  periodo: CacPeriodo;
+  regime: CacRegime;
   driver: CacDriver;
-  // ---- Custo (fonte: Conta Azul) ----
+  /** Quanto do custo veio de cada base — deixa o corte visível na tela. */
+  fontes: { contaAzul: number; bancoProprio: number };
+  // ---- Custo no REGIME selecionado ----
   custoMarketing: number;
   custoComercial: number;
   custoTotal: number;
+  /** As duas bases, sempre calculadas, para comparação sem recarregar. */
+  custoPrevisto: number;
+  custoRealizado: number;
+  cacPrevisto: number | null;
+  cacRealizado: number | null;
+  /** Alvo cadastrado na aba Metas. `null` = ninguém cadastrou. */
+  cacMeta: number | null;
   /** Centros que entraram na conta (com BU quando o nome identifica). */
   centros: CacCentro[];
   centrosEncontrados: boolean;
@@ -137,6 +193,122 @@ export interface CacResumo {
 function num(v: unknown): number {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Meses 'AAAA-MM' do período, inclusivo. */
+function mesesDoPeriodo(p: CacPeriodo): string[] {
+  const [a1, m1] = p.de.split("-").map(Number);
+  const [a2, m2] = p.ate.split("-").map(Number);
+  const out: string[] = [];
+  for (let a = a1, m = m1; a < a2 || (a === a2 && m <= m2); m === 12 ? (a++, (m = 1)) : m++) {
+    out.push(`${a}-${String(m).padStart(2, "0")}`);
+  }
+  return out;
+}
+
+/**
+ * Custo normalizado: uma linha por (mês, centro), venha do CA ou do banco
+ * próprio, já com as DUAS bases (previsto e realizado).
+ *
+ * Reduzir as duas fontes a um formato só é o que mantém o resto do arquivo
+ * simples — agregações por mês, por tipo e por BU passam a ignorar de onde o
+ * número veio, e o corte fica isolado num único ponto.
+ */
+interface CustoNormalizado {
+  mes: string;
+  centro: string;
+  /** `null` = compartilhado (só ocorre no histórico do CA). */
+  bu: string | null;
+  tipo: CacTipo;
+  previsto: number;
+  realizado: number;
+  fonte: CacFonte;
+}
+
+/**
+ * Junta as duas fontes aplicando o corte: CA nos meses ANTERIORES a
+ * `CORTE_BANCO_PROPRIO`, banco próprio de lá em diante. Nenhum mês recebe as
+ * duas — é o que impede a dupla contagem.
+ */
+async function custoNormalizado(
+  companyId: string,
+  periodo: CacPeriodo,
+): Promise<CustoNormalizado[]> {
+  const meses = mesesDoPeriodo(periodo);
+  const mesesCa = meses.filter((m) => m < CORTE_BANCO_PROPRIO);
+  const mesesProprio = meses.filter((m) => m >= CORTE_BANCO_PROPRIO);
+
+  const out: CustoNormalizado[] = [];
+
+  // ---- Conta Azul (histórico) ----
+  if (mesesCa.length) {
+    const anos = [...new Set(mesesCa.map((m) => Number(m.slice(0, 4))))];
+    const resumos = await Promise.all(
+      anos.map((ano) => resumoCentrosCusto(companyId, { ano }).catch(() => null)),
+    );
+    const dentro = new Set(mesesCa);
+    for (const r of resumos) {
+      for (const l of r?.porMes ?? []) {
+        if (!dentro.has(l.mes)) continue;
+        const { bu, tipo } = classificarCentro(l.centro);
+        if (!tipo) continue; // Pedagógico, Tecnologia... não entram no CAC
+        out.push({
+          mes: l.mes,
+          centro: l.centro,
+          bu,
+          tipo,
+          previsto: num(l.previsto),
+          realizado: num(l.realizado),
+          fonte: "conta-azul",
+        });
+      }
+    }
+  }
+
+  // ---- Banco próprio (agosto/2026 em diante) ----
+  if (mesesProprio.length) {
+    const linhas = await custoBancoProprio(
+      companyId,
+      mesesProprio[0],
+      mesesProprio[mesesProprio.length - 1],
+    ).catch(() => []);
+    for (const l of linhas) {
+      out.push({
+        mes: l.mes,
+        centro: l.centro,
+        // Aqui a BU é `bu_id`, não palpite sobre o nome do centro.
+        bu: l.bu === "Sem BU" ? null : l.bu,
+        tipo: l.tipo,
+        previsto: l.previsto,
+        realizado: l.realizado,
+        fonte: "banco-proprio",
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
+ * Meta de CAC cadastrada, para o período.
+ *
+ * CAC é uma TAXA (R$ por venda), não um valor acumulável: somar as metas de
+ * agosto e setembro daria um número sem significado. Para um período com várias
+ * competências, a meta é a MÉDIA das cadastradas — e meses sem meta ficam de
+ * fora da média, em vez de entrarem como zero e puxarem o alvo para baixo.
+ */
+async function metaDeCac(periodo: CacPeriodo): Promise<number | null> {
+  const admin = createAdminClient();
+  const { data, error } = await admin
+    .from("mkt_metas")
+    .select("valor")
+    .eq("metrica", "cac")
+    .eq("ativo", true)
+    .gte("competencia", periodo.de)
+    .lte("competencia", periodo.ate);
+  if (error || !data?.length) return null;
+  const vals = data.map((r) => num(r.valor)).filter((v) => v > 0);
+  return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
 }
 
 /** Receita do ano por BU (nossas tabelas — bem mapeadas por categoria→BU). */
@@ -171,32 +343,65 @@ async function receitaPorBu(companyId: string, ano: number): Promise<Map<string,
 
 async function computeCac(
   companyId: string,
-  ano: number,
+  periodo: CacPeriodo,
+  regime: CacRegime,
   driver: CacDriver,
 ): Promise<CacResumo> {
   const atualizadoEm = new Date().toISOString();
+  const ano = Number(periodo.ate.slice(0, 4));
 
-  const [centrosResumo, vendas, receitaBu, meta] = await Promise.all([
-    resumoCentrosCusto(companyId, { ano }).catch(() => null),
+  const [linhas, vendas, receitaBu, meta, cacMeta] = await Promise.all([
+    custoNormalizado(companyId, periodo),
     resumoVendas(companyId, { ano }).catch(() => null),
     receitaPorBu(companyId, ano).catch(() => new Map<string, number>()),
-    getMetaMetrics({ since: `${ano}-01-01`, until: `${ano}-12-31` }).catch(() => null),
+    getMetaMetrics({ since: `${periodo.de}-01`, until: `${periodo.ate}-31` }).catch(() => null),
+    metaDeCac(periodo).catch(() => null),
   ]);
 
-  // ---- Custo: só centros de Marketing/Comercial, com BU extraída do nome ----
-  const centros: CacCentro[] = [];
-  for (const l of centrosResumo?.linhas ?? []) {
-    const { bu, tipo } = classificarCentro(l.centro);
-    if (!tipo) continue; // Pedagógico, Tecnologia... não entram no CAC
-    const valor = num(l.realizado);
-    if (valor === 0) continue;
-    centros.push({ centro: l.centro, bu, tipo, valor });
-  }
-  centros.sort((a, b) => b.valor - a.valor);
+  /**
+   * `meta` aqui é o REGIME de comparação, não uma base de custo própria — não
+   * existe "custo meta" por centro. Para o número de destaque nesse regime
+   * usamos o realizado, que é com o que a meta se compara.
+   */
+  const base = regime === "previsto" ? "previsto" : "realizado";
 
-  const custoMarketing = centros.filter((c) => c.tipo === "marketing").reduce((s, c) => s + c.valor, 0);
-  const custoComercial = centros.filter((c) => c.tipo === "comercial").reduce((s, c) => s + c.valor, 0);
+  // ---- Custo por centro, nas duas bases ----
+  const porCentro = new Map<string, CacCentro>();
+  for (const l of linhas) {
+    const chave = `${l.centro}|${l.fonte}`;
+    const c =
+      porCentro.get(chave) ??
+      ({
+        centro: l.centro,
+        bu: l.bu,
+        tipo: l.tipo,
+        valor: 0,
+        previsto: 0,
+        realizado: 0,
+        fonte: l.fonte,
+      } as CacCentro);
+    c.previsto += l.previsto;
+    c.realizado += l.realizado;
+    c.valor = c[base];
+    porCentro.set(chave, c);
+  }
+  const centros = [...porCentro.values()]
+    .filter((c) => c.previsto !== 0 || c.realizado !== 0)
+    .sort((a, b) => b.valor - a.valor);
+
+  const soma = (f: (c: CacCentro) => number, tipo?: CacTipo) =>
+    centros.filter((c) => !tipo || c.tipo === tipo).reduce((s, c) => s + f(c), 0);
+
+  const custoMarketing = soma((c) => c.valor, "marketing");
+  const custoComercial = soma((c) => c.valor, "comercial");
   const custoTotal = custoMarketing + custoComercial;
+  const custoPrevisto = soma((c) => c.previsto);
+  const custoRealizado = soma((c) => c.realizado);
+
+  const fontes = {
+    contaAzul: soma((c) => (c.fonte === "conta-azul" ? c.valor : 0)),
+    bancoProprio: soma((c) => (c.fonte === "banco-proprio" ? c.valor : 0)),
+  };
 
   const diretoPorBu = new Map<string, number>();
   let custoCompartilhado = 0;
@@ -217,27 +422,56 @@ async function computeCac(
     .sort((a, b) => b.valor - a.valor);
   const midiaTotal = midiaPorMarca.reduce((s, m) => s + m.valor, 0);
 
-  // ---- Vendas: faturadas + a faturar (decisão 4) ----
-  const vendasFaturadas = num(vendas?.totais.qtdFaturado);
-  const vendasAFaturar = num(vendas?.totais.qtdAFaturar);
-  const totalVendas = num(vendas?.totais.qtd);
+  /**
+   * Vendas: faturadas + a faturar, DENTRO DO PERÍODO.
+   *
+   * `resumoVendas` traz o ano inteiro, então o recorte é feito aqui. Antes o
+   * total do ano era usado direto — o que só funcionava porque o período também
+   * era o ano inteiro; com seletor de período isso viraria um CAC absurdamente
+   * baixo (custo de um mês ÷ vendas de doze).
+   */
+  const dentroDoPeriodo = (data: string | null | undefined) => {
+    const m = (data ?? "").slice(0, 7);
+    return m >= periodo.de && m <= periodo.ate;
+  };
+  const vendasNoPeriodo = (vendas?.vendas ?? []).filter((v) => dentroDoPeriodo(v.data));
+  const vendasFaturadas = vendasNoPeriodo.filter((v) => v.faturado).length;
+  const vendasAFaturar = vendasNoPeriodo.length - vendasFaturadas;
+  const totalVendas = vendasNoPeriodo.length;
 
-  // ---- Série mensal: custo (centros do CAC) ÷ vendas do mês ----
-  const custoMes = new Map<string, number>();
-  for (const m of centrosResumo?.porMes ?? []) {
-    if (!classificarCentro(m.centro).tipo) continue;
-    custoMes.set(m.mes, (custoMes.get(m.mes) ?? 0) + num(m.realizado));
+  // ---- Série mensal ----
+  const custoMes = new Map<string, { previsto: number; realizado: number; fonte: CacFonte }>();
+  for (const l of linhas) {
+    const c = custoMes.get(l.mes) ?? { previsto: 0, realizado: 0, fonte: l.fonte };
+    c.previsto += l.previsto;
+    c.realizado += l.realizado;
+    custoMes.set(l.mes, c);
   }
   const vendasMes = new Map<string, number>();
-  for (const v of vendas?.vendas ?? []) {
+  for (const v of vendasNoPeriodo) {
     const mes = (v.data ?? "").slice(0, 7);
     if (mes) vendasMes.set(mes, (vendasMes.get(mes) ?? 0) + 1);
   }
-  const meses = [...new Set([...custoMes.keys(), ...vendasMes.keys()])].sort();
-  const serie: CacMes[] = meses.map((mes) => {
-    const custo = custoMes.get(mes) ?? 0;
+  /**
+   * Todos os meses do período aparecem, mesmo zerados. Montar a série só a partir
+   * dos meses COM dado abria buracos silenciosos — um mês sem custo lançado
+   * simplesmente sumia do gráfico, em vez de aparecer como o zero que é.
+   */
+  const serie: CacMes[] = mesesDoPeriodo(periodo).map((mes) => {
+    const c = custoMes.get(mes);
+    const custoP = c?.previsto ?? 0;
+    const custoR = c?.realizado ?? 0;
+    const custo = base === "previsto" ? custoP : custoR;
     const qtd = vendasMes.get(mes) ?? 0;
-    return { mes, custo, vendas: qtd, cac: qtd > 0 ? custo / qtd : null };
+    return {
+      mes,
+      custo,
+      custoPrevisto: custoP,
+      custoRealizado: custoR,
+      vendas: qtd,
+      cac: qtd > 0 && custo > 0 ? custo / qtd : null,
+      fonte: c?.fonte ?? (mes >= CORTE_BANCO_PROPRIO ? "banco-proprio" : "conta-azul"),
+    };
   });
 
   // ---- Por BU: direto (do nome do centro) + rateio do compartilhado ----
@@ -275,12 +509,23 @@ async function computeCac(
     .sort((a, b) => b.custoTotal - a.custoTotal);
 
   return {
-    connected: !!(centrosResumo?.connected || vendas?.connected),
+    // O banco próprio é nosso: se ele respondeu, o painel tem dado válido mesmo
+    // com o Conta Azul fora do ar. Amarrar `connected` só ao CA escondia o
+    // período novo inteiro quando a integração legada falhava.
+    connected: linhas.length > 0 || !!vendas?.connected,
     ano,
+    periodo,
+    regime,
     driver,
+    fontes,
     custoMarketing,
     custoComercial,
     custoTotal,
+    custoPrevisto,
+    custoRealizado,
+    cacPrevisto: totalVendas > 0 ? custoPrevisto / totalVendas : null,
+    cacRealizado: totalVendas > 0 ? custoRealizado / totalVendas : null,
+    cacMeta,
     centros,
     centrosEncontrados: centros.length > 0,
     custoDiretoTotal,
@@ -290,7 +535,14 @@ async function computeCac(
     vendas: totalVendas,
     vendasFaturadas,
     vendasAFaturar,
-    cac: totalVendas > 0 ? custoTotal / totalVendas : null,
+    // No regime Meta o destaque é o próprio alvo; sem alvo cadastrado cai no
+    // realizado, para a tela não ficar vazia por falta de cadastro.
+    cac:
+      regime === "meta"
+        ? (cacMeta ?? (totalVendas > 0 ? custoRealizado / totalVendas : null))
+        : totalVendas > 0
+          ? custoTotal / totalVendas
+          : null,
     serie,
     receitaTotal,
     porBu,
@@ -307,14 +559,56 @@ async function computeCac(
  */
 export async function getCac(
   companyId: string,
-  opts: { ano?: number; driver?: CacDriver; force?: boolean } = {},
+  opts: {
+    periodo?: CacPeriodo;
+    regime?: CacRegime;
+    driver?: CacDriver;
+    force?: boolean;
+  } = {},
 ): Promise<CacResumo> {
-  const ano = opts.ano ?? new Date().getUTCFullYear();
+  const periodo = opts.periodo ?? periodoPadrao();
+  const regime = opts.regime ?? "realizado";
   const driver = opts.driver ?? "receita";
   return cachedSwr(
-    `cac:${companyId}:${ano}:${driver}`,
+    `cac:${companyId}:${periodo.de}:${periodo.ate}:${regime}:${driver}`,
     10 * 60_000,
-    () => computeCac(companyId, ano, driver),
+    () => computeCac(companyId, periodo, regime, driver),
     { force: opts.force, cacheIf: (d) => d.connected },
   );
+}
+
+/** Mês corrente em São Paulo — o servidor é UTC e viraria o mês antes da hora. */
+export function mesCorrente(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  })
+    .format(new Date())
+    .slice(0, 7);
+}
+
+/** Período terminando no mês corrente e cobrindo `n` meses (n=1 → só o mês). */
+export function periodoDeMeses(n: number): CacPeriodo {
+  const ate = mesCorrente();
+  const [a, m] = ate.split("-").map(Number);
+  const d = new Date(Date.UTC(a, m - 1 - (n - 1), 1));
+  return {
+    de: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`,
+    ate,
+  };
+}
+
+/** Ano corrente inteiro, de janeiro ao mês atual. */
+export function periodoAnoCorrente(): CacPeriodo {
+  const ate = mesCorrente();
+  return { de: `${ate.slice(0, 4)}-01`, ate };
+}
+
+/**
+ * Padrão: **ano corrente**. Mantém o número que a diretoria já conhece como
+ * primeira leitura; janelas curtas ficam a um clique.
+ */
+export function periodoPadrao(): CacPeriodo {
+  return periodoAnoCorrente();
 }

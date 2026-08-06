@@ -1,6 +1,7 @@
 import { IconInfoCircle } from "@tabler/icons-react";
 
-import type { CacResumo } from "@/lib/marketing/cac";
+import { CacControles } from "@/components/cac-controles";
+import { CORTE_BANCO_PROPRIO, type CacResumo } from "@/lib/marketing/cac";
 
 /**
  * Painel de CAC (Custo de Aquisição por Cliente) — Fase 1. Server component.
@@ -32,6 +33,37 @@ function mesLabel(ym: string): string {
   return MESES[(m - 1) % 12] ?? ym;
 }
 
+/** 'AAAA-MM' → 'ago/2026'. Usado no cabeçalho, onde o ano importa. */
+function mesAno(ym: string): string {
+  return `${mesLabel(ym)}/${ym.slice(0, 4)}`;
+}
+
+/**
+ * O período termina no mês corrente, que ainda não fechou?
+ *
+ * Importa porque o custo PREVISTO é lançado para o mês inteiro, enquanto as
+ * vendas só existem até hoje. No dia 5 de agosto isso deu R$ 1.847,81 por venda
+ * (custo de 31 dias ÷ vendas de 5) contra ~R$ 107 nos meses fechados — um número
+ * que parece catástrofe e é só aritmética de mês pela metade.
+ */
+function mesEmCurso(ate: string): { emCurso: boolean; dia: number; dias: number } {
+  const hoje = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const [a, m, d] = hoje.split("-").map(Number);
+  const dias = new Date(Date.UTC(a, m, 0)).getUTCDate();
+  return { emCurso: ate === hoje.slice(0, 7) && d < dias, dia: d, dias };
+}
+
+const REGIME_LABEL: Record<string, string> = {
+  meta: "Meta",
+  previsto: "Previsto",
+  realizado: "Realizado",
+};
+
 function Kpi({
   label,
   value,
@@ -58,9 +90,16 @@ function Kpi({
   );
 }
 
-export function CacMetrics({ data }: { data: CacResumo }) {
+export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }) {
   const {
-    ano,
+    periodo,
+    regime,
+    fontes,
+    custoPrevisto,
+    custoRealizado,
+    cacPrevisto,
+    cacRealizado,
+    cacMeta,
     custoMarketing,
     custoComercial,
     custoTotal,
@@ -85,27 +124,34 @@ export function CacMetrics({ data }: { data: CacResumo }) {
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-tight">CAC · custo de aquisição</h2>
-        <p className="text-sm text-muted-foreground">
-          Marketing + Comercial ÷ vendas · ano {ano} · vendas faturadas e a faturar
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-tight">CAC · custo de aquisição</h2>
+          <p className="text-sm text-muted-foreground">
+            Marketing + Comercial ÷ vendas ·{" "}
+            {periodo.de === periodo.ate
+              ? mesAno(periodo.ate)
+              : `${mesAno(periodo.de)} a ${mesAno(periodo.ate)}`}{" "}
+            · vendas faturadas e a faturar
+          </p>
+        </div>
+        <CacControles janela={janela} />
       </div>
 
       {!centrosEncontrados ? (
         <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
-          Não encontrei os centros de custo <strong>Marketing</strong> e{" "}
-          <strong>Comercial</strong> no Conta Azul deste ano. Sem eles não há como compor o custo
-          de aquisição.
+          Não encontrei custo de <strong>Marketing</strong> ou <strong>Comercial</strong> neste
+          período — nem no Conta Azul (até jul/2026) nem no banco próprio (de ago/2026 em
+          diante). Sem custo não há como compor o CAC.
         </div>
       ) : (
         <>
           {/* Resultado principal */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <Kpi
-              label="CAC"
+              label={`CAC · ${REGIME_LABEL[regime] ?? regime}`}
               value={money(cac)}
-              hint={vendas > 0 ? `por venda` : "sem vendas no período"}
+              hint={vendas > 0 ? "por venda" : "sem vendas no período"}
               highlight
             />
             <Kpi label="Custo total" value={money(custoTotal)} hint="Marketing + Comercial" />
@@ -118,14 +164,91 @@ export function CacMetrics({ data }: { data: CacResumo }) {
             />
           </div>
 
+          {/* As três bases lado a lado — o regime escolhe o destaque acima, mas a
+              comparação é o que responde "estamos dentro do alvo?". Mostrar só a
+              base selecionada obrigaria a trocar de regime para comparar. */}
+          {/* O valor grande é sempre R$ POR VENDA; o apoio mostra a conta que o
+              gerou. Sem isso o cartão exibia um unitário em cima e um total
+              embaixo, ambos em reais e sem rótulo — impossível saber qual era
+              qual. */}
+          <div className="grid grid-cols-3 gap-3">
+            <Kpi
+              label="Meta · por venda"
+              value={money(cacMeta)}
+              hint={cacMeta == null ? "não cadastrada" : "alvo"}
+            />
+            <Kpi
+              label="Previsto · por venda"
+              value={money(cacPrevisto)}
+              hint={`${money(custoPrevisto)} ÷ ${count(vendas)} vendas`}
+            />
+            <Kpi
+              label="Realizado · por venda"
+              value={money(cacRealizado)}
+              hint={`${money(custoRealizado)} ÷ ${count(vendas)} vendas`}
+            />
+          </div>
+
+          {/* Mês pela metade: custo de 31 dias contra vendas de 5. O CAC previsto
+              fica multiplicado por ~6 e parece desastre. A projeção pelo ritmo
+              atual é o número comparável com os meses fechados. */}
+          {(() => {
+            const { emCurso, dia, dias } = mesEmCurso(periodo.ate);
+            if (!emCurso || vendas === 0 || custoPrevisto === 0) return null;
+            const projetadas = Math.round((vendas / dia) * dias);
+            return (
+              <div className="rounded-xl border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                <strong className="text-foreground">{mesAno(periodo.ate)} ainda não fechou</strong>{" "}
+                — dia {dia} de {dias}. O custo previsto cobre o mês inteiro, mas só há{" "}
+                {count(vendas)} vendas registradas até agora, então o CAC previsto de{" "}
+                {money(cacPrevisto)} está inflado pela conta incompleta. Mantido o ritmo atual,
+                seriam ~{count(projetadas)} vendas no mês e{" "}
+                <strong className="text-foreground">
+                  {money(custoPrevisto / Math.max(1, projetadas))}
+                </strong>{" "}
+                por venda — esse é o número comparável com os meses fechados.
+              </div>
+            );
+          })()}
+
+          {/* Realizado zerado com previsto cheio NÃO é bug: é despesa lançada e
+              ainda não baixada. Sem este aviso o painel parece quebrado, e o
+              regime Realizado seria abandonado como "o que não funciona". */}
+          {regime === "realizado" && custoRealizado === 0 && custoPrevisto > 0 ? (
+            <div className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-3 text-xs text-muted-foreground">
+              Nenhuma parcela deste período tem pagamento registrado, então o{" "}
+              <strong>Realizado</strong> é zero — há {money(custoPrevisto)} lançados como
+              previsto. Dê baixa nas parcelas em Financeiro → Contas a pagar, ou veja o número
+              no regime <strong>Previsto</strong>.
+            </div>
+          ) : null}
+
+          {/* O corte de fonte é a coisa mais fácil de esquecer aqui — deixar
+              visível evita que alguém compare períodos sem saber que a origem
+              do custo mudou no meio. */}
+          {fontes.contaAzul > 0 && fontes.bancoProprio > 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              Custo deste período vem de duas fontes: {money(fontes.contaAzul)} do Conta Azul
+              (até {mesAno("2026-07")}) e {money(fontes.bancoProprio)} do banco próprio (de{" "}
+              {mesAno(CORTE_BANCO_PROPRIO)} em diante). Nenhum mês soma as duas.
+            </p>
+          ) : null}
+
           {/* Como o número é montado — transparência da fórmula */}
           <div className="flex items-start gap-2 rounded-xl border border-border bg-muted/30 p-3">
             <IconInfoCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             <p className="text-xs text-muted-foreground">
               <strong className="text-foreground">Como calculamos:</strong>{" "}
               {money(custoMarketing)} (Marketing) + {money(custoComercial)} (Comercial) ={" "}
-              {money(custoTotal)} ÷ {count(vendas)} vendas = <strong>{money(cac)}</strong> por venda.
-              O custo vem do <strong>Conta Azul</strong> (dinheiro efetivamente realizado) — o
+              {money(custoTotal)} ÷ {count(vendas)} vendas = <strong>{money(cac)}</strong> por
+              venda, no regime <strong>{REGIME_LABEL[regime] ?? regime}</strong>.{" "}
+              {regime === "realizado"
+                ? "Realizado conta só parcelas com pagamento registrado."
+                : regime === "previsto"
+                  ? "Previsto é o que o financeiro lançou para a competência, pago ou não."
+                  : "Meta é o alvo cadastrado na aba Metas — os demais números seguem em Realizado."}{" "}
+              A fonte do custo é o <strong>Conta Azul até jul/2026</strong> e o{" "}
+              <strong>banco próprio de ago/2026</strong> em diante, nunca as duas no mesmo mês. O
               investimento do Meta Ads abaixo é <strong>composição</strong>, não soma, para não
               contar o mesmo dinheiro duas vezes.
             </p>

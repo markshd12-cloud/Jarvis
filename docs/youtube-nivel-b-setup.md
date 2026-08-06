@@ -1,104 +1,175 @@
-# YouTube Nível B — o que VOCÊ precisa fazer (OAuth do dono do canal)
+# YouTube Nível B (OAuth do dono do canal) — **entregue**
 
-O Nível A (já entregue) usa a service account e dá **dados públicos**: inscritos,
-views, vídeos, likes, comentários. O **Nível B** usa a *YouTube Analytics API* e só
-funciona com **autorização do dono do canal** — service account **não serve**,
-porque a SA não é dona de nenhum canal.
+O Nível A usa a service account e dá **dados públicos**: inscritos arredondados,
+views, vídeos, likes. O **Nível B** usa a *YouTube Analytics API* com autorização
+do dono e destrava o que a leitura pública não enxerga.
 
-Complementa `marketing-status.md`. Escrito em 2026-07-21.
+Escrito em 2026-07-21 como guia de setup. Reescrito em 2026-08-05, depois da
+implementação, porque **três premissas do guia original estavam erradas** e
+custaram horas — estão marcadas ⚠️ abaixo.
 
 ---
 
-## O que o Nível B destrava
+## Por que isto importa: o caso CPPEM
 
-| Métrica | Por que importa |
+A leitura pública mostrava **387.000 inscritos, parados havia semanas**. Com a
+Analytics API, julho de 2026 no mesmo canal:
+
+| | Ganhos | Perdidos | **Líquido** |
+|---|---:|---:|---:|
+| CPPEM Concursos | 382 | 767 | **−385** |
+| Colégio Cppem | 43 | 34 | **+9** |
+
+O canal **encolheu 385 inscritos** e o painel dizia que estava estável. O
+arredondamento para 3 dígitos significativos (que a API aplica **inclusive para o
+dono**) engolia qualquer variação abaixo de mil.
+
+Era exatamente por isso que a meta de inscritos do YouTube tinha ficado de fora:
+não dá para cobrar meta sobre um número que nunca se move.
+
+---
+
+## ⚠️ Erro 1 — "cada canal precisa da sua própria autorização"
+
+**O guia original afirmava isso. É falso.** Uma autorização cobre **todos** os
+canais que a conta administra.
+
+A Analytics API recebe o canal como **parâmetro** (`ids=channel==UC...`), não
+embutido no token. O único requisito é que a conta autorizada administre aquele
+canal. Testado: o token obtido pelo Colégio lê o CPPEM Concursos sem reclamar.
+
+**O custo do erro.** Como o CPPEM e o Everton são **contas de marca**, o Google
+nunca os oferece no seletor da tela de consentimento — então "conectar cada canal"
+era **impossível de cumprir**. Foram gastas horas revogando acesso, alternando o
+público-alvo entre Interno e Externo e tentando em janela anônima, atrás de um
+seletor que não precisava existir.
+
+**Como eu deveria ter verificado, em 1 minuto:** com o primeiro token na mão,
+consultar o segundo canal e ver se responde. Foi o que resolveu no fim.
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" \
+  "https://youtubeanalytics.googleapis.com/v2/reports?ids=channel==<OUTRO_CANAL>\
+&startDate=2026-07-01&endDate=2026-07-31&metrics=views,subscribersGained"
+```
+
+Responde 200 com linhas → o token cobre o canal. Não precisa de mais nada.
+
+---
+
+## ⚠️ Erro 2 — receita vem em USD, não em reais
+
+`estimatedRevenue` **sem o parâmetro `currency` responde em dólar.** Julho do
+CPPEM voltava `24.621`.
+
+Formatado como real, viraria **"R$ 24,62"**. O valor verdadeiro é **R$ 125,86** —
+erro de 5x, e plausível o bastante para nunca ser questionado.
+
+```text
+(sem parâmetro)  [[24.621]]     ← USD
+currency=BRL     [[125.858]]    ← o certo
+currency=USD     [[24.621]]
+```
+
+O leitor passa `currency: "BRL"` na consulta de receita. **Toda métrica monetária
+da Analytics API precisa desse parâmetro.**
+
+De quebra: o guia dizia que os canais não eram monetizados. O **CPPEM é** —
+R$ 125,86 em julho. Quem não é monetizado é o Colégio (devolve `rows: []`, que o
+código trata como `null`, e não como "R$ 0,00" — são afirmações diferentes).
+
+---
+
+## ⚠️ Erro 3 — a hipótese do "Interno bloqueia conta de marca"
+
+Levantada para explicar o seletor ausente, e **também falsa**: o usuário trocou
+para Externo e nada mudou. O seletor não aparecia porque contas de marca não são
+oferecidas ali, ponto — independente do público-alvo.
+
+**O público-alvo correto é `Interno`** (o projeto pertence ao Workspace do
+`cppem.com.br`): sem verificação do Google e **sem expiração do refresh token**.
+Externo em modo Teste faria o refresh morrer a cada 7 dias sem necessidade.
+
+---
+
+## Como está montado
+
+| Arquivo | Papel |
 |---|---|
-| **Watch time** (`estimatedMinutesWatched`) | é o que o algoritmo do YouTube premia — mais que views |
-| **Retenção** (`averageViewPercentage`, `averageViewDuration`) | onde as pessoas largam o vídeo |
-| **Inscritos ganhos/perdidos** (`subscribersGained/Lost`) | qual vídeo *converte* em inscrito (e qual espanta) |
-| **Origem do tráfego** (`insightTrafficSourceType`) | busca do YouTube × sugeridos × externo × playlist |
-| **Termos de busca** (`insightTrafficSourceDetail`) | o que as pessoas pesquisam e caem no canal |
-| **Demografia** (`viewerPercentage` por idade/gênero) | público real do canal |
-| **Receita** (`estimatedRevenue`) | se monetizado — exige escopo extra |
+| `lib/marketing/youtube-oauth.ts` | URL de consentimento, troca de código, renovação de token |
+| `lib/marketing/youtube-analytics.ts` | consultas à Analytics API por canal e competência |
+| `app/api/youtube/connect` · `callback` · `conexoes` | fluxo OAuth e desconexão |
+| `components/youtube-conexoes.tsx` | faixa de conexão (a **conta**, e os canais que ela cobre) |
+| `components/youtube-analytics-panel.tsx` | cards de líquido, views, exibição, retenção, receita |
+| `supabase/migrations/0037_youtube_connections.sql` | tabela de conexões |
 
-**Bônus:** resolve a limitação atual de "só os 25 vídeos mais recentes" — a Analytics
-API reporta o **catálogo inteiro** dentro de um período.
+**Credenciais:** `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`, do projeto
+`jarvis-498903`. O prefixo numérico do client id **é o número do projeto** — se
+não bater com `202356383682`, é credencial de outro projeto e o Google responde
+`deleted_client` ou `invalid_client`. (Aconteceu: a chave em uso era do projeto
+`29493631405`. Bastava comparar o prefixo.)
 
----
+**Escopos:** `yt-analytics.readonly`, `yt-analytics-monetary.readonly` (receita) e
+`youtube.readonly` (descobrir o canal no callback).
 
-## Passo a passo
-
-### 1. Habilitar a API (2 min)
-No projeto **`jarvis-498903`** (o mesmo do GA4/Vertex):
-
-`https://console.cloud.google.com/apis/library/youtubeanalytics.googleapis.com?project=jarvis-498903`
-
-Clique em **Ativar**.
-
-### 2. ⚠️ Configurar a tela de consentimento — FAÇA ANTES DE TENTAR CRIAR O CLIENTE
-
-> **Pegadinha:** o Google **não deixa criar o ID do cliente OAuth** enquanto a tela de
-> consentimento não estiver configurada — a opção aparece desabilitada/some. Além disso a
-> interface mudou de nome/lugar: virou **"Google Auth Platform"**.
-
-Abra `https://console.cloud.google.com/auth/overview?project=jarvis-498903` → **Começar**:
-- **Informações do app**: nome `Jarvis`, e-mail de suporte `administrador@cppem.com.br`
-- **Público-alvo**: ver tabela abaixo (decisão crítica)
-- **Informações de contato** → aceitar política → **Criar**
-
-*(No console antigo: **APIs e serviços → Tela de permissão OAuth**.)*
-
-A escolha do público-alvo define se você vai precisar **reautorizar toda semana** ou não:
-
-| Tipo | Quando usar | Consequência |
-|---|---|---|
-| **Interno** ✅ | Se o projeto GCP pertence à organização Google Workspace do `cppem.com.br` | **Sem verificação do Google, sem expiração.** Autoriza 1× e pronto. |
-| **Externo + Teste** ⚠️ | Se não houver Workspace | Funciona, mas o **refresh token expira em 7 dias** → reautorizar toda semana |
-| **Externo + Produção** | Alternativa ao acima | Exige **verificação do Google** (escopo sensível): formulário, vídeo demonstrativo, pode levar semanas |
-
-> **Me diga qual aparece disponível para você.** Se "Interno" estiver habilitado, é o
-> caminho — sem burocracia e sem reautorização.
-
-Nos **escopos**, adicione:
-- `https://www.googleapis.com/auth/yt-analytics.readonly` (obrigatório)
-- `https://www.googleapis.com/auth/yt-analytics-monetary.readonly` (só se quiser **receita**)
-
-### 3. Criar as credenciais OAuth (5 min)
-**APIs e serviços → Credenciais → Criar credenciais → ID do cliente OAuth**
-- Tipo: **Aplicativo da Web**
-- Nome: `Jarvis — YouTube`
-- **URIs de redirecionamento autorizados** (adicione os dois):
-  - `http://localhost:3000/api/youtube/callback`
-  - `http://162.243.194.122:3000/api/youtube/callback`
-    *(troque pelo domínio final se/quando houver um)*
-
-Isso gera **Client ID** e **Client Secret** → vão para o `.env` como
-`YOUTUBE_CLIENT_ID` e `YOUTUBE_CLIENT_SECRET`. **Não cole o secret em chat/commit** —
-me diga que criou e eu instruo onde colar no `.env.production` do servidor.
-
-### 4. Confirmar quem é o dono dos canais
-- Qual **conta Google** administra `@cppemconcursos` e `@colegiocppem`?
-- Os canais são **Conta de Marca (Brand Account)**? (Comum em empresas.) Se sim, a conta
-  que autorizar precisa ser **Proprietária ou Gerente** da conta de marca — na tela de
-  consentimento o Google pergunta **qual canal** você está autorizando.
-- ⚠️ **Cada canal precisa da sua própria autorização** (uma para CPPEM, outra para o Colégio),
-  a menos que a mesma conta administre os dois e o Google permita selecionar ambos.
-
-### 5. Autorizar dentro do Jarvis (depois que eu implementar)
-Vou criar um botão **"Conectar YouTube"** em *Configurações → Conexões* (mesmo padrão do
-Notion/Conta Azul). Você clica, escolhe o canal, aceita — e o `refresh_token` fica
-guardado no banco com RLS service-role. Feito 1×, o sync passa a puxar os dados sozinho.
+**Redirect:** precisa bater exatamente com o cadastrado no console. O Google
+recusa IP puro — só domínio público ou `localhost`.
 
 ---
 
-## Resumo do que eu preciso de você
+## Operação
 
-- [ ] **1.** Ativar a *YouTube Analytics API* no projeto `jarvis-498903`
-- [ ] **2.** Me dizer se a tela de consentimento pode ser **Interno** (Workspace do cppem.com.br) ou só **Externo**
-- [ ] **3.** Criar o **ID do cliente OAuth** (Aplicativo da Web) com os redirects acima
-- [ ] **4.** Me confirmar a conta dona dos canais e se são Conta de Marca
-- [ ] **5.** Depois de eu implementar: clicar em **Conectar YouTube** e autorizar cada canal
+**Conectar:** aba YouTube → *Conectar conta do Google* → autorizar com
+`administrador@cppem.com.br`. Uma vez só, e cobre os dois canais.
 
-**Esforço do meu lado:** MÉDIO — fluxo OAuth (start/callback), tabela de conexões com
-refresh de token, queries da Analytics API e os cards. A infraestrutura de OAuth já
-existe no projeto (Notion, Conta Azul), então é reaproveitamento, não algo do zero.
+**Se o acesso for revogado** em `myaccount.google.com`, a renovação falha com
+`invalid_grant`. O `tokenValido()` apaga a linha sozinho, a faixa volta a dizer
+"nenhuma conta conectada" e basta reconectar — em vez de a tela seguir dizendo
+"conectado" enquanto toda leitura falha.
+
+**Se a Analytics cair,** as linhas de inscritos ficam sem `atual` e as outras 9
+metas seguem intactas: a chamada é a única fonte externa da tela de metas e está
+isolada em `.catch()`.
+
+---
+
+## O que o painel mostra
+
+Um canal por vez (seletor), em janelas de **7 / 28 / 90 / 365 dias** — padrão 28,
+a mesma do YouTube Studio. Estado na URL (`ytCanal`, `ytDias`), então o link é
+compartilhável.
+
+| Bloco | Origem |
+|---|---|
+| KPIs: líquido de inscritos, views, exibição, retenção, engajamento, receita | métricas agregadas |
+| Dia a dia (gráfico) | `dimensions=day` |
+| Shorts × Vídeos × Lives | `dimensions=creatorContentType` |
+| Mais vistos (top 10, com miniatura) | `dimensions=video` + Data API pelos títulos |
+| De onde vêm as views | `dimensions=insightTrafficSourceType` |
+| O que pesquisaram | `insightTrafficSourceDetail` filtrado em `YT_SEARCH` |
+| Idade e gênero | `dimensions=ageGroup,gender` |
+| Dispositivo · País · Inscrito × não inscrito | `deviceType`, `country`, `subscribedStatus` |
+
+São ~12 consultas por canal, **em paralelo** — em série estourariam o timeout da
+página (`T_YOUTUBE`, 20s). Cada consulta degrada sozinha para lista vazia: uma
+dimensão indisponível apaga a seção dela e não derruba as outras onze.
+
+> **A série diária termina ~2 dias antes de hoje.** Não vem baixa — vem *ausente*:
+> o YouTube ainda não consolidou. Numa janela de 28 dias voltam 26 linhas.
+
+**Por que janela em dias e não competência.** A primeira versão usava o mês
+corrente e, no dia 5, mostrava 5 dias — gráfico vazio e KPIs sem sentido. A meta
+continua por competência (é mensal por natureza); o painel de acompanhamento, não.
+
+---
+
+## O que ainda ficou de fora
+
+- **Impressões e CTR** — não existem na API, só no Studio. `impressions` responde
+  `Unknown identifier`.
+- **Retenção relativa por trecho do vídeo** (`audienceWatchRatio`) — exige
+  consulta por vídeo, uma a uma.
+- **Catálogo inteiro de vídeos** — o Nível A ainda lista só os 25 mais recentes.
+  O top 10 do painel novo já vem da Analytics e cobre qualquer vídeo do período.
+- **Cache/sync** — a leitura é ao vivo a cada carregamento. Se pesar, entra no
+  cron de 6/6h junto com o resto do marketing.
