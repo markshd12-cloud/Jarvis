@@ -4,7 +4,7 @@
  * Server-only e GLOBAL — o módulo de marketing não é escopado por empresa (ver
  * `config.ts`); o acesso é pela permissão `marketing`.
  *
- * ESCOPO ATUAL — 11 metas, as que o dado de hoje mede bem:
+ * ESCOPO ATUAL — 11 metas, TODAS de coisas que o Marketing controla:
  *   4 · custo por resultado, por marca do Meta Ads
  *   5 · seguidores do Instagram, por PERFIL (o "Everton" tem dois)
  *   2 · inscritos do YouTube, por canal (via Analytics API — ver abaixo)
@@ -15,14 +15,15 @@
  * zero. Com a Analytics API o mesmo julho aparece como 382 ganhos e 767 perdidos.
  * Só dá para cadastrar meta sobre um número que se mexe.
  *
- * Fora por enquanto: receita do YouTube (canais não monetizados — a API devolve
- * `rows: []`) e CAC. Ver docs/marketing-metas.md.
+ * FORA DE PROPÓSITO: o **CAC** não é meta daqui — é meta de CUSTO, e custo não é
+ * alavanca do Marketing. Fica só como leitura na aba própria. A receita do
+ * YouTube também está fora (canais não monetizados devolvem `rows: []`).
+ * Ver docs/marketing-metas.md.
  */
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MARKETING_AD_ACCOUNTS } from "./config";
-import { getCac } from "./cac";
 import { ganhoInscritosPorCanal } from "./youtube-analytics";
 
 /** Métricas que a tabela aceita. Só as duas primeiras estão em uso. */
@@ -119,25 +120,17 @@ export function alvosDeMeta(handles: Map<string, string> = new Map()): AlvoMeta[
   );
 
   /**
-   * CAC — uma linha só, GLOBAL.
+   * CAC NÃO é meta do Marketing (decisão de 2026-08-05).
    *
-   * Não é por BU porque o Conta Azul não informa a unidade da venda: existe
-   * custo por BU, mas não número de vendas por BU, então um CAC em reais por
-   * unidade seria inventado. Quando houver vendas por BU, isto vira uma linha
-   * por unidade sem mudar nada aqui além do `map`.
+   * Meta de CAC é meta de CUSTO, e custo não é alavanca deste setor — quem
+   * decide quanto se gasta em Comercial não é quem faz campanha. Cobrar meta de
+   * algo que o time não controla produz número decorativo.
+   *
+   * O Marketing tem metas do que controla (custo por lead, por conversa,
+   * seguidores, inscritos); o CAC é consequência delas e fica só como leitura,
+   * na aba própria.
    */
-  const cac: AlvoMeta[] = [
-    {
-      metrica: "cac",
-      alvo: "Geral",
-      rotulo: "CAC",
-      detalhe: "custo por venda",
-      direcao: "max", // teto: adquirir cliente mais barato é melhor
-      unidade: "brl",
-    },
-  ];
-
-  return [...custo, ...seguidores, ...inscritos, ...cac];
+  return [...custo, ...seguidores, ...inscritos];
 }
 
 /** Último dia da competência ('AAAA-MM' → 'AAAA-MM-DD'). */
@@ -263,15 +256,8 @@ async function metasCadastradas(competencia: string): Promise<Map<string, number
  * Alvo sem meta cadastrada APARECE, com `valor: null` — é o estado que convida a
  * cadastrar, e some-lo esconderia justamente o que falta preencher.
  */
-export async function getMetasComAtual(
-  competencia: string,
-  /**
-   * Necessário só para o CAC, que é a única métrica por empresa (custo vem do
-   * financeiro). Sem ele a linha do CAC aparece para cadastro, mas sem `atual`.
-   */
-  companyId?: string | null,
-): Promise<MetaComAtual[]> {
-  const [handles, cadastradas, custos, ganhos, inscritos, cacDoMes] = await Promise.all([
+export async function getMetasComAtual(competencia: string): Promise<MetaComAtual[]> {
+  const [handles, cadastradas, custos, ganhos, inscritos] = await Promise.all([
     handlesInstagram(),
     metasCadastradas(competencia),
     custoPorResultado(competencia),
@@ -286,23 +272,6 @@ export async function getMetasComAtual(
       console.error("[metas] Analytics do YouTube falhou — inscritos sem atual.", e);
       return new Map<string, number>();
     }),
-    /**
-     * CAC da própria competência, no regime REALIZADO — é contra dinheiro que
-     * saiu que a meta se cobra. A leitura é cacheada (SWR de 10 min) e costuma
-     * já estar quente por causa da aba CAC; degrada para `null` se o Conta Azul
-     * demorar, sem levar as outras metas junto.
-     */
-    companyId
-      ? getCac(companyId, {
-          periodo: { de: competencia, ate: competencia },
-          regime: "realizado",
-        })
-          .then((r) => r.cacRealizado)
-          .catch((e) => {
-            console.error("[metas] CAC falhou — meta de CAC sem atual.", e);
-            return null;
-          })
-      : Promise.resolve(null),
   ]);
 
   return alvosDeMeta(handles).map((a) => {
@@ -312,9 +281,7 @@ export async function getMetasComAtual(
         ? (custos.get(a.alvo) ?? null)
         : a.metrica === "seguidores_yt"
           ? (inscritos.get(a.alvo) ?? null)
-          : a.metrica === "cac"
-            ? cacDoMes
-            : (ganhos.get(a.alvo) ?? null);
+          : (ganhos.get(a.alvo) ?? null);
 
     // TETO: bom é ficar ABAIXO → desvio = meta − atual.
     // PISO: bom é ficar ACIMA  → desvio = atual − meta.

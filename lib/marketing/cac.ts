@@ -15,26 +15,38 @@
  * ainda por cima *melhorava* a cada mês, porque o denominador (vendas) continuava
  * cheio enquanto o numerador esvaziava.
  *
- * ## Três regimes, como no DRE
+ * ## Previsto × Realizado — os DOIS lados andam juntos (2026-08-05)
  *
- *  - **Meta** — o alvo cadastrado na aba Metas do Marketing.
- *  - **Previsto** — o que o financeiro planejou (`valor_previsto` / `total` no CA).
- *  - **Realizado** — o que foi efetivamente pago (exige `data_pagamento`).
+ *   Previsto    custo lançado  ÷  vendas totais (faturadas + a faturar)
+ *   Realizado   custo PAGO     ÷  vendas FATURADAS
  *
- * Os três são calculados SEMPRE; o regime só escolhe qual vira o número de
- * destaque. Assim a comparação fica à mão sem recarregar a página.
+ * Antes o denominador era o mesmo nos dois e só o numerador mudava. Ficava
+ * incoerente: "realizado" misturava dinheiro que saiu com venda que ainda não
+ * virou nota. Agora cada regime é internamente consistente — realizado é o que
+ * de fato aconteceu dos dois lados.
  *
- * ## BU
+ * Efeito colateral desejado: no dia 5 do mês o realizado é baixo em cima E
+ * embaixo, o que é a resposta certa para um mês que mal começou. Antes o custo
+ * do mês inteiro caía sobre as vendas de cinco dias e produzia um CAC seis vezes
+ * maior, que precisava de um aviso na tela para não assustar.
  *
- * No banco próprio a BU vem de `fin_parcelas.bu_id` — chave estrangeira, exata.
- * Na parte histórica do CA não existe esse campo, e a unidade é adivinhada pelo
- * NOME do centro ("Unicive marketing" → Unicive); centro sem unidade no nome
- * conta como compartilhado e é rateado pelo driver.
+ * Em troca, os dois deixam de ser diretamente comparáveis (denominadores
+ * diferentes). É um preço justo: cada número passa a significar a mesma coisa
+ * dos dois lados da divisão.
  *
- * ⚠️ Ainda NÃO há nº de vendas por BU (o CA não informa a BU da venda), então o
- * CAC por BU não sai em R$ — a ponte é `pctSobreReceita`.
+ * ## Escopo: isto é uma tela de MARKETING
  *
- * Server-only, por empresa. Gate no chamador: `marketing` E `financeiro`.
+ * Não há meta de CAC. Meta de CAC é meta de CUSTO, e custo não é alavanca do
+ * Marketing — quem decide quanto se gasta em Comercial não é quem faz campanha.
+ * O Marketing tem metas do que controla (custo por lead, por conversa,
+ * seguidores, inscritos); o CAC é consequência delas.
+ *
+ * Também não há receita por BU, rateio nem "% sobre receita". Isso é
+ * controladoria, e vazava faturamento da empresa para dentro do módulo de
+ * Marketing. O cálculo por BU continua aqui, atrás de `incluirBu`, para quando
+ * alguém quiser a visão no Financeiro — só não é o padrão.
+ *
+ * Server-only, por empresa. Gate no chamador: `marketing`.
  */
 import "server-only";
 
@@ -45,6 +57,12 @@ import { getMetaMetrics } from "@/lib/marketing/metrics";
 import { createAdminClient } from "@/lib/supabase/admin";
 
 import { custoBancoProprio } from "./cac-banco-proprio";
+import {
+  CAC_MESES_SERIE,
+  CAC_MES_MIN,
+  cacDeslocaMes,
+  cacMesCorrente,
+} from "./cac-opcoes";
 
 /**
  * Primeira competência lida no BANCO PRÓPRIO. Antes disso, Conta Azul.
@@ -58,8 +76,6 @@ export const CORTE_BANCO_PROPRIO = "2026-08";
 /** Como distribuir o custo COMPARTILHADO entre as BUs. */
 export type CacDriver = "receita" | "midia";
 
-/** Qual base de custo vira o número de destaque. Espelha o DRE. */
-export type CacRegime = "meta" | "previsto" | "realizado";
 
 /** Janela de análise, em competências 'AAAA-MM' (inclusiva nas duas pontas). */
 export interface CacPeriodo {
@@ -137,12 +153,14 @@ export interface CacBu {
 
 export interface CacMes {
   mes: string; // 'AAAA-MM'
-  /** Custo no regime selecionado. */
-  custo: number;
   custoPrevisto: number;
   custoRealizado: number;
+  /** Faturadas + a faturar. Denominador do PREVISTO. */
   vendas: number;
-  cac: number | null;
+  /** Só as faturadas. Denominador do REALIZADO. */
+  vendasFaturadas: number;
+  cacPrevisto: number | null;
+  cacRealizado: number | null;
   /** Qual base alimentou o mês — útil para explicar degraus na série. */
   fonte: CacFonte;
 }
@@ -151,25 +169,22 @@ export interface CacResumo {
   connected: boolean;
   ano: number;
   periodo: CacPeriodo;
-  regime: CacRegime;
   driver: CacDriver;
   /** Quanto do custo veio de cada base — deixa o corte visível na tela. */
   fontes: { contaAzul: number; bancoProprio: number };
-  // ---- Custo no REGIME selecionado ----
+  // ---- Custo ----
   custoMarketing: number;
   custoComercial: number;
+  /** Alias de `custoPrevisto`; mantido porque é o total que a tela chama de "custo". */
   custoTotal: number;
-  /** As duas bases, sempre calculadas, para comparação sem recarregar. */
   custoPrevisto: number;
   custoRealizado: number;
+  // ---- Resultado: cada regime com o SEU denominador ----
   cacPrevisto: number | null;
   cacRealizado: number | null;
-  /** Alvo cadastrado na aba Metas. `null` = ninguém cadastrou. */
-  cacMeta: number | null;
-  /** Centros que entraram na conta (com BU quando o nome identifica). */
+  /** Centros que entraram na conta. Não vai à tela de Marketing. */
   centros: CacCentro[];
   centrosEncontrados: boolean;
-  /** Quanto do custo já tem BU no nome vs. quanto é compartilhado. */
   custoDiretoTotal: number;
   custoCompartilhado: number;
   // ---- Mídia (composição; NÃO soma ao custo) ----
@@ -179,10 +194,8 @@ export interface CacResumo {
   vendas: number;
   vendasFaturadas: number;
   vendasAFaturar: number;
-  // ---- Resultado ----
-  cac: number | null;
   serie: CacMes[];
-  // ---- Por BU ----
+  /** Só preenchidos com `incluirBu` — visão de controladoria, não de Marketing. */
   receitaTotal: number;
   porBu: CacBu[];
   temCustoDireto: boolean;
@@ -289,28 +302,6 @@ async function custoNormalizado(
   return out;
 }
 
-/**
- * Meta de CAC cadastrada, para o período.
- *
- * CAC é uma TAXA (R$ por venda), não um valor acumulável: somar as metas de
- * agosto e setembro daria um número sem significado. Para um período com várias
- * competências, a meta é a MÉDIA das cadastradas — e meses sem meta ficam de
- * fora da média, em vez de entrarem como zero e puxarem o alvo para baixo.
- */
-async function metaDeCac(periodo: CacPeriodo): Promise<number | null> {
-  const admin = createAdminClient();
-  const { data, error } = await admin
-    .from("mkt_metas")
-    .select("valor")
-    .eq("metrica", "cac")
-    .eq("ativo", true)
-    .gte("competencia", periodo.de)
-    .lte("competencia", periodo.ate);
-  if (error || !data?.length) return null;
-  const vals = data.map((r) => num(r.valor)).filter((v) => v > 0);
-  return vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : null;
-}
-
 /** Receita do ano por BU (nossas tabelas — bem mapeadas por categoria→BU). */
 async function receitaPorBu(companyId: string, ano: number): Promise<Map<string, number>> {
   const admin = createAdminClient();
@@ -343,27 +334,55 @@ async function receitaPorBu(companyId: string, ano: number): Promise<Map<string,
 
 async function computeCac(
   companyId: string,
-  periodo: CacPeriodo,
-  regime: CacRegime,
+  mes: string,
   driver: CacDriver,
+  incluirBu: boolean,
 ): Promise<CacResumo> {
   const atualizadoEm = new Date().toISOString();
-  const ano = Number(periodo.ate.slice(0, 4));
+  const ano = Number(mes.slice(0, 4));
 
-  const [linhas, vendas, receitaBu, meta, cacMeta] = await Promise.all([
-    custoNormalizado(companyId, periodo),
-    resumoVendas(companyId, { ano }).catch(() => null),
-    receitaPorBu(companyId, ano).catch(() => new Map<string, number>()),
-    getMetaMetrics({ since: `${periodo.de}-01`, until: `${periodo.ate}-31` }).catch(() => null),
-    metaDeCac(periodo).catch(() => null),
-  ]);
+  /** O mês escolhido — é dele que saem os números do topo. */
+  const periodo: CacPeriodo = { de: mes, ate: mes };
 
   /**
-   * `meta` aqui é o REGIME de comparação, não uma base de custo própria — não
-   * existe "custo meta" por centro. Para o número de destaque nesse regime
-   * usamos o realizado, que é com o que a meta se compara.
+   * A janela do GRÁFICO: 12 meses terminando no mês escolhido.
+   *
+   * Buscamos o custo da janela inteira e filtramos o mês nos agregados. Custa
+   * praticamente o mesmo que buscar um mês — o leitor do Conta Azul já varre o
+   * ano todo de qualquer forma, e o do banco próprio é uma consulta só — e
+   * evita uma segunda ida ao banco só para desenhar a série.
    */
-  const base = regime === "previsto" ? "previsto" : "realizado";
+  const janelaSerie: CacPeriodo = {
+    // Trava em `CAC_MES_MIN`: antes disso não há histórico de custo, e as barras
+    // vazias sugeririam meses de gasto zero em vez de "não sabemos".
+    de: (() => {
+      const inicio = cacDeslocaMes(mes, -(CAC_MESES_SERIE - 1));
+      return inicio < CAC_MES_MIN ? CAC_MES_MIN : inicio;
+    })(),
+    ate: mes,
+  };
+
+  // A janela de 12 meses pode cruzar o ano; `resumoVendas` é por ano.
+  const anosDaJanela = [
+    ...new Set([Number(janelaSerie.de.slice(0, 4)), Number(janelaSerie.ate.slice(0, 4))]),
+  ];
+
+  const [todasLinhas, vendasPorAno, receitaBu, meta] = await Promise.all([
+    custoNormalizado(companyId, janelaSerie),
+    Promise.all(anosDaJanela.map((a) => resumoVendas(companyId, { ano: a }).catch(() => null))),
+    // Varredura paginada de `fin_receita_snapshot`, só usada pela visão de BU.
+    // Fora dela seria custo puro: a tela de Marketing não mostra receita.
+    incluirBu
+      ? receitaPorBu(companyId, ano).catch(() => new Map<string, number>())
+      : Promise.resolve(new Map<string, number>()),
+    getMetaMetrics({ since: `${mes}-01`, until: `${mes}-31` }).catch(() => null),
+  ]);
+
+  const vendas = vendasPorAno.find((v) => v?.connected) ?? null;
+  const todasVendas = vendasPorAno.flatMap((v) => v?.vendas ?? []);
+
+  /** Só o mês escolhido alimenta os KPIs; o resto é contexto do gráfico. */
+  const linhas = todasLinhas.filter((l) => l.mes === mes);
 
   // ---- Custo por centro, nas duas bases ----
   const porCentro = new Map<string, CacCentro>();
@@ -382,7 +401,10 @@ async function computeCac(
       } as CacCentro);
     c.previsto += l.previsto;
     c.realizado += l.realizado;
-    c.valor = c[base];
+    // "Valor" do centro = o previsto. É o que existe em todo mês, inclusive nos
+    // que ainda não tiveram baixa — usar realizado zeraria a composição inteira
+    // de agosto em diante.
+    c.valor = c.previsto;
     porCentro.set(chave, c);
   }
   const centros = [...porCentro.values()]
@@ -392,15 +414,15 @@ async function computeCac(
   const soma = (f: (c: CacCentro) => number, tipo?: CacTipo) =>
     centros.filter((c) => !tipo || c.tipo === tipo).reduce((s, c) => s + f(c), 0);
 
-  const custoMarketing = soma((c) => c.valor, "marketing");
-  const custoComercial = soma((c) => c.valor, "comercial");
-  const custoTotal = custoMarketing + custoComercial;
+  const custoMarketing = soma((c) => c.previsto, "marketing");
+  const custoComercial = soma((c) => c.previsto, "comercial");
   const custoPrevisto = soma((c) => c.previsto);
   const custoRealizado = soma((c) => c.realizado);
+  const custoTotal = custoPrevisto;
 
   const fontes = {
-    contaAzul: soma((c) => (c.fonte === "conta-azul" ? c.valor : 0)),
-    bancoProprio: soma((c) => (c.fonte === "banco-proprio" ? c.valor : 0)),
+    contaAzul: soma((c) => (c.fonte === "conta-azul" ? c.previsto : 0)),
+    bancoProprio: soma((c) => (c.fonte === "banco-proprio" ? c.previsto : 0)),
   };
 
   const diretoPorBu = new Map<string, number>();
@@ -423,53 +445,55 @@ async function computeCac(
   const midiaTotal = midiaPorMarca.reduce((s, m) => s + m.valor, 0);
 
   /**
-   * Vendas: faturadas + a faturar, DENTRO DO PERÍODO.
+   * Vendas: faturadas + a faturar, DO MÊS ESCOLHIDO.
    *
    * `resumoVendas` traz o ano inteiro, então o recorte é feito aqui. Antes o
    * total do ano era usado direto — o que só funcionava porque o período também
-   * era o ano inteiro; com seletor de período isso viraria um CAC absurdamente
+   * era o ano inteiro; com seletor de mês isso viraria um CAC absurdamente
    * baixo (custo de um mês ÷ vendas de doze).
    */
-  const dentroDoPeriodo = (data: string | null | undefined) => {
-    const m = (data ?? "").slice(0, 7);
-    return m >= periodo.de && m <= periodo.ate;
-  };
-  const vendasNoPeriodo = (vendas?.vendas ?? []).filter((v) => dentroDoPeriodo(v.data));
+  const vendasNoPeriodo = todasVendas.filter((v) => (v.data ?? "").slice(0, 7) === mes);
   const vendasFaturadas = vendasNoPeriodo.filter((v) => v.faturado).length;
   const vendasAFaturar = vendasNoPeriodo.length - vendasFaturadas;
   const totalVendas = vendasNoPeriodo.length;
 
-  // ---- Série mensal ----
+  // ---- Série mensal: os 12 meses da janela, não só o escolhido ----
   const custoMes = new Map<string, { previsto: number; realizado: number; fonte: CacFonte }>();
-  for (const l of linhas) {
+  for (const l of todasLinhas) {
     const c = custoMes.get(l.mes) ?? { previsto: 0, realizado: 0, fonte: l.fonte };
     c.previsto += l.previsto;
     c.realizado += l.realizado;
     custoMes.set(l.mes, c);
   }
-  const vendasMes = new Map<string, number>();
-  for (const v of vendasNoPeriodo) {
-    const mes = (v.data ?? "").slice(0, 7);
-    if (mes) vendasMes.set(mes, (vendasMes.get(mes) ?? 0) + 1);
+  // Dois contadores por mês: o total alimenta o previsto, o faturado alimenta o
+  // realizado. É a mesma regra do agregado — cada regime com o seu denominador.
+  const vendasMes = new Map<string, { total: number; faturadas: number }>();
+  for (const v of todasVendas) {
+    const m = (v.data ?? "").slice(0, 7);
+    if (!m || m < janelaSerie.de || m > janelaSerie.ate) continue;
+    const c = vendasMes.get(m) ?? { total: 0, faturadas: 0 };
+    c.total += 1;
+    if (v.faturado) c.faturadas += 1;
+    vendasMes.set(m, c);
   }
   /**
-   * Todos os meses do período aparecem, mesmo zerados. Montar a série só a partir
+   * Todos os meses da janela aparecem, mesmo zerados. Montar a série só a partir
    * dos meses COM dado abria buracos silenciosos — um mês sem custo lançado
    * simplesmente sumia do gráfico, em vez de aparecer como o zero que é.
    */
-  const serie: CacMes[] = mesesDoPeriodo(periodo).map((mes) => {
+  const serie: CacMes[] = mesesDoPeriodo(janelaSerie).map((mes) => {
     const c = custoMes.get(mes);
     const custoP = c?.previsto ?? 0;
     const custoR = c?.realizado ?? 0;
-    const custo = base === "previsto" ? custoP : custoR;
-    const qtd = vendasMes.get(mes) ?? 0;
+    const v = vendasMes.get(mes) ?? { total: 0, faturadas: 0 };
     return {
       mes,
-      custo,
       custoPrevisto: custoP,
       custoRealizado: custoR,
-      vendas: qtd,
-      cac: qtd > 0 && custo > 0 ? custo / qtd : null,
+      vendas: v.total,
+      vendasFaturadas: v.faturadas,
+      cacPrevisto: v.total > 0 && custoP > 0 ? custoP / v.total : null,
+      cacRealizado: v.faturadas > 0 && custoR > 0 ? custoR / v.faturadas : null,
       fonte: c?.fonte ?? (mes >= CORTE_BANCO_PROPRIO ? "banco-proprio" : "conta-azul"),
     };
   });
@@ -515,7 +539,6 @@ async function computeCac(
     connected: linhas.length > 0 || !!vendas?.connected,
     ano,
     periodo,
-    regime,
     driver,
     fontes,
     custoMarketing,
@@ -523,9 +546,9 @@ async function computeCac(
     custoTotal,
     custoPrevisto,
     custoRealizado,
+    // Cada regime com o SEU denominador — ver a nota no topo do arquivo.
     cacPrevisto: totalVendas > 0 ? custoPrevisto / totalVendas : null,
-    cacRealizado: totalVendas > 0 ? custoRealizado / totalVendas : null,
-    cacMeta,
+    cacRealizado: vendasFaturadas > 0 ? custoRealizado / vendasFaturadas : null,
     centros,
     centrosEncontrados: centros.length > 0,
     custoDiretoTotal,
@@ -535,14 +558,6 @@ async function computeCac(
     vendas: totalVendas,
     vendasFaturadas,
     vendasAFaturar,
-    // No regime Meta o destaque é o próprio alvo; sem alvo cadastrado cai no
-    // realizado, para a tela não ficar vazia por falta de cadastro.
-    cac:
-      regime === "meta"
-        ? (cacMeta ?? (totalVendas > 0 ? custoRealizado / totalVendas : null))
-        : totalVendas > 0
-          ? custoTotal / totalVendas
-          : null,
     serie,
     receitaTotal,
     porBu,
@@ -560,55 +575,25 @@ async function computeCac(
 export async function getCac(
   companyId: string,
   opts: {
-    periodo?: CacPeriodo;
-    regime?: CacRegime;
+    /** Competência 'AAAA-MM'. Padrão: mês corrente. */
+    mes?: string;
     driver?: CacDriver;
+    /**
+     * Liga a visão por BU (receita, rateio, % sobre receita). **Fora do padrão**:
+     * é controladoria, não Marketing, e custa uma varredura paginada de
+     * `fin_receita_snapshot`. Existe para um futuro painel no Financeiro.
+     */
+    incluirBu?: boolean;
     force?: boolean;
   } = {},
 ): Promise<CacResumo> {
-  const periodo = opts.periodo ?? periodoPadrao();
-  const regime = opts.regime ?? "realizado";
+  const mes = opts.mes ?? cacMesCorrente();
   const driver = opts.driver ?? "receita";
+  const incluirBu = opts.incluirBu ?? false;
   return cachedSwr(
-    `cac:${companyId}:${periodo.de}:${periodo.ate}:${regime}:${driver}`,
+    `cac:${companyId}:${mes}:${driver}:${incluirBu ? "bu" : "nobu"}`,
     10 * 60_000,
-    () => computeCac(companyId, periodo, regime, driver),
+    () => computeCac(companyId, mes, driver, incluirBu),
     { force: opts.force, cacheIf: (d) => d.connected },
   );
-}
-
-/** Mês corrente em São Paulo — o servidor é UTC e viraria o mês antes da hora. */
-export function mesCorrente(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-  })
-    .format(new Date())
-    .slice(0, 7);
-}
-
-/** Período terminando no mês corrente e cobrindo `n` meses (n=1 → só o mês). */
-export function periodoDeMeses(n: number): CacPeriodo {
-  const ate = mesCorrente();
-  const [a, m] = ate.split("-").map(Number);
-  const d = new Date(Date.UTC(a, m - 1 - (n - 1), 1));
-  return {
-    de: `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`,
-    ate,
-  };
-}
-
-/** Ano corrente inteiro, de janeiro ao mês atual. */
-export function periodoAnoCorrente(): CacPeriodo {
-  const ate = mesCorrente();
-  return { de: `${ate.slice(0, 4)}-01`, ate };
-}
-
-/**
- * Padrão: **ano corrente**. Mantém o número que a diretoria já conhece como
- * primeira leitura; janelas curtas ficam a um clique.
- */
-export function periodoPadrao(): CacPeriodo {
-  return periodoAnoCorrente();
 }

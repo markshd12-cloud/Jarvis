@@ -12,12 +12,8 @@ import {
 import { getInstagramFunnel } from "@/lib/marketing/instagram-funnel";
 import { getYoutubeOverview } from "@/lib/marketing/youtube";
 import { YoutubeMetrics } from "@/components/youtube-metrics";
-import {
-  getCac,
-  periodoAnoCorrente,
-  periodoDeMeses,
-  type CacPeriodo,
-} from "@/lib/marketing/cac";
+import { getCac } from "@/lib/marketing/cac";
+import { cacMesCorrente, cacMesValido } from "@/lib/marketing/cac-opcoes";
 import { CacMetrics } from "@/components/cac-metrics";
 import { getCompanyId } from "@/lib/db/company";
 import { getGa4Overview, getGa4Realtime } from "@/lib/marketing/ga4";
@@ -129,9 +125,16 @@ export default async function MarketingPage({
   const ctx = await getSessionContext();
   const canMarketing = can(ctx, "marketing");
   const canGa4 = can(ctx, "ga4");
-  // CAC expõe custo (inclusive do Comercial) → exige as DUAS permissões.
-  // `can()` já libera superadmin automaticamente.
-  const canCac = canMarketing && can(ctx, "financeiro");
+  /**
+   * CAC exige só `marketing` desde 2026-08-05.
+   *
+   * Antes pedia `marketing` + `financeiro` porque a aba expunha receita por
+   * unidade, rateio e % sobre receita — controladoria vazando para dentro do
+   * Marketing. Removido isso, sobrou custo de Marketing/Comercial e vendas, que
+   * é justamente o que o setor precisa ver para entender o próprio custo de
+   * aquisição. `can()` já libera superadmin automaticamente.
+   */
+  const canCac = canMarketing;
   if (!canMarketing && !canGa4) redirect(landingHref(ctx) ?? "/sem-acesso");
 
   const sp = await searchParams;
@@ -181,27 +184,13 @@ export default async function MarketingPage({
     : JANELA_PADRAO;
 
   /**
-   * Período e regime do CAC. `cacJanela` é um preset ('mes' | '3m' | '6m' |
-   * 'ano'); nomes em vez de números de meses porque "ano" significa "de janeiro
-   * até agora", que não é um número fixo de meses.
+   * Mês do CAC (`?cacMes=AAAA-MM`), padrão o corrente.
+   *
+   * Um MÊS, não uma janela de presets: o usuário escolhe a competência que quer
+   * ver. O gráfico continua cobrindo 12 meses terminando aí, senão viraria uma
+   * barra só.
    */
-  const cacJanela = ["mes", "3m", "6m", "ano"].includes(one(sp.cacJanela) ?? "")
-    ? (one(sp.cacJanela) as string)
-    : "ano";
-  const cacPeriodo: CacPeriodo =
-    cacJanela === "mes"
-      ? periodoDeMeses(1)
-      : cacJanela === "3m"
-        ? periodoDeMeses(3)
-        : cacJanela === "6m"
-          ? periodoDeMeses(6)
-          : periodoAnoCorrente();
-  /**
-   * Sem seletor de regime: os três (Meta, Previsto, Realizado) aparecem SEMPRE
-   * como cartões no painel, então clicar entre eles só trocava qual número
-   * ficava grande — mesma informação, dois cliques a mais. Sobra a escolha que
-   * de fato muda o conteúdo, que é o período.
-   */
+  const cacMes = cacMesValido(one(sp.cacMes)) ? (one(sp.cacMes) as string) : cacMesCorrente();
 
   const competencias = (() => {
     const [ha, hm] = mesCorrenteSP().split("-").map(Number);
@@ -249,14 +238,8 @@ export default async function MarketingPage({
     canGa4 && ehAba("ga4") ? comTimeout(getGa4Overview(), T_LENTO, "ga4-overview") : Promise.resolve(null),
     canGa4 && ehAba("ga4") ? comTimeout(getGa4Realtime(), T_RAPIDO, "ga4-realtime") : Promise.resolve(null),
     canMarketing && ehAba("youtube") ? comTimeout(getYoutubeOverview({ brand }), T_RAPIDO, "youtube") : Promise.resolve(null),
-    // `companyId` só para a meta de CAC — as demais métricas são globais.
-    // T_LENTO porque o CAC pode ir ao Conta Azul; as outras metas leem o nosso banco.
     canMarketing && ehAba("metas")
-      ? comTimeout(
-          getCompanyId().then((id) => getMetasComAtual(competencia, canCac ? id : null)),
-          T_LENTO,
-          "metas",
-        )
+      ? comTimeout(getMetasComAtual(competencia), T_RAPIDO, "metas")
       : Promise.resolve(null),
     canMarketing && ehAba("youtube") ? comTimeout(listarConexoes(), T_RAPIDO, "yt-conexoes") : Promise.resolve(null),
     // ~12 consultas ao Google (em paralelo dentro da função) + títulos dos
@@ -268,7 +251,7 @@ export default async function MarketingPage({
     canCac && ehAba("cac")
       ? comTimeout(
           getCompanyId().then((companyId) =>
-            companyId ? getCac(companyId, { periodo: cacPeriodo }) : null,
+            companyId ? getCac(companyId, { mes: cacMes }) : null,
           ),
           T_LENTO,
           "cac",
@@ -352,7 +335,7 @@ export default async function MarketingPage({
           />
         ) : null
       }
-      cac={cac ? <CacMetrics data={cac} janela={cacJanela} /> : null}
+      cac={cac ? <CacMetrics data={cac} mes={cacMes} /> : null}
     />
   );
 }

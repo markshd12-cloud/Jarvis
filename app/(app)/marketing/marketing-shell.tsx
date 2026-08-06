@@ -3,10 +3,8 @@
 import { useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  IconArrowsLeftRight,
   IconBrandInstagram,
   IconBrandMeta,
-  IconBrandTiktok,
   IconBrandYoutube,
   IconCoin,
   IconTargetArrow,
@@ -18,21 +16,24 @@ import { FloatingDock } from "@/components/ui/floating-dock";
 
 /**
  * Casca do módulo Marketing (espelha o Financeiro): navegação por sub-abas via
- * FloatingDock. As abas prontas (Meta Ads, Instagram, GA4) recebem o painel já
- * renderizado do servidor como slot; as futuras (Painel consolidado, YouTube,
- * TikTok, Comparativo) entram como "(em breve)". Um slot `null` = sem permissão
- * (o servidor não montou) → a aba não aparece.
+ * FloatingDock. Cada aba pronta recebe do servidor o painel já renderizado como
+ * slot; o Painel consolidado ainda entra como "(em breve)".
+ *
+ * TikTok e Comparativo saíram do dock em 2026-08-05, por decisão do requisitante.
+ *
+ *  - **TikTok**: integração complexa (app no TikTok for Business + OAuth próprio)
+ *    para retorno incerto. Volta se e quando fizer sentido.
+ *  - **Comparativo**: com o TikTok fora sobra UM canal pago (Meta Ads), e
+ *    comparar canais de mídia entre si perde o sentido. Além disso Instagram e
+ *    YouTube não têm custo atribuído, então qualquer "custo por resultado" deles
+ *    daria zero — o orgânico pareceria infinitamente eficiente. Precisa antes de
+ *    uma decisão de gestão sobre como ratear o custo de conteúdo.
+ *
+ * Ficaram fora do tipo (e não como `ready: false`) porque "em breve" é uma
+ * promessa: uma aba cinza permanente vira ruído e, com o tempo, mentira.
+ * Ver `docs/marketing-fase3.md`.
  */
-type TabKey =
-  | "meta"
-  | "metas"
-  | "instagram"
-  | "ga4"
-  | "youtube"
-  | "cac"
-  | "painel"
-  | "tiktok"
-  | "comparativo";
+type TabKey = "meta" | "metas" | "instagram" | "ga4" | "youtube" | "cac" | "painel";
 
 const iconCls = "h-full w-full text-neutral-500 dark:text-neutral-300";
 
@@ -120,8 +121,6 @@ export function MarketingShell({
     { key: "painel", label: "Painel", ready: false, icon: <IconLayoutDashboard className={iconCls} /> },
     { key: "youtube", label: "YouTube", ready: has.youtube, icon: <IconBrandYoutube className={iconCls} /> },
     { key: "cac", label: "CAC", ready: has.cac, icon: <IconCoin className={iconCls} /> },
-    { key: "tiktok", label: "TikTok", ready: false, icon: <IconBrandTiktok className={iconCls} /> },
-    { key: "comparativo", label: "Comparativo", ready: false, icon: <IconArrowsLeftRight className={iconCls} /> },
   ];
 
   const firstReady = TABS.find((t) => t.ready)?.key ?? "painel";
@@ -181,8 +180,6 @@ export function MarketingShell({
           {active === "painel" ? <EmBreve nome="Painel consolidado" /> : null}
           {active === "youtube" ? slot(has.youtube, youtube, "YouTube") : null}
           {active === "cac" ? slot(has.cac, cac, "CAC — requer Marketing + Financeiro") : null}
-          {active === "tiktok" ? <EmBreve nome="TikTok" /> : null}
-          {active === "comparativo" ? <EmBreve nome="Comparativo entre canais" /> : null}
         </div>
       </section>
     </main>

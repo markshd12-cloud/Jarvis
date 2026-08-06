@@ -14,8 +14,13 @@ export function ChartTooltip({
   top,
   children,
 }: {
-  left: number;
-  top: number;
+  /**
+   * Pixel (número) ou qualquer unidade CSS (string). Os gráficos SVG passam
+   * pixels calculados do viewBox; os de div passam `%`, que acompanha o
+   * redimensionamento sem recalcular no JS.
+   */
+  left: number | string;
+  top: number | string;
   children: ReactNode;
 }) {
   return (

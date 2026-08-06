@@ -176,18 +176,21 @@ reporta o catálogo inteiro por período).
 - ✅ **Passo 7 · YouTube (nível A — público)** — **FEITO (2026-07-21)**. Ver seção "YouTube" abaixo.
 - **Passo 8 · YouTube (nível B — analytics do dono)** — YouTube Analytics API (watch time,
   retenção, receita, origens): **OAuth do dono do canal** (service account não serve). Esforço MÉDIO.
-- **Passo 9 · TikTok** — Ads (TikTok Marketing API) e/ou Orgânico (Business Account API):
-  spend/conversões e views/seguidores/engajamento. **OAuth via TikTok for Business** (app dev +
-  autorização). **Precisa do usuário:** decidir Ads e/ou orgânico + criar app + autorizar. Esforço MÉDIO/ALTO.
+- ~~**Passo 9 · TikTok**~~ — ❌ **DESATIVADO em 2026-08-05** por decisão do requisitante:
+  integração cara (app no TikTok for Business + OAuth próprio) para retorno incerto. Aba removida
+  do dock. Volta se e quando fizer sentido.
 
-### Fase 3 — Consolidação
-- **Passo 10 · Painel consolidado** — visão geral cross-channel (investimento×resultado, funil,
-  distribuição por canal/marca, alertas). Aba `painel` já existe como "(em breve)". Ver mockup
-  publicado (design de referência).
-- **Passo 11 · Comparativo entre canais** — CPL/ROAS/leads por canal lado a lado. Aba `comparativo`.
-- **Passo 12 · Modo TV** — tela cheia + carrossel (reusar o padrão do `painel-tv.tsx` do Financeiro).
-- **Passo 13 · Contexto no chat** — perguntas de marketing usam GA4/YouTube/TikTok
-  (`lib/ai/marketing-context.ts` hoje cobre Meta).
+### Fase 3 — Consolidação · **estruturada em `docs/marketing-fase3.md`**
+- **Passo 10 · Painel consolidado** — visão geral cross-channel. 5 blocos propostos (linha do mês,
+  semáforo de metas, distribuição por marca, funil paralelo, alertas). Esforço MÉDIO, sem
+  integração nova. ⚠️ o semáforo depende de `mkt_metas`, hoje VAZIA.
+- ~~**Passo 11 · Comparativo entre canais**~~ — ❌ **DESATIVADO em 2026-08-05**. Com o TikTok fora
+  sobra um único canal pago, e IG/YouTube não têm custo atribuído — o orgânico apareceria como
+  infinitamente eficiente. Exige antes decisão de gestão sobre rateio do custo de conteúdo.
+- **Passo 12 · Modo TV** — 5 slides, reusando `painel-tv.tsx`. Esforço BAIXO, mas **bloqueado
+  pelo Passo 10**: o TV consome o objeto consolidado do Painel, não faz fetch próprio.
+- **Passo 13 · Contexto no chat** — hoje cobre Meta + YouTube (público). Faltam Metas, CAC, GA4,
+  Instagram e YouTube nível B. Esforço BAIXO e **sem dependências** — recomendado como próximo.
 
 ## Padrão para adicionar um canal novo (checklist)
 1. `lib/marketing/<canal>.ts` (server-only): fetch + normalizar. Ao vivo (cache) OU sync p/ tabela.

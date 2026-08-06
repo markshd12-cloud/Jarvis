@@ -2,58 +2,77 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
-import { CAC_JANELAS } from "@/lib/marketing/cac-opcoes";
+import { CAC_MES_MIN, cacDeslocaMes, cacMesCorrente } from "@/lib/marketing/cac-opcoes";
 
 /**
- * Seletor de período do CAC.
+ * Seletor de MÊS do CAC.
  *
- * NÃO há seletor de regime. Meta, Previsto e Realizado aparecem os três como
- * cartões no painel — botões para alternar entre eles só mudariam qual número
- * fica grande, sem revelar nada novo. O período é a única escolha que muda o
- * conteúdo de fato.
+ * `<input type="month">` em vez de uma lista de presets ("3 meses", "ano"): o
+ * navegador entrega um calendário de meses nativo, com teclado e acessibilidade
+ * de graça, e o usuário escolhe exatamente o mês que quer ver em vez de aceitar
+ * uma janela pronta.
  *
- * Estado na URL, como o resto do módulo — o link fica compartilhável e o botão
- * voltar funciona.
+ * As setas ao lado existem porque comparar meses vizinhos é o uso mais comum, e
+ * abrir o calendário para andar um mês é atrito puro.
+ *
+ * NÃO há seletor de regime: Previsto e Realizado aparecem os dois como cartões,
+ * e alternar entre eles só mudaria qual número fica grande.
+ *
+ * Estado na URL, como o resto do módulo — link compartilhável e botão voltar
+ * funcionando.
  */
-export function CacControles({ janela }: { janela: string }) {
+export function CacControles({ mes }: { mes: string }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  const navegar = (chave: string, valor: string) => {
+  const hoje = cacMesCorrente();
+
+  const irPara = (novo: string) => {
+    if (!novo || novo < CAC_MES_MIN || novo > hoje) return;
     const qs = new URLSearchParams(searchParams.toString());
-    qs.set(chave, valor);
+    qs.set("cacMes", novo);
     qs.set("aba", "cac"); // não perder a aba ao navegar
     router.replace(`${pathname}?${qs}`, { scroll: false });
   };
 
-  const grupo = (
-    chave: string,
-    atual: string,
-    opcoes: readonly { valor: string; rotulo: string; ajuda?: string }[],
-  ) => (
-    <div className="flex overflow-hidden rounded-lg border border-input">
-      {opcoes.map((o) => (
-        <button
-          key={o.valor}
-          type="button"
-          title={o.ajuda}
-          onClick={() => navegar(chave, o.valor)}
-          className={
-            o.valor === atual
-              ? "bg-primary px-2.5 py-1.5 text-xs font-medium text-primary-foreground"
-              : "bg-background px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted"
-          }
-        >
-          {o.rotulo}
-        </button>
-      ))}
-    </div>
-  );
+  const anterior = cacDeslocaMes(mes, -1);
+  const proximo = cacDeslocaMes(mes, 1);
+
+  const seta =
+    "flex h-8 w-8 items-center justify-center rounded-lg border border-input text-muted-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40";
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {grupo("cacJanela", janela, CAC_JANELAS)}
+      <button
+        type="button"
+        aria-label="Mês anterior"
+        onClick={() => irPara(anterior)}
+        disabled={anterior < CAC_MES_MIN}
+        className={seta}
+      >
+        ‹
+      </button>
+
+      <input
+        type="month"
+        aria-label="Mês do CAC"
+        value={mes}
+        min={CAC_MES_MIN}
+        max={hoje}
+        onChange={(e) => irPara(e.target.value)}
+        className="h-8 rounded-lg border border-input bg-background px-2.5 text-sm outline-none scheme-light dark:scheme-dark"
+      />
+
+      <button
+        type="button"
+        aria-label="Próximo mês"
+        onClick={() => irPara(proximo)}
+        disabled={proximo > hoje}
+        className={seta}
+      >
+        ›
+      </button>
     </div>
   );
 }

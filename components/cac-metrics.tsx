@@ -1,15 +1,20 @@
 import { IconInfoCircle } from "@tabler/icons-react";
 
 import { CacControles } from "@/components/cac-controles";
+import { CacSerieChart } from "@/components/cac-serie-chart";
 import { CORTE_BANCO_PROPRIO, type CacResumo } from "@/lib/marketing/cac";
+import { cacMesCorrente } from "@/lib/marketing/cac-opcoes";
 
 /**
- * Painel de CAC (Custo de Aquisição por Cliente) — Fase 1. Server component.
- * Gate no chamador: `marketing` E `financeiro`.
+ * Painel de CAC (Custo de Aquisição por Cliente). Server component.
+ * Gate no chamador: `marketing` — só isso desde 2026-08-05.
  *
- * Mostra o CAC consolidado (custo Marketing+Comercial ÷ vendas) e, por BU, o
- * custo RATEADO com a métrica-ponte "% sobre receita" — porque ainda não existe
- * nº de vendas por BU (ver docs/cac-plano.md).
+ * Mostra o CAC do MÊS escolhido nos dois regimes (previsto e realizado, cada um
+ * com o seu denominador) e a tendência dos 12 meses até ele.
+ *
+ * NÃO mostra receita por unidade, rateio nem "% sobre receita": isso é
+ * controladoria, e era o que obrigava a exigir também a permissão `financeiro`.
+ * Ver `docs/cac-fontes.md`.
  */
 const brl = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const brlC = new Intl.NumberFormat("pt-BR", {
@@ -21,8 +26,6 @@ const brlC = new Intl.NumberFormat("pt-BR", {
 const int = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 const money = (v: number | null) => (v == null ? "—" : brl.format(v));
 const count = (v: number) => int.format(v);
-const pct = (v: number | null) =>
-  v == null ? "—" : `${v.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%`;
 
 const CHART_VARS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)"];
 
@@ -38,31 +41,7 @@ function mesAno(ym: string): string {
   return `${mesLabel(ym)}/${ym.slice(0, 4)}`;
 }
 
-/**
- * O período termina no mês corrente, que ainda não fechou?
- *
- * Importa porque o custo PREVISTO é lançado para o mês inteiro, enquanto as
- * vendas só existem até hoje. No dia 5 de agosto isso deu R$ 1.847,81 por venda
- * (custo de 31 dias ÷ vendas de 5) contra ~R$ 107 nos meses fechados — um número
- * que parece catástrofe e é só aritmética de mês pela metade.
- */
-function mesEmCurso(ate: string): { emCurso: boolean; dia: number; dias: number } {
-  const hoje = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Sao_Paulo",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(new Date());
-  const [a, m, d] = hoje.split("-").map(Number);
-  const dias = new Date(Date.UTC(a, m, 0)).getUTCDate();
-  return { emCurso: ate === hoje.slice(0, 7) && d < dias, dia: d, dias };
-}
 
-const REGIME_LABEL: Record<string, string> = {
-  meta: "Meta",
-  previsto: "Previsto",
-  realizado: "Realizado",
-};
 
 function Kpi({
   label,
@@ -90,16 +69,14 @@ function Kpi({
   );
 }
 
-export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }) {
+export function CacMetrics({ data, mes }: { data: CacResumo; mes: string }) {
   const {
     periodo,
-    regime,
     fontes,
     custoPrevisto,
     custoRealizado,
     cacPrevisto,
     cacRealizado,
-    cacMeta,
     custoMarketing,
     custoComercial,
     custoTotal,
@@ -109,15 +86,7 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
     vendas,
     vendasFaturadas,
     vendasAFaturar,
-    cac,
     serie,
-    centros,
-    custoDiretoTotal,
-    custoCompartilhado,
-    receitaTotal,
-    porBu,
-    temCustoDireto,
-    driver,
   } = data;
 
   const maxMidia = Math.max(1, ...midiaPorMarca.map((m) => m.valor));
@@ -128,14 +97,11 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
         <div className="flex flex-col gap-1">
           <h2 className="text-lg font-semibold tracking-tight">CAC · custo de aquisição</h2>
           <p className="text-sm text-muted-foreground">
-            Marketing + Comercial ÷ vendas ·{" "}
-            {periodo.de === periodo.ate
-              ? mesAno(periodo.ate)
-              : `${mesAno(periodo.de)} a ${mesAno(periodo.ate)}`}{" "}
-            · vendas faturadas e a faturar
+            Marketing + Comercial ÷ vendas · {mesAno(periodo.ate)} · vendas faturadas e a
+            faturar
           </p>
         </div>
-        <CacControles janela={janela} />
+        <CacControles mes={mes} />
       </div>
 
       {!centrosEncontrados ? (
@@ -146,17 +112,28 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
         </div>
       ) : (
         <>
-          {/* Resultado principal */}
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+          {/* Os dois regimes lado a lado, cada um com o SEU denominador. O valor
+              grande é sempre R$ por venda; o apoio mostra a divisão que o gerou,
+              senão o cartão exibia um unitário em cima e um total embaixo, ambos
+              em reais e sem rótulo. */}
+          <div className="grid gap-3 sm:grid-cols-2">
             <Kpi
-              label={`CAC · ${REGIME_LABEL[regime] ?? regime}`}
-              value={money(cac)}
-              hint={vendas > 0 ? "por venda" : "sem vendas no período"}
+              label="CAC previsto · por venda"
+              value={money(cacPrevisto)}
+              hint={`${money(custoPrevisto)} lançados ÷ ${count(vendas)} vendas`}
               highlight
             />
+            <Kpi
+              label="CAC realizado · por venda"
+              value={money(cacRealizado)}
+              hint={`${money(custoRealizado)} pagos ÷ ${count(vendasFaturadas)} faturadas`}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Kpi label="Custo total" value={money(custoTotal)} hint="Marketing + Comercial" />
-            <Kpi label="Marketing" value={money(custoMarketing)} hint="centro de custo" />
-            <Kpi label="Comercial" value={money(custoComercial)} hint="centro de custo" />
+            <Kpi label="Marketing" value={money(custoMarketing)} hint="lançado no período" />
+            <Kpi label="Comercial" value={money(custoComercial)} hint="lançado no período" />
             <Kpi
               label="Vendas"
               value={count(vendas)}
@@ -164,64 +141,11 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
             />
           </div>
 
-          {/* As três bases lado a lado — o regime escolhe o destaque acima, mas a
-              comparação é o que responde "estamos dentro do alvo?". Mostrar só a
-              base selecionada obrigaria a trocar de regime para comparar. */}
-          {/* O valor grande é sempre R$ POR VENDA; o apoio mostra a conta que o
-              gerou. Sem isso o cartão exibia um unitário em cima e um total
-              embaixo, ambos em reais e sem rótulo — impossível saber qual era
-              qual. */}
-          <div className="grid grid-cols-3 gap-3">
-            <Kpi
-              label="Meta · por venda"
-              value={money(cacMeta)}
-              hint={cacMeta == null ? "não cadastrada" : "alvo"}
-            />
-            <Kpi
-              label="Previsto · por venda"
-              value={money(cacPrevisto)}
-              hint={`${money(custoPrevisto)} ÷ ${count(vendas)} vendas`}
-            />
-            <Kpi
-              label="Realizado · por venda"
-              value={money(cacRealizado)}
-              hint={`${money(custoRealizado)} ÷ ${count(vendas)} vendas`}
-            />
-          </div>
-
-          {/* Mês pela metade: custo de 31 dias contra vendas de 5. O CAC previsto
-              fica multiplicado por ~6 e parece desastre. A projeção pelo ritmo
-              atual é o número comparável com os meses fechados. */}
-          {(() => {
-            const { emCurso, dia, dias } = mesEmCurso(periodo.ate);
-            if (!emCurso || vendas === 0 || custoPrevisto === 0) return null;
-            const projetadas = Math.round((vendas / dia) * dias);
-            return (
-              <div className="rounded-xl border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-                <strong className="text-foreground">{mesAno(periodo.ate)} ainda não fechou</strong>{" "}
-                — dia {dia} de {dias}. O custo previsto cobre o mês inteiro, mas só há{" "}
-                {count(vendas)} vendas registradas até agora, então o CAC previsto de{" "}
-                {money(cacPrevisto)} está inflado pela conta incompleta. Mantido o ritmo atual,
-                seriam ~{count(projetadas)} vendas no mês e{" "}
-                <strong className="text-foreground">
-                  {money(custoPrevisto / Math.max(1, projetadas))}
-                </strong>{" "}
-                por venda — esse é o número comparável com os meses fechados.
-              </div>
-            );
-          })()}
-
-          {/* Realizado zerado com previsto cheio NÃO é bug: é despesa lançada e
-              ainda não baixada. Sem este aviso o painel parece quebrado, e o
-              regime Realizado seria abandonado como "o que não funciona". */}
-          {regime === "realizado" && custoRealizado === 0 && custoPrevisto > 0 ? (
-            <div className="rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 p-3 text-xs text-muted-foreground">
-              Nenhuma parcela deste período tem pagamento registrado, então o{" "}
-              <strong>Realizado</strong> é zero — há {money(custoPrevisto)} lançados como
-              previsto. Dê baixa nas parcelas em Financeiro → Contas a pagar, ou veja o número
-              no regime <strong>Previsto</strong>.
-            </div>
-          ) : null}
+          {/* Não há mais aviso de "mês pela metade" nem de "realizado zerado".
+              Com cada regime usando o próprio denominador, um mês recém-começado
+              produz realizado baixo dos DOIS lados — que é a resposta certa, não
+              uma distorção a explicar. O previsto segue cobrindo o mês inteiro,
+              e é isso que ele deve fazer: é o planejado. */}
 
           {/* O corte de fonte é a coisa mais fácil de esquecer aqui — deixar
               visível evita que alguém compare períodos sem saber que a origem
@@ -240,13 +164,12 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
             <p className="text-xs text-muted-foreground">
               <strong className="text-foreground">Como calculamos:</strong>{" "}
               {money(custoMarketing)} (Marketing) + {money(custoComercial)} (Comercial) ={" "}
-              {money(custoTotal)} ÷ {count(vendas)} vendas = <strong>{money(cac)}</strong> por
-              venda, no regime <strong>{REGIME_LABEL[regime] ?? regime}</strong>.{" "}
-              {regime === "realizado"
-                ? "Realizado conta só parcelas com pagamento registrado."
-                : regime === "previsto"
-                  ? "Previsto é o que o financeiro lançou para a competência, pago ou não."
-                  : "Meta é o alvo cadastrado na aba Metas — os demais números seguem em Realizado."}{" "}
+              {money(custoTotal)} ÷ {count(vendas)} vendas = <strong>{money(cacPrevisto)}</strong>{" "}
+              por venda no <strong>previsto</strong>.{" "}
+              <strong className="text-foreground">Os dois regimes andam juntos:</strong> o previsto
+              divide o custo lançado por todas as vendas; o realizado divide o custo{" "}
+              <strong>pago</strong> pelas vendas já <strong>faturadas</strong>. Num mês recém
+              começado os dois ficam baixos, que é a leitura certa.{" "}
               A fonte do custo é o <strong>Conta Azul até jul/2026</strong> e o{" "}
               <strong>banco próprio de ago/2026</strong> em diante, nunca as duas no mesmo mês. O
               investimento do Meta Ads abaixo é <strong>composição</strong>, não soma, para não
@@ -259,35 +182,23 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="text-sm font-semibold tracking-tight">CAC por mês</h3>
+                {/* O gráfico NÃO se limita ao mês escolhido — mostra a janela até
+                    ele, senão seria uma barra só. Dizer o intervalo evita a
+                    leitura de que os números do topo cobrem tudo isto. */}
                 <span className="text-[11px] text-muted-foreground">
-                  custo do mês ÷ vendas do mês
+                  previsto · por venda ·{" "}
+                  {serie.length > 1
+                    ? `${mesAno(serie[0].mes)} a ${mesAno(serie[serie.length - 1].mes)}`
+                    : mesAno(periodo.ate)}
                 </span>
               </div>
-              <div className="overflow-x-auto">
-                <div className="flex min-w-[520px] items-end gap-1.5" style={{ height: 140 }}>
-                  {serie.map((m) => {
-                    const maxCac = Math.max(1, ...serie.map((x) => x.cac ?? 0));
-                    const h = m.cac ? Math.max(3, (m.cac / maxCac) * 100) : 3;
-                    return (
-                      <div key={m.mes} className="flex flex-1 flex-col items-center gap-1">
-                        <div className="flex w-full flex-1 items-end">
-                          <div
-                            className="w-full rounded-t bg-[var(--brand)]"
-                            style={{ height: `${h}%`, opacity: m.cac ? 1 : 0.25 }}
-                            title={`${mesLabel(m.mes)} · CAC ${money(m.cac)} · ${count(m.vendas)} vendas · custo ${money(m.custo)}`}
-                          />
-                        </div>
-                        <span className="text-[10px] text-muted-foreground">
-                          {mesLabel(m.mes)}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+              <CacSerieChart serie={serie} mesEmCurso={cacMesCorrente()} />
+
               <p className="mt-2 text-[11px] text-muted-foreground">
-                Passe o mouse para ver custo, vendas e CAC de cada mês. Meses sem venda ficam
-                esmaecidos (CAC indefinido).
+                Passe o mouse para ver previsto e realizado de cada mês. Meses sem venda ficam
+                esmaecidos; o mês em curso aparece listrado — o custo previsto já cobre o mês
+                inteiro enquanto as vendas só existem até hoje, então ele fica inflado e fora
+                da escala.
               </p>
             </div>
           ) : (
@@ -308,41 +219,12 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
             </div>
           )}
 
-          {/* Centros que compõem o custo */}
-          {centros.length ? (
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="text-sm font-semibold tracking-tight">
-                  Centros de custo considerados
-                </h3>
-                <span className="text-[11px] text-muted-foreground">
-                  {money(custoDiretoTotal)} com BU no nome · {money(custoCompartilhado)} compartilhado
-                </span>
-              </div>
-              <ul className="flex flex-col divide-y divide-border">
-                {centros.map((c) => (
-                  <li key={c.centro} className="flex items-center gap-2 py-2 text-sm">
-                    <span className="flex-1 truncate">{c.centro}</span>
-                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                      {c.tipo}
-                    </span>
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-[10px] ${
-                        c.bu
-                          ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {c.bu ?? "compartilhado"}
-                    </span>
-                    <span className="w-24 shrink-0 text-right tabular-nums">
-                      {brlC.format(c.valor)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
+          {/* SAIU: lista "Centros de custo considerados" (2026-08-05).
+              Mostrava cada centro com valor e o split entre custo direto e
+              compartilhado — detalhe de controladoria dentro do Marketing. O
+              agregado Marketing/Comercial acima já responde o que este setor
+              precisa. Os dados seguem em `data.centros` para quem quiser montar
+              a visão no Financeiro. */}
 
           {/* Mídia por marca */}
           {midiaPorMarca.length ? (
@@ -357,7 +239,17 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
               </div>
               <ul className="flex flex-col gap-3">
                 {midiaPorMarca.map((m, i) => (
-                  <li key={m.marca} className="flex flex-col gap-1">
+                  <li
+                    key={m.marca}
+                    className="flex flex-col gap-1"
+                    // O valor visível é compacto ("R$ 13,3 mil") para caber na
+                    // linha; o exato e a participação ficam aqui, ao alcance do
+                    // mouse, sem gastar espaço nem virar um gráfico interativo
+                    // para quatro barras.
+                    title={`${m.marca} · ${money(m.valor)} · ${
+                      midiaTotal > 0 ? ((m.valor / midiaTotal) * 100).toFixed(1) : "0"
+                    }% do investimento de mídia · unidade ${m.bu}`}
+                  >
                     <div className="flex items-baseline justify-between gap-2 text-sm">
                       <span className="text-muted-foreground">
                         {m.marca} <span className="text-xs">→ {m.bu}</span>
@@ -379,77 +271,15 @@ export function CacMetrics({ data, janela }: { data: CacResumo; janela: string }
             </div>
           ) : null}
 
-          {/* Por BU — ponte enquanto não há vendas por BU */}
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <h3 className="text-sm font-semibold tracking-tight">Por unidade (BU)</h3>
-              <span className="text-[11px] text-muted-foreground">
-                rateio por {driver === "midia" ? "investimento de mídia" : "receita"}
-              </span>
-            </div>
+          {/* SAIU: tabela "Por unidade (BU)" (2026-08-05).
+              Expunha RECEITA por unidade, participação no rateio, custo alocado e
+              "% sobre a receita" — faturamento da empresa vazando para dentro do
+              Marketing, e a razão de a aba exigir também a permissão `financeiro`.
+              Removida, o CAC passou a exigir só `marketing`.
 
-            <div className="flex items-start gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
-              <IconInfoCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
-              <p className="text-xs text-amber-800 dark:text-amber-300">
-                <strong>Ainda não é CAC em R$ por BU.</strong> O Conta Azul não informa a BU da
-                venda, então não há <em>número de vendas por unidade</em>. Enquanto isso, mostramos
-                o custo alocado e o <strong>% sobre a receita</strong> da BU.
-                {!temCustoDireto ? (
-                  <>
-                    {" "}
-                    Todo o custo está sendo <strong>rateado</strong> (nenhuma despesa tem BU própria
-                    ainda — as 93 categorias de despesa estão sem BU).
-                  </>
-                ) : null}{" "}
-                Ver <code>docs/cac-plano.md</code>.
-              </p>
-            </div>
-
-            <div className="overflow-x-auto rounded-xl border border-border">
-              <table className="w-full min-w-[720px] text-sm">
-                <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-3 font-medium">Unidade</th>
-                    <th className="px-4 py-3 text-right font-medium">Receita</th>
-                    <th className="px-4 py-3 text-right font-medium">Participação</th>
-                    <th className="px-4 py-3 text-right font-medium">Custo direto</th>
-                    <th className="px-4 py-3 text-right font-medium">Custo rateado</th>
-                    <th className="px-4 py-3 text-right font-medium">Custo total</th>
-                    <th className="px-4 py-3 text-right font-medium">% da receita</th>
-                  </tr>
-                </thead>
-                <tbody className="tabular-nums">
-                  {porBu.map((b) => (
-                    <tr key={b.bu} className="border-b border-border last:border-0 hover:bg-muted/40">
-                      <td className="px-4 py-3 font-medium text-foreground">{b.bu}</td>
-                      <td className="px-4 py-3 text-right">{brlC.format(b.receita)}</td>
-                      <td className="px-4 py-3 text-right">{pct(b.share * 100)}</td>
-                      <td className="px-4 py-3 text-right text-muted-foreground">
-                        {b.custoDireto > 0 ? brlC.format(b.custoDireto) : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right">{brlC.format(b.custoRateado)}</td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        {brlC.format(b.custoTotal)}
-                      </td>
-                      <td className="px-4 py-3 text-right">{pct(b.pctSobreReceita)}</td>
-                    </tr>
-                  ))}
-                  {porBu.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="px-4 py-6 text-center text-xs text-muted-foreground">
-                        Sem receita por unidade no período.
-                      </td>
-                    </tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Receita total do ano: {money(receitaTotal)}. O rateio distribui o custo compartilhado
-              proporcionalmente — <strong>quem fatura mais absorve mais custo</strong>, então
-              compare sempre o &quot;% da receita&quot;, não o custo absoluto.
-            </p>
-          </div>
+              O cálculo continua em `getCac(..., { incluirBu: true })`, opt-in
+              porque custa uma varredura paginada de `fin_receita_snapshot`. É de
+              lá que sai um futuro painel no Financeiro. Ver docs/cac-fontes.md. */}
         </>
       )}
     </div>
