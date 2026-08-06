@@ -40,3 +40,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Exportacoes locais (planilhas do financeiro) — dado sensivel, nunca versionar
+/exports/

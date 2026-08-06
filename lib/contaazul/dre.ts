@@ -85,6 +85,15 @@ export type DreChild = {
   /** AV% do previsto (sobre a Receita Bruta prevista). */
   avPrev: number;
   /**
+   * AV% da META, sobre a Receita Bruta **planejada** (não a realizada).
+   *
+   * Base própria de propósito: a meta é um plano inteiro e coerente consigo
+   * mesmo. Medir a meta de despesa contra a receita que de fato entrou
+   * misturaria dois mundos — num mês em que a receita frustrou, toda meta de
+   * custo pareceria estourada em AV sem que ninguém tivesse gastado a mais.
+   */
+  avOrc: number;
+  /**
    * Meta do mês (`fin_orcamentos`), já COM SINAL do DRE (receita +, despesa −).
    * 0 quando não há orçamento lançado para a categoria.
    */
@@ -115,6 +124,7 @@ export type DreRow =
       previsto: number;
       avPrev: number;
       orcado: number;
+      avOrc: number;
       /** Alguma folha do grupo tem meta cadastrada. */
       temMeta: boolean;
       children: DreChild[];
@@ -127,6 +137,7 @@ export type DreRow =
       previsto: number;
       avPrev: number;
       orcado: number;
+      avOrc: number;
       /** Algum grupo acumulado até aqui tem meta cadastrada. */
       temMeta: boolean;
     };
@@ -881,7 +892,10 @@ async function computeDre(
       return {
         label: c.nome,
         valor: realPorCat.get(c.id) ?? 0,
+        // av/avPrev/avOrc nascem 0: o AV depende da Receita Bruta, que só é
+        // conhecida depois de somar tudo. Preenchidos no passe 2.
         av: 0,
+        avOrc: 0,
         previsto: prevPorCat.get(c.id) ?? 0,
         avPrev: 0,
         orcado: orcadoPorCat.get(c.id) ?? 0,
@@ -935,6 +949,7 @@ async function computeDre(
           label: `${sub.codigo ?? ""} ${sub.descricao}`.trim(),
           valor: subVal,
           av: 0,
+          avOrc: 0,
           previsto: subPrev,
           avPrev: 0,
           orcado: subOrc,
@@ -952,6 +967,8 @@ async function computeDre(
     );
     const receitaBruta = g01?.valor ?? 0;
     const receitaBrutaPrev = g01?.previsto ?? 0;
+    // Base do AV da meta: a receita bruta PLANEJADA. Ver a nota em `avOrc`.
+    const receitaBrutaOrc = g01?.orcado ?? 0;
 
     // Passe 2: linhas com AV (realizado sobre RB realizada; previsto sobre RB
     // prevista) e totalizadores (soma corrente dos dois lados).
@@ -970,6 +987,7 @@ async function computeDre(
           previsto: accPrev,
           avPrev: av(accPrev, receitaBrutaPrev),
           orcado: accOrc,
+          avOrc: av(accOrc, receitaBrutaOrc),
           temMeta: accTemMeta,
         });
       } else {
@@ -987,11 +1005,13 @@ async function computeDre(
           previsto: c.previsto,
           avPrev: av(c.previsto, receitaBrutaPrev),
           orcado: c.orcado,
+          avOrc: av(c.orcado, receitaBrutaOrc),
           temMeta: grupoTemMeta,
           children: c.children.map((ch) => ({
             ...ch,
             av: av(ch.valor, receitaBruta),
             avPrev: av(ch.previsto, receitaBrutaPrev),
+            avOrc: av(ch.orcado, receitaBrutaOrc),
           })),
         });
       }

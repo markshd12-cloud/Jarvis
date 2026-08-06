@@ -1,7 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { IconEye, IconEyeOff, IconPencil, IconPlus, IconTrash } from "@tabler/icons-react";
+import {
+  IconBuildingStore,
+  IconEye,
+  IconEyeOff,
+  IconPencil,
+  IconPlus,
+  IconTrash,
+  IconUser,
+} from "@tabler/icons-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -171,6 +179,12 @@ export function RecorrenciasPanel() {
   const catNome = (id: string) => dim?.categorias.find((c) => c.id === id)?.nome ?? "—";
   const centroNome = (id: string | null) =>
     id ? dim?.centros.find((c) => c.id === id)?.nome ?? null : null;
+  /**
+   * Fornecedor OU colaborador — os dois vivem em `fin_colaboradores`, separados
+   * por `tipo`. Devolve o registro inteiro para a tela poder escolher o ícone.
+   */
+  const pessoa = (id: string | null) =>
+    id ? dim?.colaboradores.find((c) => c.id === id) ?? null : null;
 
   if (loading && lista.length === 0)
     return <p className="text-sm text-muted-foreground">Carregando…</p>;
@@ -240,6 +254,26 @@ export function RecorrenciasPanel() {
               {r.periodicidade} · dia {r.dia_vencimento}
               {r.metodo_pagamento ? ` · ${r.metodo_pagamento}` : ""}
             </span>
+            {/* Fornecedor/colaborador logo na linha: numa recorrência, saber
+                PARA QUEM ela paga é o que distingue "Aluguel" de "Aluguel".
+                O ícone diz o tipo sem gastar largura com a palavra. */}
+            {(() => {
+              const p = pessoa(r.colaborador_id ?? null);
+              if (!p) return null;
+              return (
+                <span
+                  className="inline-flex max-w-[12rem] items-center gap-1 text-[10px] text-muted-foreground"
+                  title={`${p.tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${p.nome}`}
+                >
+                  {p.tipo === "fornecedor" ? (
+                    <IconBuildingStore className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <IconUser className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="truncate">{p.nome}</span>
+                </span>
+              );
+            })()}
             <span className="ml-auto tabular-nums">{brl.format(r.valor_previsto)}</span>
             <div className="flex items-center gap-1">
               <Button

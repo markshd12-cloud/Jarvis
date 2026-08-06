@@ -204,6 +204,13 @@ export interface ParcelaRow {
   descricao: string;
   categoria_nome: string | null;
   centro_nome: string | null;
+  /**
+   * Fornecedor OU colaborador da despesa — os dois vivem em `fin_colaboradores`,
+   * distinguidos por `colaborador_tipo`. `null` quando a despesa não tem ninguém
+   * vinculado (é a maioria das compras avulsas).
+   */
+  colaborador_nome: string | null;
+  colaborador_tipo: "colaborador" | "fornecedor" | null;
   bu_id: string;
   bu_nome: string | null;
   valor_previsto: number;

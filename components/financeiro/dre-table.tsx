@@ -296,7 +296,7 @@ export function DreTable({
   // As colunas que levam PAD_GRUPO vêm mais largas: o padding come espaço útil,
   // e sem folga o número encostaria no título da coluna seguinte.
   const cols = fechamento
-    ? "grid-cols-[1fr_10.5rem_8.5rem_4.5rem_8.5rem]"
+    ? "grid-cols-[1fr_10.5rem_4.5rem_8.5rem_4.5rem_8.5rem]"
     : temPrevReal
       ? "grid-cols-[1fr_8rem_6rem_8rem_4.5rem]"
       : "grid-cols-[1fr_9rem_6rem]";
@@ -351,6 +351,7 @@ export function DreTable({
     previsto,
     avReal,
     avPrevisto,
+    avOrc,
     orcado,
     temMeta,
     bold,
@@ -361,6 +362,8 @@ export function DreTable({
     previsto: number;
     avReal: number;
     avPrevisto: number;
+    /** AV% da meta, sobre a Receita Bruta planejada. */
+    avOrc: number;
     orcado: number;
     temMeta: boolean;
     bold?: boolean;
@@ -378,7 +381,6 @@ export function DreTable({
           {metaEditor ?? (
             <span
               className={cn(
-                PAD_GRUPO,
                 "text-right tabular-nums",
                 txt,
                 // A meta é dado de primeira classe aqui — não pode ser mais fraca
@@ -389,6 +391,20 @@ export function DreTable({
               {temMeta ? brl.format(orcado) : "sem meta"}
             </span>
           )}
+          {/* AV da META, fechando o par "meta + sua análise" — espelha o que a
+              Visão de Caixa faz com previsto e realizado. Sem meta cadastrada
+              não há percentual a mostrar: 0% ali seria afirmar um plano que
+              ninguém fez. */}
+          <span
+            className={cn(
+              PAD_GRUPO,
+              "text-right text-muted-foreground",
+              txt,
+              bold && "font-semibold",
+            )}
+          >
+            {temMeta ? fmtAv(avOrc) : "—"}
+          </span>
           <span className="text-right">
             <Valor value={valor} bold={bold} />
           </span>
@@ -529,10 +545,19 @@ export function DreTable({
         {fechamento ? (
           <>
             <span
-              className={cn(PAD_GRUPO, "text-right")}
+              className="text-right"
               title="O que foi planejado para esta competência."
             >
               Meta
+            </span>
+            {/* O respiro fecha o par "meta + sua análise" e o separa do par do
+                realizado — mesma regra do layout de Visão de Caixa. Sem ele as
+                quatro colunas viram uma fileira só de números. */}
+            <span
+              className={cn(PAD_GRUPO, "text-right")}
+              title="Peso da meta sobre a Receita Bruta PLANEJADA — a meta medida contra o próprio plano."
+            >
+              AV %
             </span>
             <span
               className="text-right"
@@ -540,7 +565,12 @@ export function DreTable({
             >
               Realizado
             </span>
-            <span className="text-right">AV %</span>
+            <span
+              className="text-right"
+              title="Peso do realizado sobre a Receita Bruta realizada."
+            >
+              AV %
+            </span>
             <span
               className="text-right"
               title="Realizado − Meta. Positivo = melhor que o planejado, nos dois lados."
@@ -589,6 +619,7 @@ export function DreTable({
                   previsto={row.previsto}
                   avReal={row.av}
                   avPrevisto={row.avPrev}
+                  avOrc={row.avOrc}
                   orcado={row.orcado}
                   temMeta={row.temMeta}
                   bold
@@ -630,6 +661,7 @@ export function DreTable({
                   previsto={row.previsto}
                   avReal={row.av}
                   avPrevisto={row.avPrev}
+                  avOrc={row.avOrc}
                   orcado={row.orcado}
                   temMeta={row.temMeta}
                 />
@@ -685,8 +717,9 @@ export function DreTable({
                         previsto={leaf.previsto}
                         avReal={leaf.av}
                         avPrevisto={leaf.avPrev}
+                        avOrc={leaf.avOrc}
                         orcado={leaf.orcado}
-                  temMeta={leaf.temMeta}
+                        temMeta={leaf.temMeta}
                         bold={leaf.sub}
                         small
                         metaEditor={

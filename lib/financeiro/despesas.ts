@@ -405,7 +405,8 @@ export async function listParcelas(
        data_pagamento, status, metodo_pagamento, bu_id,
        business_units ( nome ),
        fin_despesas!inner ( id, descricao, num_parcelas, categoria_id, centro_custo_id,
-         cancelada, fin_categorias ( nome ), fin_centros_custo ( nome ) )`,
+         cancelada, fin_categorias ( nome ), fin_centros_custo ( nome ),
+         fin_colaboradores ( nome, tipo ) )`,
     )
     .eq("company_id", companyId)
     .eq("fin_despesas.cancelada", false)
@@ -469,6 +470,7 @@ export async function listParcelas(
       num_parcelas: number;
       fin_categorias: unknown;
       fin_centros_custo: unknown;
+      fin_colaboradores: unknown;
     }>(r.fin_despesas as never)!;
     const situacao: SituacaoParcela = r.data_pagamento
       ? "paga"
@@ -483,6 +485,17 @@ export async function listParcelas(
       descricao: desp.descricao,
       categoria_nome: one<{ nome: string }>(desp.fin_categorias as never)?.nome ?? null,
       centro_nome: one<{ nome: string }>(desp.fin_centros_custo as never)?.nome ?? null,
+      // Fornecedor e colaborador vivem na MESMA tabela, separados por `tipo`
+      // (62 fornecedores, 23 colaboradores). O tipo vai junto porque a tela
+      // precisa dizer QUAL dos dois é — "Bemol" e "João" no mesmo lugar sem
+      // rótulo obriga o leitor a adivinhar.
+      colaborador_nome:
+        one<{ nome: string }>(desp.fin_colaboradores as never)?.nome ?? null,
+      colaborador_tipo:
+        (one<{ tipo: string }>(desp.fin_colaboradores as never)?.tipo as
+          | "colaborador"
+          | "fornecedor"
+          | undefined) ?? null,
       bu_id: r.bu_id as string,
       bu_nome: bu?.nome ?? null,
       valor_previsto: Number(r.valor_previsto),

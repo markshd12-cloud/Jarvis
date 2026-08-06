@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  IconBuildingStore,
   IconCheckupList,
   IconChevronRight,
   IconPencil,
   IconPlus,
   IconRotate,
   IconTrash,
+  IconUser,
 } from "@tabler/icons-react";
 
 import { Button } from "@/components/ui/button";
@@ -522,6 +524,24 @@ export function ContasPagarPanel() {
                       )}
                       {p.metodo_pagamento && (
                         <span className="text-muted-foreground">{p.metodo_pagamento}</span>
+                      )}
+                      {/* Fornecedor/colaborador logo na linha: sem isto era
+                          preciso abrir a despesa para saber PARA QUEM o dinheiro
+                          vai — a informação que mais se procura numa conta a
+                          pagar. O ícone distingue os dois tipos sem gastar
+                          largura com a palavra. */}
+                      {p.colaborador_nome && (
+                        <span
+                          className="inline-flex max-w-[14rem] items-center gap-1 truncate text-muted-foreground"
+                          title={`${p.colaborador_tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${p.colaborador_nome}`}
+                        >
+                          {p.colaborador_tipo === "fornecedor" ? (
+                            <IconBuildingStore className="h-3.5 w-3.5 shrink-0" />
+                          ) : (
+                            <IconUser className="h-3.5 w-3.5 shrink-0" />
+                          )}
+                          <span className="truncate">{p.colaborador_nome}</span>
+                        </span>
                       )}
                       <span className="ml-auto w-24 text-right tabular-nums">
                         {brl.format(p.valor_previsto)}

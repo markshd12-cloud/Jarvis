@@ -325,8 +325,13 @@ export function FinanceiroShell() {
                 },
                 {
                   k: "previsto-realizado" as const,
-                  label: "Previsto e Realizado",
-                  hint: "Agrupa pelo VENCIMENTO — as contas que caem neste mês. Esse mesmo salário cai em agosto.",
+                  // "Visão de Caixa" e não "Previsto e Realizado": o que este
+                  // regime faz é agrupar pelo VENCIMENTO, ou seja, mostrar o que
+                  // entra e sai do caixa no mês. O nome antigo descrevia as
+                  // colunas, não o recorte, e confundia com o regime de Meta e
+                  // Realizado — que também tem coluna de realizado.
+                  label: "Visão de Caixa",
+                  hint: "Agrupa pelo VENCIMENTO — as contas que caem neste mês, ou seja, o que movimenta o caixa. O salário de julho pago em agosto aparece em agosto.",
                 },
                 {
                   k: "meta-realizado" as const,
