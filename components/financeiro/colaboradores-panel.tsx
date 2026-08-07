@@ -72,6 +72,7 @@ export function ColaboradoresPanel() {
   const [aviso, setAviso] = useState<string | null>(null);
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [dialog, setDialog] = useState<FinColaborador | "novo" | null>(null);
+  const [busca, setBusca] = useState("");
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -144,9 +145,26 @@ export function ColaboradoresPanel() {
     const m = members.find((x) => x.id === profileId);
     return m?.externa ? m.empresa : null;
   };
+  /**
+   * Busca por nome, documento ou cargo.
+   *
+   * Vai além do nome de propósito: com 85 cadastros, procurar "Bemol" e
+   * procurar o CNPJ dela são a mesma tarefa, e digitar o cargo ("professor")
+   * é como se acha um grupo inteiro de uma vez.
+   *
+   * Filtra em memória — a lista é pequena e assim a busca responde a cada tecla
+   * sem ida ao servidor.
+   */
+  const q = busca.trim().toLowerCase();
+  const filtrada = q
+    ? lista.filter((c) =>
+        [c.nome, c.cpf_cnpj ?? "", c.cargo ?? ""].join(" ").toLowerCase().includes(q),
+      )
+    : lista;
+
   const grupos = TIPOS_PESSOA.map((t) => ({
     tipo: t,
-    itens: lista.filter((c) => c.tipo === t),
+    itens: filtrada.filter((c) => c.tipo === t),
   }));
 
   return (
@@ -158,10 +176,15 @@ export function ColaboradoresPanel() {
             Pessoas internas para atrelar despesa de pessoal
           </p>
         </div>
+        <Input
+          className="ml-auto h-8 w-56"
+          placeholder="Buscar nome, documento ou cargo…"
+          value={busca}
+          onChange={(e) => setBusca(e.target.value)}
+        />
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto"
           onClick={importar}
           title="Cria um colaborador para cada usuário da empresa ainda não vinculado"
         >
@@ -190,9 +213,18 @@ export function ColaboradoresPanel() {
         <div key={g.tipo} className="flex flex-col gap-2">
           <h3 className="text-xs font-medium uppercase text-muted-foreground">
             {TIPO_LABEL[g.tipo]} · {g.itens.length}
+            {/* Com busca ativa, o total original evita a leitura "só existem 2
+                fornecedores" quando na verdade 2 casaram com o termo. */}
+            {q && (
+              <span className="ml-1 normal-case text-muted-foreground/70">
+                de {lista.filter((c) => c.tipo === g.tipo).length}
+              </span>
+            )}
           </h3>
           {g.itens.length === 0 ? (
-            <p className="text-sm text-muted-foreground">— nenhum —</p>
+            <p className="text-sm text-muted-foreground">
+              {q ? "— nenhum resultado —" : "— nenhum —"}
+            </p>
           ) : (
             <ul className="divide-y divide-border rounded-lg border border-border">
               {g.itens.map((c) => (

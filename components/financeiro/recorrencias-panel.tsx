@@ -35,6 +35,7 @@ import {
 import { SearchSelect } from "@/components/financeiro/search-select";
 import { cn } from "@/lib/utils";
 import {
+  cabeNoCiclo,
   METODOS_PAGAMENTO,
   PASSO_MESES,
   PERIODICIDADE_LABEL,
@@ -78,6 +79,28 @@ interface Dim {
   colaboradores: FinColaborador[];
 }
 
+/**
+ * Mês corrente em **America/Sao_Paulo**, não no fuso do navegador. Mesmo helper
+ * de Contas a pagar — na virada do mês o fuso errado devolveria o anterior.
+ */
+function mesAtualComp(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+  })
+    .format(new Date())
+    .slice(0, 7);
+}
+
+/** Soma n meses a uma competência 'AAAA-MM'. Vazio parte do mês corrente. */
+function addMesComp(ym: string, n: number): string {
+  const base = ym || mesAtualComp();
+  const [y, m] = base.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
 export function RecorrenciasPanel() {
   const [lista, setLista] = useState<FinRecorrencia[]>([]);
   const [dim, setDim] = useState<Dim | null>(null);
@@ -85,6 +108,25 @@ export function RecorrenciasPanel() {
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<FinRecorrencia | "novo" | null>(null);
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
+  /**
+   * Filtros espelhando Contas a pagar, TRADUZIDOS para o que uma recorrência é.
+   *
+   * Recorrência é um MOLDE, não uma parcela: não tem "vencida" nem "paga", que
+   * são estados de algo já gerado. O eixo equivalente é ativa × inativa.
+   *
+   * `competencia` filtra por CICLO — quais recorrências geram lançamento naquele
+   * mês. Uma trimestral só aparece de 3 em 3, e é a pergunta que mais se faz
+   * aqui ("o que cai em agosto?"). Vazio = todas.
+   */
+  const [filtros, setFiltros] = useState(() => ({
+    situacao: "ativas" as "ativas" | "inativas" | "todas",
+    competencia: "",
+    bu_id: "",
+    categoria_id: "",
+    busca: "",
+  }));
+  const setF = (k: keyof typeof filtros, v: string) =>
+    setFiltros((s) => ({ ...s, [k]: v }));
 
   const refetch = useCallback(async () => {
     setLoading(true);
@@ -186,6 +228,44 @@ export function RecorrenciasPanel() {
   const pessoa = (id: string | null) =>
     id ? dim?.colaboradores.find((c) => c.id === id) ?? null : null;
 
+  /**
+   * Aplicação dos filtros, em memória.
+   *
+   * A lista de recorrências é pequena (dezenas), então filtrar aqui evita cinco
+   * parâmetros novos na API e um ida-e-volta a cada tecla digitada na busca.
+   *
+   * A BU respeita o RATEIO: uma recorrência 50% Colégio / 50% CPPEM aparece nos
+   * dois filtros. Sem isso, filtrar por Colégio esconderia metade de uma despesa
+   * que é dele — o mesmo cuidado que Contas a pagar já toma.
+   */
+  const filtrada = lista.filter((r) => {
+    if (filtros.situacao === "ativas" && !r.ativo) return false;
+    if (filtros.situacao === "inativas" && r.ativo) return false;
+    if (filtros.competencia && !cabeNoCiclo(r, filtros.competencia)) return false;
+    if (filtros.categoria_id && r.categoria_id !== filtros.categoria_id) return false;
+    if (filtros.bu_id) {
+      const fatias = (r.rateio ?? []) as { bu_id: string }[];
+      const bate = fatias.length
+        ? fatias.some((f) => f.bu_id === filtros.bu_id)
+        : r.bu_id === filtros.bu_id;
+      if (!bate) return false;
+    }
+    if (filtros.busca.trim()) {
+      const q = filtros.busca.trim().toLowerCase();
+      const alvo = [
+        r.descricao,
+        catNome(r.categoria_id),
+        pessoa(r.colaborador_id ?? null)?.nome ?? "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      if (!alvo.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const totalFiltro = filtrada.reduce((s, r) => s + Number(r.valor_previsto || 0), 0);
+
   if (loading && lista.length === 0)
     return <p className="text-sm text-muted-foreground">Carregando…</p>;
 
@@ -217,10 +297,119 @@ export function RecorrenciasPanel() {
         atualiza os meses futuros ainda não pagos.
       </p>
 
+      {/* Mesma barra de Contas a pagar, com os eixos traduzidos para
+          recorrência — ver a nota em `filtros`. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex rounded-lg border border-border p-0.5">
+          {(
+            [
+              ["ativas", "Ativas"],
+              ["inativas", "Inativas"],
+              ["todas", "Todas"],
+            ] as const
+          ).map(([k, rot]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setF("situacao", k)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
+                filtros.situacao === k
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted",
+              )}
+            >
+              {rot}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-1">
+          <label className="text-[11px] text-muted-foreground">Competência:</label>
+          {/* Setas ◀ ▶ além do seletor: o campo `month` nativo é inconsistente
+              entre navegadores (às vezes o calendário nem abre). Com as setas dá
+              pra andar mês a mês sempre. Mesmo padrão de Contas a pagar. */}
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setF("competencia", addMesComp(filtros.competencia, -1))}
+            title="Mês anterior"
+          >
+            ◀
+          </Button>
+          <Input
+            type="month"
+            className="h-8 w-40"
+            value={filtros.competencia}
+            onChange={(e) => setF("competencia", e.target.value)}
+            title="Vazio = todas as competências"
+          />
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => setF("competencia", addMesComp(filtros.competencia, 1))}
+            title="Próximo mês"
+          >
+            ▶
+          </Button>
+          {filtros.competencia ? (
+            <button
+              type="button"
+              className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+              onClick={() => setF("competencia", "")}
+              title="Limpar (todas as competências)"
+            >
+              todas
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="rounded border border-border px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-muted"
+              onClick={() => setF("competencia", mesAtualComp())}
+              title="Só as que geram lançamento no mês corrente"
+            >
+              mês atual
+            </button>
+          )}
+        </div>
+
+        <select
+          className="h-8 w-auto rounded-lg border border-input bg-background px-2 text-xs outline-none"
+          value={filtros.bu_id}
+          onChange={(e) => setF("bu_id", e.target.value)}
+        >
+          <option value="">Todas as BUs</option>
+          {dim?.bus.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.nome}
+            </option>
+          ))}
+        </select>
+
+        <SearchSelect
+          className="w-52"
+          value={filtros.categoria_id}
+          onChange={(v) => setF("categoria_id", v)}
+          options={(dim?.categorias ?? []).map((c) => ({ value: c.id, label: c.nome }))}
+          allowEmpty
+          emptyLabel="Todas as categorias"
+          placeholder="Todas as categorias"
+        />
+
+        <Input
+          className="h-8 w-44"
+          placeholder="Buscar descrição…"
+          value={filtros.busca}
+          onChange={(e) => setF("busca", e.target.value)}
+        />
+      </div>
+
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <ul className="divide-y divide-border rounded-lg border border-border">
-        {lista.map((r) => (
+        {filtrada.map((r) => (
           <li key={r.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
             <span
               className={cn(
@@ -314,12 +503,26 @@ export function RecorrenciasPanel() {
             </div>
           </li>
         ))}
-        {lista.length === 0 && (
+        {filtrada.length === 0 && (
           <li className="px-3 py-6 text-center text-muted-foreground">
-            Nenhuma recorrência ainda.
+            {lista.length === 0
+              ? "Nenhuma recorrência ainda."
+              : "Nenhuma recorrência bate com os filtros."}
           </li>
         )}
       </ul>
+
+      {/* Espelha o rodapé de Contas a pagar. Diz "no filtro" de propósito: com
+          Ativas ligado por padrão, o número NÃO é o total de tudo. */}
+      {filtrada.length > 0 && (
+        <p className="text-right text-sm font-medium">
+          Total no filtro:{" "}
+          <span className="tabular-nums">{brl.format(totalFiltro)}</span>
+          <span className="ml-2 text-xs font-normal text-muted-foreground">
+            {filtrada.length} de {lista.length}
+          </span>
+        </p>
+      )}
 
       <Dialog open={dialog !== null} onOpenChange={(o) => !o && setDialog(null)}>
         {dialog !== null && dim && (

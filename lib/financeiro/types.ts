@@ -267,3 +267,38 @@ export interface OrcamentoSugestaoLinha {
   sugerido: number;
   mesesComDado: number; // em quantos dos N meses houve lançamento (confiança)
 }
+
+/** Meses de `de` até `ate` ('AAAA-MM'). Negativo se `ate` for anterior. */
+export function mesesEntre(de: string, ate: string): number {
+  const [a1, m1] = de.split("-").map(Number);
+  const [a2, m2] = ate.split("-").map(Number);
+  return (a2 - a1) * 12 + (m2 - m1);
+}
+
+/**
+ * A competência cai no ciclo da recorrência?
+ *
+ * Regra única para todas as periodicidades: conta os meses desde a âncora e
+ * checa se são múltiplos do passo (mensal 1, bimestral 2, trimestral 3,
+ * semestral 6, anual 12). Mensal aceita tudo, então nem calcula.
+ *
+ * A âncora é `inicio_competencia`; sem ela, o mês de criação — que preserva o
+ * comportamento anterior do 'anual', o único ciclo > 1 que existia antes da 0035.
+ * Sem nenhuma das duas não há como saber onde o ciclo começa: gera todo mês, que
+ * é o que o sistema fazia antes e nunca esconde despesa.
+ */
+export function cabeNoCiclo(
+  r: {
+    periodicidade: string;
+    inicio_competencia?: string | null;
+    created_at?: string | null;
+  },
+  competencia: string, // 'AAAA-MM'
+): boolean {
+  const passo = PASSO_MESES[r.periodicidade as Periodicidade] ?? 1;
+  if (passo === 1) return true;
+  const ancora = r.inicio_competencia ?? (r.created_at ?? "").slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(ancora)) return true;
+  const diff = mesesEntre(ancora, competencia);
+  return diff >= 0 && diff % passo === 0;
+}
