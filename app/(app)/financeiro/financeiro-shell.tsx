@@ -7,7 +7,6 @@ import {
   IconAddressBook,
   IconAlertTriangle,
   IconCategory,
-  IconWand,
   IconChartLine,
   IconChartPie,
   IconLayoutDashboard,
@@ -33,7 +32,6 @@ import type { DreResult } from "@/lib/contaazul/dre";
 
 import { CadastrosPanel } from "@/components/financeiro/cadastros-panel";
 import { CentroCustoPanel } from "@/components/financeiro/centro-custo-panel";
-import { ClassificacaoPanel } from "@/components/financeiro/classificacao-panel";
 import { ClientesPanel } from "@/components/financeiro/clientes-panel";
 import { ColaboradoresPanel } from "@/components/financeiro/colaboradores-panel";
 import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
@@ -65,8 +63,7 @@ type TabKey =
   | "orcamento"
   | "receita"
   | "inadimplentes"
-  | "clientes"
-  | "classificacao";
+  | "clientes";
 
 /**
  * Recorte escolhido no DRE. Os dois primeiros trocam a data que decide o mês da
@@ -89,7 +86,6 @@ const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode 
     { key: "inadimplentes", label: "Inadimplentes", ready: true, icon: <IconAlertTriangle className={iconCls} /> },
     { key: "vendas", label: "Vendas e Faturar", ready: true, icon: <IconShoppingCart className={iconCls} /> },
     { key: "cadastros", label: "Categorias & Centros", ready: true, icon: <IconCategory className={iconCls} /> },
-    { key: "classificacao", label: "Classificação sugerida", ready: true, icon: <IconWand className={iconCls} /> },
     { key: "colaboradores", label: "Colaboradores", ready: true, icon: <IconUsers className={iconCls} /> },
     { key: "clientes", label: "Clientes", ready: true, icon: <IconAddressBook className={iconCls} /> },
   ];
@@ -520,8 +516,6 @@ export function FinanceiroShell() {
       ) : null}
 
       {active === "cadastros" ? <CadastrosPanel /> : null}
-
-      {active === "classificacao" ? <ClassificacaoPanel /> : null}
 
       {active === "centro" ? <CentroCustoPanel /> : null}
 

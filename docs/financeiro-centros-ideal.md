@@ -43,23 +43,28 @@ sinal de alerta, não de economia).
   centro/categoria (conecta com o DRE Orçamentário). Botão "usar metas do documento".
 - Mostrar, na visão anual, **real R$ vs meta R$** (além do %).
 
-### ✅ Fase 3 — Classificação categoria → Centro de Custo (assistente READ-ONLY, FEITO 2026-07-29)
-- **`lib/financeiro/classificar-centro.ts`** (puro): `sugerirCentro(nome)` com regras de
-  palavra-chave dos exemplos do arquivo, em ordem de prioridade, devolvendo confiança
-  (alta/media/baixa) + termo que casou. Validado contra as 93 categorias reais: **70% alta,
-  26% média, 4% sem sugestão**.
-- **`components/financeiro/classificacao-panel.tsx`** + aba **"Classificação sugerida"** no
-  shell do Financeiro: tabela read-only (Categoria · Centro sugerido · Faixa ideal · Confiança ·
-  Termo) + resumo de cobertura + aviso de que é assistivo. Busca as categorias do endpoint
-  existente `/api/financeiro/categorias` e roda o classificador no client — **NÃO grava nada,
-  sem migration, sem tocar em painel existente.**
-- Uso: padronizar a categorização por centro no Conta Azul. Bugs pegos no teste: `" ia"` (casava
-  energIA/férIAs/materIAl) e `"iss"` (casava comISSão/admISSional) — corrigidos.
+### ❌ Fase 3 — Classificação categoria → Centro de Custo (feita 2026-07-29, **REMOVIDA 2026-08-07**)
+
+Existiu como aba **"Classificação sugerida"**: `lib/financeiro/classificar-centro.ts` casava o
+nome da categoria contra regras de palavra-chave e devolvia um Centro de Custo com confiança
+(alta/média/baixa); `components/financeiro/classificacao-panel.tsx` mostrava isso numa tabela
+read-only. Cobria 70% das 93 categorias com confiança alta.
+
+**Removida a pedido do requisitante — não servia a nada na operação.** O motivo é estrutural, e
+vale registrar para não ser reconstruída igual: a sugestão nunca virava ação. Era read-only por
+projeto, então quem olhasse a tabela ainda precisava abrir o Conta Azul e recategorizar à mão,
+categoria por categoria. Um assistente que acerta 70% mas não aplica nada custa mais atenção do
+que economiza.
+
+Se o problema de padronizar categoria → centro voltar, o caminho é a Fase 4 (persistir o mapa),
+não repetir a tela consultiva.
 
 ### ⏳ Fase 4 (futuro) — Persistir o mapa categoria → centro
 - Se quiser aplicar as sugestões de forma persistente (para "despesa por BU"/Passo 11), aí sim:
-  migration com coluna/tabela de mapa + revisão humana + backfill. Decisão de modelo de dados —
-  fora do escopo do read-only atual.
+  migration com coluna/tabela de mapa + revisão humana + backfill. Decisão de modelo de dados.
+- O classificador por palavra-chave foi apagado junto com a aba; recuperável no git
+  (`git show 012fc80:lib/financeiro/classificar-centro.ts`) se as regras servirem de ponto de
+  partida para o backfill.
 
 ---
 
