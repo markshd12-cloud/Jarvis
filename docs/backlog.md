@@ -20,9 +20,27 @@ financeiro em `financeiro-status.md`. Atualizado 2026-07-20.
   - Fluxo do redeploy env-only: editar `.env.production` no servidor → `docker stack deploy`
     (a seção environment muda o spec → recria a task). Ver `financeiro-status.md`/memória de deploy.
 
+- **⚠️ `GOOGLE_SERVICE_ACCOUNT_JSON` exposta de novo (2026-08-07).** Ao conferir o
+  ambiente do container, um `printenv | grep` sem filtro imprimiu a **private_key
+  inteira** da service account `jarvis-gemini@jarvis-498903` no log da sessão.
+  Essa credencial dá acesso a **GA4, Vertex (Gemini/Imagen/embeddings) e YouTube**
+  de uma vez — é a mais abrangente do projeto.
+  - Rotacionar: GCP → IAM → Contas de serviço → `jarvis-gemini` → Chaves → criar
+    nova, atualizar `.env.production` **e o Portainer**, apagar a antiga.
+  - Lição: ao inspecionar env em produção, filtrar por NOME
+    (`printenv NOME >/dev/null && echo ok`), nunca listar valores.
+
 ---
 
 ## 🟢 Financeiro — features que faltam
+
+- **Despesa-envelope: baixas parciais** — 📄 **arquitetado, aguardando validação**
+  em `financeiro-baixas-parciais.md`. Conta de teto (ex.: "Reposição de estoque
+  R$ 10.000") consumida por compras pequenas com data e descrição próprias, em
+  vez de "pagar tudo ou dar desconto". Nova tabela `fin_baixas`, status `parcial`,
+  saldo do envelope. ⚠️ Toca o DRE: hoje o realizado só conta `status = 'paga'`,
+  então parcela parcial aparece como zero. 4 decisões pendentes do requisitante
+  (saldo que sobra, estouro do teto, rateio por baixa, marcador de envelope).
 
 - **Passo 17 · Produtos & Serviços** (baixa prioridade) — read `/produtos` + `/servico`
   do CA: itens vendáveis, tipo, preço, vendas/ano, receita. É o ÚNICO passo de feature
