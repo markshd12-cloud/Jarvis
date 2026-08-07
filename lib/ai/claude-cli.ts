@@ -115,20 +115,34 @@ const DISALLOWED_TOOLS = [
   "TodoWrite",
 ];
 
-// Extensões de arquivo por mídia (imagens que o Claude lê via Read).
-const IMAGE_EXT: Record<string, string> = {
+/**
+ * Extensão de arquivo por mídia — anexos binários que o Claude abre com a
+ * ferramenta Read.
+ *
+ * O PDF entra aqui e não pela extração de texto de propósito: o CLI lê o
+ * arquivo com as próprias ferramentas, então enxerga tabela, layout e até
+ * página ESCANEADA (que é imagem, e de onde nenhum extrator de texto tiraria
+ * nada). É o mesmo caminho da imagem, com outra extensão.
+ */
+const ANEXO_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/jpg": "jpg",
   "image/webp": "webp",
   "image/gif": "gif",
+  "application/pdf": "pdf",
 };
 
-/** Imagem anexada a ser gravada no workspace para o Claude ler. */
+/**
+ * Anexo binário gravado no workspace para o Claude abrir com o Read.
+ * Imagem ou PDF — o tipo só decide a extensão do arquivo.
+ */
 export interface ClaudeImage {
   mediaType: string;
-  /** Data URL (`data:image/png;base64,...`). */
+  /** Data URL (`data:image/png;base64,...` ou `data:application/pdf;base64,...`). */
   dataUrl: string;
+  /** Nome original, para o modelo citar o arquivo como o usuário o conhece. */
+  filename?: string;
 }
 
 /**
@@ -183,21 +197,27 @@ export async function* streamClaudeText(
   const systemFile = join(cwd, "system.txt");
   await writeFile(systemFile, opts.system, "utf8");
 
-  // Grava as imagens no workspace com nomes seguros (sem input do usuário no
-  // nome → sem path traversal) e instrui o modelo a lê-las.
+  // Grava os anexos no workspace com nomes seguros (sem input do usuário no
+  // nome → sem path traversal) e instrui o modelo a lê-los.
   let prompt = opts.prompt;
   if (images.length) {
     const names: string[] = [];
     for (let i = 0; i < images.length; i++) {
-      const ext = IMAGE_EXT[images[i].mediaType.toLowerCase()] ?? "png";
+      const ext = ANEXO_EXT[images[i].mediaType.toLowerCase()] ?? "png";
       const fname = `anexo-${i + 1}.${ext}`;
       const base64 = images[i].dataUrl.replace(/^data:[^,]*,/, "");
       await writeFile(join(cwd, fname), Buffer.from(base64, "base64"));
       names.push(fname);
     }
+    // O nome ORIGINAL vai no texto para o modelo se referir ao arquivo como o
+    // usuário o conhece ("o boleto da Compesa") em vez de "anexo-2.pdf".
+    const rotulos = images
+      .map((a, i) => (a.filename ? `${names[i]} (${a.filename})` : names[i]))
+      .join(", ");
     prompt =
-      `${opts.prompt}\n\n[Imagens anexadas nesta pasta: ${names.join(", ")}. ` +
-      `Use a ferramenta Read para visualizá-las antes de responder.]`;
+      `${opts.prompt}\n\n[Arquivos anexados nesta pasta: ${rotulos}. ` +
+      `Use a ferramenta Read para abri-los antes de responder. ` +
+      `PDFs podem ter várias páginas — leia todas as que forem relevantes.]`;
   }
 
   const args = [

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type FileUIPart, type UIMessage } from "ai";
-import { PaperclipIcon } from "lucide-react";
+import { FileTextIcon, PaperclipIcon } from "lucide-react";
 
 import { AiChatInput } from "@/components/ai-chat-input";
 import { Markdown } from "@/components/markdown";
@@ -199,6 +199,24 @@ export function Chat({
                       alt={part.filename ?? "imagem anexada"}
                       className="mt-1 max-h-64 rounded-lg border border-primary-foreground/20"
                     />
+                  );
+                }
+                // PDF não tem miniatura — vira um chip clicável. Sem isto o
+                // anexo enviado sumia da conversa: o modelo respondia sobre um
+                // arquivo que o histórico não mostrava. O link abre o próprio
+                // data URL, então funciona sem storage.
+                if (part.type === "file" && part.mediaType === "application/pdf") {
+                  return (
+                    <a
+                      key={i}
+                      href={part.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-flex max-w-full items-center gap-2 rounded-lg border border-primary-foreground/20 bg-primary-foreground/10 px-2.5 py-1.5 text-xs hover:bg-primary-foreground/20"
+                    >
+                      <FileTextIcon className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{part.filename ?? "documento.pdf"}</span>
+                    </a>
                   );
                 }
                 return null;

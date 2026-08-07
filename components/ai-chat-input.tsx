@@ -73,8 +73,24 @@ const MEDIA_EXT: Record<string, string> = {
   "image/gif": "gif",
 };
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/**
+ * PDF sobe como BINÁRIO, junto das imagens — não pela extração de texto.
+ *
+ * O provider principal é o CLI do Claude, que grava o anexo num workspace
+ * isolado e o abre com a própria ferramenta Read. Assim ele enxerga tabela,
+ * layout e página ESCANEADA — de onde um extrator de texto não tiraria nada.
+ *
+ * Teto maior que o das imagens porque contrato e nota fiscal digitalizada
+ * passam de 5 MB com facilidade.
+ */
+const PDF_EXTENSIONS = [".pdf"] as const;
+const MAX_PDF_BYTES = 20 * 1024 * 1024;
 
-const ACCEPT_ATTR = [...ACCEPTED_EXTENSIONS, ...IMAGE_EXTENSIONS].join(",");
+const ACCEPT_ATTR = [
+  ...ACCEPTED_EXTENSIONS,
+  ...IMAGE_EXTENSIONS,
+  ...PDF_EXTENSIONS,
+].join(",");
 const TEXT_SET = new Set<string>(ACCEPTED_EXTENSIONS);
 const IMAGE_SET = new Set<string>(IMAGE_EXTENSIONS);
 
@@ -263,9 +279,21 @@ export function AiChatInput({
       const ext = extensionOf(file.name);
       // Prints colados vêm sem extensão no nome → detecta imagem pelo MIME.
       const isImage = file.type.startsWith("image/") || IMAGE_SET.has(ext);
+      const isPdf = file.type === "application/pdf" || ext === ".pdf";
       const label = file.name || "arquivo";
       try {
-        if (isImage) {
+        if (isPdf) {
+          if (file.size > MAX_PDF_BYTES) {
+            errors.push(`${label}: PDF acima de 20 MB`);
+            continue;
+          }
+          addedImages.push({
+            type: "file",
+            filename: file.name?.trim() || "documento.pdf",
+            mediaType: "application/pdf",
+            url: await fileToDataUrl(file),
+          });
+        } else if (isImage) {
           if (file.size > MAX_IMAGE_BYTES) {
             errors.push(`${label}: imagem acima de 5 MB`);
             continue;

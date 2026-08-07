@@ -127,11 +127,16 @@ function addMonths(iso: string, n: number): string {
   return base.toISOString().slice(0, 10);
 }
 
+/**
+ * Ordem: do panorama ao problema. "Todas" primeiro porque é o padrão e a visão
+ * completa; "Vencidas" por último porque é o destino de quem foi procurar
+ * problema — e ficar no fim deixa o botão sempre no mesmo lugar, fácil de achar.
+ */
 const GRUPOS: { key: GrupoParcela; label: string }[] = [
+  { key: "todas", label: "Todas" },
+  { key: "pagas", label: "Pagas" },
   { key: "a_vencer", label: "A vencer" },
   { key: "vencida", label: "Vencidas" },
-  { key: "pagas", label: "Pagas" },
-  { key: "todas", label: "Todas" },
 ];
 
 interface Dimensoes {
@@ -166,6 +171,9 @@ interface Grupo {
   despesa_id: string;
   descricao: string;
   categoria_nome: string | null;
+  /** Fornecedor/colaborador da DESPESA — igual em todas as parcelas dela. */
+  colaborador_nome: string | null;
+  colaborador_tipo: "colaborador" | "fornecedor" | null;
   num_parcelas: number;
   parcelas: ParcelaRow[];
   total: number;
@@ -182,12 +190,19 @@ export function ContasPagarPanel() {
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [baixando, setBaixando] = useState<ParcelaRow | null>(null);
   const [aberto, setAberto] = useState<Set<string>>(new Set());
-  // Abre no MÊS ATUAL. Sem filtro de competência a consulta traz todas as parcelas
-  // de todos os meses — com as recorrências materializadas 12 meses à frente isso
-  // passou de milhares de linhas, a resposta estourava e o painel quebrava no
-  // `r.json()`. "Todos" continua a um clique de distância.
+  /**
+   * Abre no MÊS ATUAL. Sem filtro de competência a consulta traz todas as
+   * parcelas de todos os meses — com as recorrências materializadas 12 meses à
+   * frente isso passa de 2.700 linhas, a resposta estoura e o painel quebra no
+   * `r.json()`. "Todos" continua a um clique de distância.
+   *
+   * O grupo abre em TODAS (antes era "a vencer"). Abrir filtrado escondia o que
+   * está EM ATRASO — e o rodapé "Total do filtro" somava só o que estava na
+   * tela, dando a impressão de que aquele era o total do mês. Com o recorte de
+   * competência valendo, "todas" carrega ~120 linhas: o volume não é problema.
+   */
   const [filtros, setFiltros] = useState(() => ({
-    grupo: "a_vencer" as GrupoParcela,
+    grupo: "todas" as GrupoParcela,
     bu_id: "",
     categoria_id: "",
     busca: "",
@@ -250,6 +265,8 @@ export function ContasPagarPanel() {
           despesa_id: p.despesa_id,
           descricao: p.descricao,
           categoria_nome: p.categoria_nome,
+          colaborador_nome: p.colaborador_nome,
+          colaborador_tipo: p.colaborador_tipo,
           num_parcelas: p.num_parcelas,
           parcelas: [],
           total: 0,
@@ -467,6 +484,23 @@ export function ContasPagarPanel() {
                   >
                     {g.categoria_nome ?? "—"}
                   </span>
+                  {/* Fornecedor/colaborador na PRIMEIRA linha, logo após a
+                      categoria e em destaque: "para quem vai o dinheiro" é o
+                      que mais se procura numa conta a pagar, e no rodapé da
+                      segunda linha ele competia com método e rateio. */}
+                  {g.colaborador_nome && (
+                    <span
+                      className="inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-medium text-foreground"
+                      title={`${g.colaborador_tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${g.colaborador_nome}`}
+                    >
+                      {g.colaborador_tipo === "fornecedor" ? (
+                        <IconBuildingStore className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <IconUser className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      )}
+                      <span className="truncate uppercase">{g.colaborador_nome}</span>
+                    </span>
+                  )}
                 </button>
                 <SituacaoBadge s={g.situacao} />
                 <span className="w-28 text-right tabular-nums">{brl.format(g.total)}</span>
@@ -524,24 +558,6 @@ export function ContasPagarPanel() {
                       )}
                       {p.metodo_pagamento && (
                         <span className="text-muted-foreground">{p.metodo_pagamento}</span>
-                      )}
-                      {/* Fornecedor/colaborador logo na linha: sem isto era
-                          preciso abrir a despesa para saber PARA QUEM o dinheiro
-                          vai — a informação que mais se procura numa conta a
-                          pagar. O ícone distingue os dois tipos sem gastar
-                          largura com a palavra. */}
-                      {p.colaborador_nome && (
-                        <span
-                          className="inline-flex max-w-[14rem] items-center gap-1 truncate text-muted-foreground"
-                          title={`${p.colaborador_tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${p.colaborador_nome}`}
-                        >
-                          {p.colaborador_tipo === "fornecedor" ? (
-                            <IconBuildingStore className="h-3.5 w-3.5 shrink-0" />
-                          ) : (
-                            <IconUser className="h-3.5 w-3.5 shrink-0" />
-                          )}
-                          <span className="truncate">{p.colaborador_nome}</span>
-                        </span>
                       )}
                       <span className="ml-auto w-24 text-right tabular-nums">
                         {brl.format(p.valor_previsto)}

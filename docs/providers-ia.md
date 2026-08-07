@@ -179,3 +179,243 @@ ChatGPT → Reconectar (ou Desconectar e Conectar).
 O Jarvis grava no formato compatível (`{ OPENAI_API_KEY, tokens, last_refresh }`,
 sem o campo `auth_mode`). Se um arquivo antigo tiver `"auth_mode": "Chatgpt"`,
 reconecte pela interface para regravar.
+
+---
+
+# Como o "sem API key" funciona por dentro
+
+As três seções abaixo explicam o **mecanismo** de cada provider, não o uso.
+Escritas em 2026-08-07.
+
+Os três resolvem o mesmo problema — autenticar sem pagar por requisição — de
+**três formas diferentes**, porque as três empresas expõem coisas diferentes:
+
+| Provider | Estratégia | Credencial | Quem paga |
+|---|---|---|---|
+| **Claude** | dirige o **binário do CLI** por subprocess | sessão do `claude login` | assinatura Pro/Max |
+| **GPT** | fala **HTTP direto** com o backend do Codex | login do ChatGPT | assinatura ChatGPT |
+| **Gemini** | assina um **JWT** e troca por access token | service account | projeto Google Cloud |
+
+---
+
+## 1 · GPT (Codex OAuth) — HTTP direto
+
+### A ideia central
+
+Uma API key é uma credencial de **cobrança por requisição**. O login do ChatGPT é
+uma credencial de **assinatura**. O backend do Codex aceita as duas — e o Jarvis
+usa a segunda.
+
+Na prática: em vez de `Authorization: Bearer sk-proj-…` (API key), a requisição
+vai com `Authorization: Bearer <access_token do seu login>`. O endpoint é o mesmo
+que o **Codex CLI oficial** usa, e o token é lido do **mesmo arquivo** que ele
+grava. O Jarvis não spawna o CLI — fala HTTP direto (`lib/ai/codex.ts`), o que o
+faz rodar em qualquer host, inclusive container sem o binário instalado.
+
+O código ainda **remove `OPENAI_API_KEY` do ambiente** para garantir que nenhuma
+biblioteca a use por engano e gere cobrança silenciosa.
+
+### O fluxo de login (OAuth PKCE)
+
+Dois caminhos, escolhidos pelo lugar onde o navegador roda:
+
+**Loopback (dev local)** — `lib/ai/codex-loopback.ts`. O Jarvis sobe um servidor
+HTTP em `127.0.0.1:1455`, abre a tela de autorização da OpenAI e **captura o
+redirect sozinho**. É exatamente o que o Codex CLI faz. Só funciona quando o
+navegador e o servidor estão na mesma máquina.
+
+**Device Auth (VPS)** — `app/api/providers/openai/device-start` e `device-poll`.
+O servidor pede um código, mostra na tela, você digita no navegador de onde
+estiver, e o servidor fica consultando até você autorizar. É o caminho para
+produção, porque em VPS o `localhost:1455` apontaria para a SUA máquina, não
+para o servidor.
+
+Nos dois, o PKCE é S256: o `code_verifier` fica num **cookie httpOnly de 10
+minutos**, junto de um `state` anti-CSRF. Nada disso encosta no banco.
+
+Conectar/desconectar exige a permissão `conhecimento:gerenciar` — é uma conexão
+da empresa, mesmo tratamento do Notion.
+
+### Onde o token vive
+
+`~/.codex/auth.json` — o mesmo arquivo do Codex CLI, no formato dele
+(`{ OPENAI_API_KEY, tokens, last_refresh }`). Respeita `CODEX_HOME`.
+
+**Não vai para `.env` nem para o banco.** A consequência prática é que o GPT só
+funciona onde o processo tem disco persistente: local ou VPS **com volume
+montado**. Em serverless sem volume, não funciona — e é por isso que o
+`jarvis.stack.yml` monta `~/.codex`.
+
+### O `chatgpt-account-id`
+
+O backend Codex exige um header com a conta. Ele não vem em campo separado: o
+Jarvis **decodifica o JWT do access_token** e lê a claim `chatgpt_account_id`
+(`accountIdFromToken`, em `codex-auth.ts`). Se o arquivo já trouxer `account_id`,
+esse tem precedência.
+
+### Os headers que fazem funcionar
+
+```
+Authorization: Bearer <access_token>
+Accept: text/event-stream
+OpenAI-Beta: responses=experimental
+originator: codex_cli_rs
+chatgpt-account-id: <da claim do JWT>
+session_id: <uuid por requisição>
+```
+
+O `originator: codex_cli_rs` é o que identifica o cliente como o Codex CLI. Sem
+ele o backend recusa.
+
+### Renovação do token
+
+Transparente. Antes de cada chamada o token é validado; perto de expirar, o
+`refresh_token` renova e o arquivo é regravado.
+
+Há ainda uma **segunda tentativa**: se a requisição voltar **401** (token
+revogado na borda, que a checagem local não pega), o cliente faz um refresh e
+repete a chamada uma vez. Só então desiste.
+
+### Por que só `gpt-5.5`
+
+Modelos com sufixo `-codex` (`gpt-5-codex`) são recusados com _"model is not
+supported when using Codex with a ChatGPT account"_. Eles existem só para quem
+paga por API key. Com login de assinatura, o aceito é `gpt-5.5`.
+
+### Como se encaixa no chat
+
+`streamCodexText` emite os **mesmos `ClaudeChunk`** (`text` | `status`) que o
+bridge do Claude. Foi de propósito: todo o streaming, a persistência e o feedback
+"pensando…" da UI são reaproveitados sem um ramo novo.
+
+Se o Codex falhar **antes de emitir texto**, lança `CodexError`/`CodexAuthError`
+e o chamador cai no Gemini. Depois que o texto começou, não há fallback — trocar
+de motor no meio da resposta produziria um texto costurado de dois autores.
+
+### Mapa dos arquivos
+
+| Arquivo | Papel |
+|---|---|
+| `lib/ai/codex.ts` | cliente HTTP do `/responses`, streaming e retry no 401 |
+| `lib/ai/codex-auth.ts` | lê, grava e renova o `auth.json`; extrai o account_id do JWT |
+| `lib/ai/codex-oauth.ts` | PKCE, state, cookies e o gate de permissão |
+| `lib/ai/codex-loopback.ts` | servidor `127.0.0.1:1455` que captura o redirect |
+| `lib/ai/codex-image.ts` | imagem pela ferramenta `image_generation` (incerto, cai no Imagen) |
+| `app/api/providers/openai/*` | rotas: login-start, auth-start, auth-complete, device-start, device-poll, status, logout |
+
+### O que pode quebrar
+
+**A OpenAI mudar o endpoint ou o `originator`.** É uma API não pública, usada
+por engenharia reversa do CLI oficial. Não há contrato de estabilidade — se um
+dia parar, o sintoma será 4xx em toda chamada, e a correção é acompanhar o que o
+Codex CLI passou a enviar.
+
+**O volume do `~/.codex` sumir.** Perde o login; reconecta pela interface.
+
+---
+
+## 2 · Claude (CLI) — bridge por subprocess
+
+### A ideia central
+
+Aqui **não há requisição HTTP nossa**. O Jarvis executa o binário do **Claude
+Code CLI** como subprocesso, em modo `--print` (não-interativo) com saída
+`stream-json`, e lê o stdout linha a linha.
+
+O truque está numa regra do próprio CLI: **quando ele não encontra
+`ANTHROPIC_API_KEY` no ambiente, cai automaticamente nas credenciais do
+`claude login`** — o token OAuth da conta Pro/Max, em
+`~/.claude/.credentials.json`.
+
+Ou seja, o "sem API key" aqui é literal: a ausência da variável é o que ativa o
+caminho da assinatura.
+
+### O ambiente é montado do zero
+
+`buildCleanEnv()` **não repassa `process.env` inteiro**. Monta um ambiente novo
+só com as variáveis de sistema necessárias e, por cima, apaga explicitamente:
+
+```
+delete env.ANTHROPIC_API_KEY
+delete env.ANTHROPIC_AUTH_TOKEN
+```
+
+Blindagem dupla: se alguém puser uma chave no `.env` por engano, ela não chega ao
+CLI e não vira cobrança.
+
+### O isolamento (a parte que mais importa)
+
+O CLI é um **agente**, e um agente solto no repositório seria um risco. O bridge
+o encaixota:
+
+- **`cwd` num diretório temporário vazio** (`mkdtemp`) — sem `CLAUDE.md`, sem
+  repositório, sem nada para ele explorar. Os anexos são gravados justamente ali.
+- **`--strict-mcp-config`** — ignora TODOS os servidores MCP globais do usuário
+  (Google Drive, Notion, n8n). Essas ferramentas não entram no chat.
+- **Ferramentas agênticas desligadas** — `Bash`, `Write`, `Edit`, `Glob` e
+  companhia entram na lista de negadas. Queremos um chat de texto, não um agente
+  mexendo em arquivo e rede.
+- **Exceção deliberada:** quando há anexo, o `Read` é liberado **confinado ao
+  workspace** (`--allowedTools "Read(./**)"`). É o que permite ao modelo abrir a
+  imagem ou o PDF — e só eles.
+
+### Onde o token vive
+
+`~/.claude/.credentials.json`, gravado pelo `claude login`. Como o GPT, é
+**arquivo em disco**: exige volume no Docker e não funciona em serverless.
+
+### O que pode quebrar
+
+**O binário `claude` não estar no PATH.** O resolvedor procura com
+`command -v` / `where` e cacheia por processo; no Windows prefere o shim `.cmd`.
+Não achando, tenta `"claude"` e falha na hora do spawn.
+
+**A sessão expirar.** Só reconectando com `claude login` no host.
+
+---
+
+## 3 · Gemini (Vertex) — JWT assinado
+
+### A ideia central
+
+Aqui não há login de usuário nenhum: a credencial é uma **service account**, e a
+autenticação é o fluxo padrão do Google — assinar um JWT com a chave privada e
+trocá-lo por um access token de curta duração.
+
+`lib/google/auth.ts` faz isso em ~40 linhas, sem SDK:
+
+1. monta o cabeçalho `{alg: RS256, typ: JWT}` e o payload com `iss` (o e-mail da
+   service account), `scope`, `aud` (o endpoint de token), `iat` e `exp`;
+2. assina com `createSign("RSA-SHA256")` usando a `private_key`;
+3. troca no `oauth2.googleapis.com/token` com
+   `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`.
+
+### Um helper, várias APIs
+
+A função é **genérica por escopo** — a mesma serve para tudo que é Google:
+
+```
+analytics.readonly        → GA4
+cloud-platform            → Vertex (Gemini, Imagen, embeddings)
+yt-analytics.readonly     → YouTube (nível B)
+```
+
+O token é **cacheado por escopo em memória**, renovado 1 minuto antes de expirar.
+Escopos diferentes não disputam a mesma entrada.
+
+### Onde a credencial vive
+
+**Em variável de ambiente** (`GOOGLE_SERVICE_ACCOUNT_JSON`, o JSON numa linha) —
+diferente dos outros dois. Isso é o que permite ao Gemini funcionar em qualquer
+lugar, inclusive serverless: não depende de disco.
+
+Em compensação, é a credencial mais sensível dos três: um arquivo vazado dá
+acesso a GA4, Vertex e YouTube de uma vez.
+
+### O que pode quebrar
+
+**Cobrança do projeto suspensa.** Já aconteceu aqui: o `jarvis-498903` ficou
+bloqueado e a memória evolutiva parou de gerar embeddings.
+
+**Permissão faltando na service account.** Cada API precisa do papel dela — ser
+Leitor no GA4 não dá acesso ao Vertex.

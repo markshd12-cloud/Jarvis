@@ -78,6 +78,11 @@
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
+  /* Fundo dos cartões de despesa (Contas a pagar / Recorrências). Verde-musgo
+     bem lavado: separa a lista de dinheiro do resto da tela sem competir com o
+     verde de marca, que é vivo e fica reservado para ação. */
+  --fin-card: oklch(0.975 0.012 145);        /* ≈ #f2f9f2 */
+  --fin-card-hover: oklch(0.955 0.020 145);  /* ≈ #e8f4e8 */
   --input: oklch(0.922 0 0);
   /* Foco/realce: verde de marca */
   --ring: var(--brand);
@@ -124,6 +129,10 @@
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
+  /* Equivalente escuro — musgo profundo, na faixa do #142a14 pedido. Precisa
+     ficar ACIMA do --background (preto puro) para o cartão existir como plano. */
+  --fin-card: oklch(0.235 0.045 145);        /* ≈ #0f2410 */
+  --fin-card-hover: oklch(0.285 0.050 145);  /* ≈ #19311a */
   --input: oklch(1 0 0 / 15%);
   --ring: var(--brand);
   --chart-1: var(--brand);
@@ -221,13 +230,22 @@
     background-color: color-mix(in oklab, var(--foreground) 7%, transparent);
   }
 
-  /* Cartão de um agrupamento (a "dívida" em Contas a Pagar). */
+  /* Cartão de um agrupamento (a "dívida" em Contas a Pagar, a recorrência).
+     O fundo próprio é o que separa "linhas de dinheiro" do resto da tela — sem
+     ele os cartões se dissolviam no fundo e a lista virava um bloco só. */
   .fin-card {
     @apply rounded-lg border border-border transition-colors duration-150;
+    background-color: var(--fin-card);
   }
   .fin-card:hover {
     border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
-    background-color: color-mix(in oklab, var(--foreground) 4%, transparent);
+    background-color: var(--fin-card-hover);
+  }
+
+  /* Linha de parcela DENTRO do cartão: herda o fundo do cartão, então o hover
+     precisa ser um véu por cima — cor fixa aqui apagaria o musgo. */
+  .fin-card .fin-row:hover {
+    background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
   }
 
   /* Tabela: zebra sutil + realce da linha sob o cursor.

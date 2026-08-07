@@ -646,11 +646,25 @@ export async function POST(req: Request) {
     : "";
   const system = agentBlock + BASE_SYSTEM + projectBlock + knowledge;
 
-  // Imagens anexadas (file parts) → Claude lê via ferramenta Read confinada.
+  /**
+   * Anexos binários (file parts) → o Claude abre com a ferramenta Read, dentro
+   * do workspace temporário e isolado.
+   *
+   * Imagem E PDF pelo mesmo caminho: o CLI lê o arquivo de verdade, então
+   * enxerga tabela, layout e página escaneada. Extrair o texto antes seria pior
+   * — perderia estrutura e devolveria vazio num PDF que é só imagem.
+   */
   const images: ClaudeImage[] = [];
   for (const part of message.parts ?? []) {
-    if (part.type === "file" && part.mediaType.startsWith("image/")) {
-      images.push({ mediaType: part.mediaType, dataUrl: part.url });
+    if (
+      part.type === "file" &&
+      (part.mediaType.startsWith("image/") || part.mediaType === "application/pdf")
+    ) {
+      images.push({
+        mediaType: part.mediaType,
+        dataUrl: part.url,
+        filename: part.filename,
+      });
     }
   }
 
@@ -730,10 +744,28 @@ export async function POST(req: Request) {
     return createUIMessageStreamResponse({ stream });
   }
 
-  // ---- Caminho alternativo: Gemini via Vertex (AI SDK, com ferramentas) ----
+  /**
+   * ---- Caminho alternativo: Gemini via Vertex (AI SDK, com ferramentas) ----
+   *
+   * Este caminho NÃO recebe os anexos binários: quem grava arquivo no workspace
+   * e o abre com o Read é o CLI do Claude. Em vez de o modelo simplesmente
+   * ignorar o PDF — e o usuário achar que ele leu e mentiu —, o sistema avisa
+   * que o anexo não chegou.
+   *
+   * Só acontece quando o CLI do Claude está indisponível, já que o provider
+   * padrão é `claude`. Se um dia o Gemini virar principal, o caminho certo é o
+   * `inlineData` nativo dele, que aceita PDF — não extrair texto aqui.
+   */
+  const anexosIgnorados = images.length
+    ? `\n\n[AVISO DO SISTEMA: o usuário anexou ${images.length} arquivo(s) ` +
+      `(${images.map((a) => a.filename ?? a.mediaType).join(", ")}), mas o provider ` +
+      `ativo não consegue abri-los. Diga isso com clareza em vez de tentar adivinhar ` +
+      `o conteúdo.]`
+    : "";
+
   const result = streamText({
     model: chatModel,
-    system,
+    system: system + anexosIgnorados,
     messages: await convertToModelMessages(messages),
     // Híbrido: ferramenta para o modelo buscar mais conhecimento sob demanda.
     tools: {

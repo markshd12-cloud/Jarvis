@@ -45,6 +45,7 @@ import {
   type FinCentro,
   type FinColaborador,
   type FinRecorrencia,
+  type Periodicidade,
 } from "@/lib/financeiro/types";
 
 /**
@@ -408,101 +409,148 @@ export function RecorrenciasPanel() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <ul className="divide-y divide-border rounded-lg border border-border">
-        {filtrada.map((r) => (
-          <li key={r.id} className="fin-row flex items-center gap-2 px-3 py-2.5 text-sm">
-            <span
-              className={cn(
-                "min-w-0 truncate",
-                !r.ativo && "text-muted-foreground line-through",
-              )}
-              title={r.descricao}
-            >
-              {r.descricao}
-            </span>
-            {/* `title` porque as categorias de hora-aula só diferem no FINAL
-                ("…do Colégio Cppem" / "…do Cppem Presencial" / "…do Cppem Online"). */}
-            <span
-              className="min-w-0 shrink-2 truncate text-xs text-muted-foreground"
-              title={catNome(r.categoria_id)}
-            >
-              {catNome(r.categoria_id)}
-            </span>
-            {centroNome(r.centro_custo_id) && (
-              <span
-                className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                title="Centro de custo"
-              >
-                {centroNome(r.centro_custo_id)}
-              </span>
-            )}
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              {buNome(r.bu_id)}
-            </span>
-            <span className="text-[10px] text-muted-foreground">
-              {r.periodicidade} · dia {r.dia_vencimento}
-              {r.metodo_pagamento ? ` · ${r.metodo_pagamento}` : ""}
-            </span>
-            {/* Fornecedor/colaborador logo na linha: numa recorrência, saber
-                PARA QUEM ela paga é o que distingue "Aluguel" de "Aluguel".
-                O ícone diz o tipo sem gastar largura com a palavra. */}
-            {(() => {
-              const p = pessoa(r.colaborador_id ?? null);
-              if (!p) return null;
-              return (
+      {/* Cartões de duas linhas, como em Contas a pagar: a primeira responde
+          "o quê / para quem / quanto", a segunda "como e quando". Numa linha só
+          os oito atributos viravam uma fileira indistinguível de etiquetas. */}
+      <ul className="flex flex-col gap-2">
+        {filtrada.map((r) => {
+          const p = pessoa(r.colaborador_id ?? null);
+          const fatias = (r.rateio ?? []) as { bu_id: string; percentual: number }[];
+          return (
+            <li key={r.id} className="fin-card overflow-hidden">
+              {/* ---------- linha 1: identidade e valor ---------- */}
+              <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
                 <span
-                  className="inline-flex max-w-[12rem] items-center gap-1 text-[10px] text-muted-foreground"
-                  title={`${p.tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${p.nome}`}
-                >
-                  {p.tipo === "fornecedor" ? (
-                    <IconBuildingStore className="h-3 w-3 shrink-0" />
-                  ) : (
-                    <IconUser className="h-3 w-3 shrink-0" />
+                  className={cn(
+                    "min-w-0 truncate font-medium",
+                    !r.ativo && "text-muted-foreground line-through",
                   )}
-                  <span className="truncate">{p.nome}</span>
+                  title={r.descricao}
+                >
+                  {r.descricao}
                 </span>
-              );
-            })()}
-            <span className="ml-auto tabular-nums">{brl.format(r.valor_previsto)}</span>
-            <div className="flex items-center gap-1">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setDialog(r)}
-                title="Editar"
-              >
-                <IconPencil className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() =>
-                  r.ativo
-                    ? // Inativar tira a recorrência dos meses futuros → confirma antes.
-                      void confirmarComFuturos(r, "inativar")
-                    : // Reativar apenas religa; o sync repõe o horizonte.
-                      void runAction(() =>
-                        send(`/api/financeiro/recorrencias/${r.id}`, "PATCH", { ativo: true }),
-                      )
-                }
-                title={r.ativo ? "Inativar" : "Reativar"}
-              >
-                {r.ativo ? <IconEyeOff className="h-4 w-4" /> : <IconEye className="h-4 w-4" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                onClick={() => remove(r)}
-                title="Excluir"
-              >
-                <IconTrash className="h-4 w-4" />
-              </Button>
-            </div>
-          </li>
-        ))}
+                {/* `title` porque as categorias de hora-aula só diferem no FINAL
+                    ("…do Colégio Cppem" / "…do Cppem Presencial"). */}
+                <span
+                  className="min-w-0 shrink-2 truncate text-xs text-muted-foreground"
+                  title={catNome(r.categoria_id)}
+                >
+                  {catNome(r.categoria_id)}
+                </span>
+                {/* Fornecedor/colaborador em destaque, mesma regra de Contas a
+                    pagar: é o que distingue um "Aluguel" de outro "Aluguel". */}
+                {p && (
+                  <span
+                    className="inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-medium text-foreground"
+                    title={`${p.tipo === "fornecedor" ? "Fornecedor" : "Colaborador"}: ${p.nome}`}
+                  >
+                    {p.tipo === "fornecedor" ? (
+                      <IconBuildingStore className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <IconUser className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="truncate uppercase">{p.nome}</span>
+                  </span>
+                )}
+                {!r.ativo && (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    inativa
+                  </span>
+                )}
+                <span className="ml-auto w-28 text-right tabular-nums">
+                  {brl.format(r.valor_previsto)}
+                </span>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() => setDialog(r)}
+                  title="Editar"
+                >
+                  <IconPencil className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  onClick={() =>
+                    r.ativo
+                      ? // Inativar tira a recorrência dos meses futuros → confirma antes.
+                        void confirmarComFuturos(r, "inativar")
+                      : // Reativar apenas religa; o sync repõe o horizonte.
+                        void runAction(() =>
+                          send(`/api/financeiro/recorrencias/${r.id}`, "PATCH", { ativo: true }),
+                        )
+                  }
+                  title={r.ativo ? "Inativar" : "Reativar"}
+                >
+                  {r.ativo ? <IconEyeOff className="h-4 w-4" /> : <IconEye className="h-4 w-4" />}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                  onClick={() => remove(r)}
+                  title="Excluir"
+                >
+                  <IconTrash className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {/* ---------- linha 2: como, quando e onde ---------- */}
+              <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-3 py-2 pl-3 text-xs text-muted-foreground">
+                <span className="tabular-nums">
+                  {PERIODICIDADE_LABEL[r.periodicidade as Periodicidade] ?? r.periodicidade}
+                </span>
+                <span>·</span>
+                <span>vence dia {r.dia_vencimento}</span>
+                {/* Com rateio, mostrar UMA BU seria mentira — a despesa é
+                    dividida. Exibe cada fatia, como em Contas a pagar. */}
+                {fatias.length > 0 ? (
+                  <span className="flex flex-wrap items-center gap-1">
+                    {fatias.map((f) => (
+                      <span
+                        key={f.bu_id}
+                        className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                      >
+                        {buNome(f.bu_id)} {f.percentual}%
+                      </span>
+                    ))}
+                  </span>
+                ) : (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                    {buNome(r.bu_id)}
+                  </span>
+                )}
+                {centroNome(r.centro_custo_id) && (
+                  <span
+                    className="rounded border border-border px-1.5 py-0.5 text-[10px]"
+                    title="Centro de custo"
+                  >
+                    {centroNome(r.centro_custo_id)}
+                  </span>
+                )}
+                {r.metodo_pagamento && <span>{r.metodo_pagamento}</span>}
+                {/* Defasagem é a pegadinha da recorrência: competência num mês,
+                    vencimento no seguinte. Invisível, vira divergência no DRE. */}
+                {r.defasagem_meses ? (
+                  <span
+                    className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400"
+                    title="A parcela vence depois da competência a que se refere"
+                  >
+                    vence +{r.defasagem_meses} mês
+                    {r.defasagem_meses > 1 ? "es" : ""}
+                  </span>
+                ) : null}
+                {r.inicio_competencia && (
+                  <span className="text-muted-foreground/70">
+                    desde {r.inicio_competencia}
+                  </span>
+                )}
+              </div>
+            </li>
+          );
+        })}
         {filtrada.length === 0 && (
           <li className="px-3 py-6 text-center text-muted-foreground">
             {lista.length === 0
