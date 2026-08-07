@@ -26,10 +26,8 @@ import {
 import {
   cabeNoCiclo,
   fkFriendly,
-  PASSO_MESES,
   PERIODICIDADES,
   type FinRecorrencia,
-  type Periodicidade,
 } from "./types";
 
 export const recorrenciaInputSchema = z.object({
@@ -160,7 +158,15 @@ async function despesasFuturasIntocadas(
   for (const d of data ?? []) {
     const ps = (d.fin_parcelas ?? []) as { data_competencia: string; status: string }[];
     if (!ps.length) continue;
-    if (ps.some((p) => p.status === "paga")) continue; // já pago: não se toca
+    /**
+     * Já pago OU com baixa parcial: não se toca.
+     *
+     * `parcial` entrou na 0038 e precisa estar aqui: quem chama isto APAGA as
+     * despesas (`removerFuturosGerados`), e as baixas caem por cascade. Um
+     * envelope com gastos lançados seria destruído ao inativar ou editar a
+     * recorrência — dinheiro registrado sumindo sem aviso.
+     */
+    if (ps.some((p) => p.status === "paga" || p.status === "parcial")) continue;
     const comp = String(ps[0].data_competencia).slice(0, 7);
     if (comp < atual) continue; // passado: histórico, não se toca
     ids.push(d.id as string);

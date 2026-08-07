@@ -225,8 +225,27 @@ export async function getFluxoCaixa(
       const v = parcelaValor(p, num(p.valor_realizado ?? p.valor_previsto));
       if (v !== null) b.saidaReal += v;
     } else {
-      const v = parcelaValor(p, num(p.valor_previsto));
-      if (v !== null) b.saidaPrev += v;
+      /**
+       * Parcialmente consumida (envelope da 0038): o que JÁ SAIU vai para
+       * `saidaReal` e só o SALDO continua previsto. Antes o previsto levava o
+       * valor cheio e o realizado ficava zero — o fluxo de caixa mostrava como
+       * "vai sair" um dinheiro que já tinha saído, e contava duas vezes ao
+       * longo do tempo.
+       *
+       * Os dois vão no bucket do VENCIMENTO, não na data de cada baixa. Fatiar
+       * pelas datas das baixas é o passo seguinte, junto do mesmo ajuste no DRE
+       * (ver docs/financeiro-baixas-parciais.md).
+       */
+      const real = num(p.valor_realizado);
+      if (real !== 0) {
+        const vr = parcelaValor(p, real);
+        if (vr !== null) b.saidaReal += vr;
+      }
+      const restante = num(p.valor_previsto) - real;
+      if (restante > 0) {
+        const v = parcelaValor(p, restante);
+        if (v !== null) b.saidaPrev += v;
+      }
     }
   }
 

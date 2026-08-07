@@ -359,10 +359,27 @@ export async function despesaJarvisPorCategoria(
     const prev = fatiaDe(num(r.valor_previsto));
     if (prev === null) continue; // esta parcela não toca a BU pedida
     mapa.set(caId, (mapa.get(caId) ?? 0) + prev);
-    if (r.status === "paga") {
-      const real = fatiaDe(num(r.valor_realizado ?? r.valor_previsto));
-      if (real !== null) realizado.set(caId, (realizado.get(caId) ?? 0) + real);
-    }
+
+    /**
+     * REALIZADO = o que de fato saiu, e não "a parcela inteira se ela estiver
+     * paga".
+     *
+     * Antes da 0038 isto era `status === 'paga' ? valor cheio : 0`. Com as
+     * baixas parciais, uma conta com R$ 380 de R$ 10.000 consumidos aparecia
+     * como ZERO — o dinheiro tinha saído e o DRE não via.
+     *
+     * `valor_realizado` é mantido por `recalcularParcela` como a soma das
+     * baixas, então basta lê-lo em qualquer status. Uma parcela sem baixa tem
+     * 0 e não contribui, que é o comportamento correto.
+     *
+     * ⚠️ O recorte de MÊS continua sendo o da parcela (competência ou
+     * vencimento). Uma baixa lançada em setembro contra um envelope de agosto
+     * conta em agosto. Fatiar o realizado pela data de cada baixa é o passo
+     * seguinte — e muda o total do mês, então merece medição antes.
+     */
+    const real = fatiaDe(num(r.valor_realizado));
+    if (real !== null && real !== 0)
+      realizado.set(caId, (realizado.get(caId) ?? 0) + real);
   }
   return { mapa, carimbos: [], realizado };
 }
@@ -466,14 +483,20 @@ export async function detalheDespesaPorCategoria(
       fin_centros_custo?: { nome?: string | null } | null;
     };
     const bu = r.business_units as unknown as { nome?: string | null } | null;
-    const pago = r.status === "paga";
+    /**
+     * Mesma regra do agregado: realizado é a SOMA DAS BAIXAS
+     * (`valor_realizado`), não "a parcela inteira se estiver paga". Sem isto o
+     * popup "de onde veio esse número" mostraria zero numa linha parcial e não
+     * fecharia com o total da linha clicada. Zero vira `null` = "nada saiu".
+     */
+    const realizadoFatia = fatiaDe(num(r.valor_realizado));
     itens.push({
       parcelaId: r.id as string,
       despesaId: desp.id,
       descricao: desp.descricao,
       valor,
       valorCheio: cheio,
-      realizado: pago ? fatiaDe(num(r.valor_realizado ?? r.valor_previsto)) : null,
+      realizado: realizadoFatia && realizadoFatia !== 0 ? realizadoFatia : null,
       status: r.status as string,
       numero: (r.numero as number) ?? 1,
       numParcelas: desp.num_parcelas ?? 1,

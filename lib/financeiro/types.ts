@@ -174,11 +174,18 @@ export type StatusParcela =
   | "prevista"
   | "a_pagar"
   | "paga"
+  /** Consumida em parte por baixas (envelope). Ver docs/financeiro-baixas-parciais.md. */
+  | "parcial"
   | "atrasada"
   | "cancelada";
 
 /** Situação derivada (venc × hoje × pagamento) — usada p/ agrupar Contas a Pagar. */
-export type SituacaoParcela = "paga" | "vencida" | "a_vencer";
+/**
+ * Situação DERIVADA para a tela. `parcial` entra entre "a vencer" e "paga":
+ * uma conta com R$ 380 de R$ 10.000 consumidos não é nenhuma das duas, e
+ * classificá-la como "a vencer" esconderia que já saiu dinheiro dali.
+ */
+export type SituacaoParcela = "paga" | "vencida" | "a_vencer" | "parcial";
 
 /** Grupo do filtro de Contas a Pagar (note "pagas", plural — não é a situação). */
 export type GrupoParcela = "a_vencer" | "vencida" | "pagas" | "todas";
@@ -227,6 +234,22 @@ export interface ParcelaRow {
    * BU principal (maior %), usada como âncora/fallback.
    */
   rateio: { bu_id: string; bu_nome: string; percentual: number; valor: number }[];
+  /**
+   * Baixas já lançadas ("despesa-envelope"). Vazio = ninguém pagou nada ainda.
+   * Ver docs/financeiro-baixas-parciais.md.
+   */
+  baixas: {
+    id: string;
+    data: string;
+    valor: number;
+    descricao: string | null;
+    metodo_pagamento: string | null;
+  }[];
+  /** `valor_previsto − Σ baixas`. Negativo = estourou o teto (permitido). */
+  saldo: number;
+  /** Envelope encerrado manualmente — o saldo não será gasto. */
+  encerrada_em: string | null;
+  encerrada_motivo: string | null;
 }
 
 /** Meta orçamentária por categoria × BU × competência (Passo 9). bu null = "todas". */

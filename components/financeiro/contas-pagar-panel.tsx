@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconBuildingStore,
   IconCheckupList,
+  IconLock,
+  IconLockOpen,
   IconChevronRight,
   IconPencil,
   IconPlus,
@@ -189,6 +191,7 @@ export function ContasPagarPanel() {
   const [editar, setEditar] = useState<DespesaDetalhe | null>(null);
   const [confirmar, setConfirmar] = useState<Confirmacao | null>(null);
   const [baixando, setBaixando] = useState<ParcelaRow | null>(null);
+  const [encerrando, setEncerrando] = useState<ParcelaRow | null>(null);
   const [aberto, setAberto] = useState<Set<string>>(new Set());
   /**
    * Abre no MÊS ATUAL. Sem filtro de competência a consulta traz todas as
@@ -278,11 +281,22 @@ export function ContasPagarPanel() {
     }
     for (const g of map.values()) {
       g.total = g.parcelas.reduce((s, p) => s + cents(p.valor_previsto), 0) / 100;
+      /**
+       * Prioridade: vencida > parcial > paga > a vencer.
+       *
+       * `parcial` precisa vir antes de "a vencer", senão um envelope em consumo
+       * apareceria no cabeçalho como se nada tivesse saído dele — e o selo do
+       * card contradiria a barra de progresso logo abaixo.
+       *
+       * Vencida continua ganhando de tudo: atraso é o que exige ação.
+       */
       g.situacao = g.parcelas.some((p) => p.situacao === "vencida")
         ? "vencida"
-        : g.parcelas.every((p) => p.situacao === "paga")
-          ? "paga"
-          : "a_vencer";
+        : g.parcelas.some((p) => p.situacao === "parcial")
+          ? "parcial"
+          : g.parcelas.every((p) => p.situacao === "paga")
+            ? "paga"
+            : "a_vencer";
     }
     return [...map.values()];
   }, [parcelas]);
@@ -448,18 +462,62 @@ export function ContasPagarPanel() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 
+      {/* Total no TOPO, não no rodapé: com ~120 linhas o rodapé só era visto por
+          quem rolava até o fim, e é justamente o número que se procura ao abrir
+          a tela. `grupos.length` de contexto evita a leitura "esse é o total do
+          mês" quando há filtro estreitando a lista. */}
+      {grupos.length > 0 && (
+        <div className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2">
+          <span className="text-xs text-muted-foreground">
+            Total do filtro
+            <span className="ml-2 text-[11px]">
+              {grupos.length} {grupos.length === 1 ? "conta" : "contas"} ·{" "}
+              {parcelas.length} {parcelas.length === 1 ? "parcela" : "parcelas"}
+            </span>
+          </span>
+          <span className="text-lg font-semibold tabular-nums">
+            {brl.format(totalGeral)}
+          </span>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2.5">
         {grupos.map((g) => {
           const open = aberto.has(g.despesa_id);
           const parcelado = g.num_parcelas > 1;
+          /**
+           * Expande só quem tem MAIS DE UMA COISA dentro.
+           *
+           * Uma conta de parcela única não esconde nada: seu corpo é uma linha
+           * só, e escondê-la custaria um clique para ver rateio e botão Pagar —
+           * exatamente o que se quer de imediato. Já uma dívida parcelada em 12x
+           * esconde 12 linhas, e aí o card fechado paga por si.
+           *
+           * `temBaixas` entra aqui quando as baixas parciais existirem: um
+           * envelope com gastos lançados também tem conteúdo a esconder, mesmo
+           * sendo de parcela única. Ver docs/financeiro-baixas-parciais.md.
+           */
+          /**
+           * Envelope com conteúdo a esconder também expande, mesmo sendo de
+           * parcela única. A regra é a MESMA do bloco lá embaixo: baixa isolada
+           * numa conta quitada (o caso das ~1.500 criadas pela migration 0038)
+           * não conta — não há nada dentro além do que a linha já mostra.
+           */
+          const temEnvelope = g.parcelas.some(
+            (p) => p.situacao === "parcial" || p.baixas.length > 1 || p.encerrada_em,
+          );
+          const podeExpandir = parcelado || temEnvelope;
+          const primeira = g.parcelas[0];
+          const vencimentos = [...new Set(g.parcelas.map((p) => p.data_vencimento))];
           return (
             <div key={g.despesa_id} className="fin-card">
               <div className="flex items-center gap-2 px-3 py-2.5 text-sm">
                 <button
                   className="flex flex-1 items-center gap-2 text-left"
-                  onClick={() => parcelado && toggle(g.despesa_id)}
+                  onClick={() => podeExpandir && toggle(g.despesa_id)}
+                  aria-expanded={podeExpandir ? open : undefined}
                 >
-                  {parcelado ? (
+                  {podeExpandir ? (
                     <IconChevronRight
                       className={cn("h-4 w-4 shrink-0 transition-transform", open && "rotate-90")}
                     />
@@ -501,6 +559,15 @@ export function ContasPagarPanel() {
                       <span className="truncate uppercase">{g.colaborador_nome}</span>
                     </span>
                   )}
+                  {/* Vencimento no cabeçalho SÓ quando o corpo está escondido —
+                      senão a data apareceria duas vezes na mesma tela. Datas
+                      diferentes mostram a primeira e o "+N". */}
+                  {podeExpandir && !open && (
+                    <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+                      {fmtData(primeira?.data_vencimento ?? "")}
+                      {vencimentos.length > 1 ? ` +${vencimentos.length - 1}` : ""}
+                    </span>
+                  )}
                 </button>
                 <SituacaoBadge s={g.situacao} />
                 <span className="w-28 text-right tabular-nums">{brl.format(g.total)}</span>
@@ -524,71 +591,227 @@ export function ContasPagarPanel() {
                 </Button>
               </div>
 
-              {(open || !parcelado) && (
+              {(open || !podeExpandir) && (
                 <ul className="divide-y divide-border border-t border-border">
                   {g.parcelas.map((p) => (
-                    <li
-                      key={p.id}
-                      className="fin-row flex items-center gap-2 px-3 py-2.5 pl-9 text-xs"
-                    >
-                      {parcelado && (
-                        <span className="w-8 text-muted-foreground">
-                          {p.numero}/{p.num_parcelas}
+                    <li key={p.id} className="fin-row px-3 py-2.5 pl-9 text-xs">
+                      {/* LINHA 1 — o essencial da parcela, na ordem em que se lê:
+                          quando, quanto, em que estado, e o que fazer. */}
+                      <div className="flex items-center gap-2">
+                        {parcelado && (
+                          <span className="w-8 shrink-0 text-muted-foreground tabular-nums">
+                            {p.numero}/{p.num_parcelas}
+                          </span>
+                        )}
+                        <span className="w-24 shrink-0 tabular-nums">
+                          {fmtData(p.data_vencimento)}
                         </span>
-                      )}
-                      <span className="w-24">{fmtData(p.data_vencimento)}</span>
-                      {p.rateio.length > 0 ? (
-                        // Com rateio, mostrar UMA BU seria mentira — a despesa é
-                        // dividida. Exibe cada fatia com o seu valor.
-                        <span
-                          className="flex flex-wrap items-center gap-1"
-                          title={`Rateado entre ${p.rateio.length} BUs`}
-                        >
-                          {p.rateio.map((f) => (
+                        <span className="ml-auto w-24 shrink-0 text-right tabular-nums">
+                          {brl.format(p.valor_previsto)}
+                        </span>
+                        <SituacaoBadge s={p.situacao} />
+                        {p.situacao === "paga" ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() =>
+                              acao(() =>
+                                send(`/api/financeiro/parcelas/${p.id}`, "PATCH", {
+                                  acao: "desfazer",
+                                }),
+                              )
+                            }
+                            title="Desfazer baixa"
+                          >
+                            <IconRotate className="h-3.5 w-3.5" />
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            className="h-6 gap-1 bg-emerald-600 px-2 text-[11px] text-white hover:bg-emerald-700"
+                            onClick={() => setBaixando(p)}
+                            title="Registrar o pagamento desta parcela"
+                          >
+                            <IconCheckupList className="h-3.5 w-3.5" />
+                            Pagar
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* LINHA 2 — o detalhe: para onde vai (rateio/BU), como se
+                          paga, e quando foi pago. Estava tudo na horizontal da
+                          linha 1, espremendo o valor e o botão. Aqui respira, e
+                          um rateio de 3 BUs deixa de empurrar o resto da linha. */}
+                      <div
+                        className={cn(
+                          "flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground",
+                          parcelado ? "mt-1.5 pl-10" : "mt-1.5",
+                        )}
+                      >
+                        {p.rateio.length > 0 ? (
+                          // Com rateio, mostrar UMA BU seria mentira — a despesa
+                          // é dividida. Exibe cada fatia com o seu valor.
+                          p.rateio.map((f) => (
                             <span
                               key={f.bu_id}
                               className="rounded fin-tag px-1.5 py-0.5 text-[10px]"
                             >
                               {f.bu_nome} {f.percentual}% · {brl.format(f.valor)}
                             </span>
-                          ))}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">{p.bu_nome ?? "—"}</span>
-                      )}
-                      {p.metodo_pagamento && (
-                        <span className="text-muted-foreground">{p.metodo_pagamento}</span>
-                      )}
-                      <span className="ml-auto w-24 text-right tabular-nums">
-                        {brl.format(p.valor_previsto)}
-                      </span>
-                      <SituacaoBadge s={p.situacao} />
-                      {p.situacao === "paga" ? (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() =>
-                            acao(() =>
-                              send(`/api/financeiro/parcelas/${p.id}`, "PATCH", {
-                                acao: "desfazer",
-                              }),
-                            )
-                          }
-                          title="Desfazer baixa"
-                        >
-                          <IconRotate className="h-3.5 w-3.5" />
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          className="h-6 gap-1 bg-emerald-600 px-2 text-[11px] text-white hover:bg-emerald-700"
-                          onClick={() => setBaixando(p)}
-                          title="Registrar o pagamento desta parcela"
-                        >
-                          <IconCheckupList className="h-3.5 w-3.5" />
-                          Pagar
-                        </Button>
+                          ))
+                        ) : (
+                          <span className="rounded fin-tag px-1.5 py-0.5 text-[10px]">
+                            {p.bu_nome ?? "sem BU"}
+                          </span>
+                        )}
+                        {p.metodo_pagamento && <span>{p.metodo_pagamento}</span>}
+                        {p.data_pagamento && (
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            pago em {fmtData(p.data_pagamento)}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* ---------- ENVELOPE: consumo e gastos ----------
+                          NÃO basta ter baixa: a migration 0038 criou uma para
+                          cada uma das ~1.500 parcelas já pagas, e renderizar por
+                          `baixas.length > 0` poria barra de progresso em 100% e
+                          uma linha repetindo o valor em 662 contas quitadas.
+
+                          Só aparece quando há algo a mostrar: envelope em
+                          consumo (parcial) ou histórico de mais de um gasto. */}
+                      {(p.situacao === "parcial" ||
+                        p.baixas.length > 1 ||
+                        p.encerrada_em) && (
+                        <div className={cn("mt-2", parcelado ? "pl-10" : "")}>
+                          {/* Barra de consumo: responde de relance a pergunta que
+                              o envelope existe para responder — quanto ainda cabe.
+                              Satura em 100% e muda de cor no estouro. */}
+                          {(() => {
+                            const consumido = p.valor_previsto - p.saldo;
+                            const pct =
+                              p.valor_previsto > 0
+                                ? (consumido / p.valor_previsto) * 100
+                                : 0;
+                            const estourou = p.saldo < 0;
+                            return (
+                              <>
+                                <div className="flex items-baseline justify-between gap-2 text-[11px]">
+                                  <span className="text-muted-foreground">
+                                    {brl.format(consumido)} de{" "}
+                                    {brl.format(p.valor_previsto)}
+                                    <span className="ml-1.5 tabular-nums">
+                                      {pct.toFixed(1).replace(".", ",")}%
+                                    </span>
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      "tabular-nums",
+                                      estourou
+                                        ? "text-amber-600 dark:text-amber-400"
+                                        : "text-muted-foreground",
+                                    )}
+                                  >
+                                    {estourou
+                                      ? `excedente ${brl.format(Math.abs(p.saldo))}`
+                                      : `saldo ${brl.format(p.saldo)}`}
+                                  </span>
+                                </div>
+                                <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className={cn(
+                                      "h-full rounded-full",
+                                      estourou ? "bg-amber-500" : "bg-emerald-600",
+                                    )}
+                                    style={{ width: `${Math.min(100, pct)}%` }}
+                                  />
+                                </div>
+                              </>
+                            );
+                          })()}
+
+                          <ul className="mt-2 flex flex-col gap-1">
+                            {p.baixas.map((b) => (
+                              <li
+                                key={b.id}
+                                className="flex items-center gap-2 text-[11px] text-muted-foreground"
+                              >
+                                <span className="w-20 shrink-0 tabular-nums">
+                                  {fmtData(b.data)}
+                                </span>
+                                <span className="min-w-0 flex-1 truncate">
+                                  {b.descricao || <em>sem descrição</em>}
+                                </span>
+                                {b.metodo_pagamento && (
+                                  <span className="shrink-0">{b.metodo_pagamento}</span>
+                                )}
+                                <span className="w-24 shrink-0 text-right tabular-nums">
+                                  {brl.format(b.valor)}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-muted-foreground hover:text-destructive"
+                                  title="Remover este gasto"
+                                  onClick={() =>
+                                    acao(() => send(`/api/financeiro/baixas/${b.id}`, "DELETE"))
+                                  }
+                                >
+                                  <IconTrash className="h-3 w-3" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+
+                          {/* Encerrar só faz sentido com saldo sobrando: sem saldo
+                              a conta já está quitada, e encerrar não teria o que
+                              fazer. */}
+                          {/* Só em envelope ABERTO. Uma conta paga com desconto
+                              tem saldo > 0 (o valor perdoado) e ofereceria
+                              "encerrar" sem haver o que encerrar. */}
+                          {p.situacao === "parcial" && p.saldo > 0 && !p.encerrada_em && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="mt-2 h-7 gap-1.5 text-[11px]"
+                              onClick={() => setEncerrando(p)}
+                            >
+                              <IconLock className="h-3.5 w-3.5" />
+                              Encerrar envelope
+                              <span className="text-muted-foreground">
+                                · {brl.format(p.saldo)} não gastos
+                              </span>
+                            </Button>
+                          )}
+                          {p.encerrada_em && (
+                            <div className="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border px-2.5 py-1.5">
+                              <IconLock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">
+                                Encerrado em {fmtData(p.encerrada_em)}
+                                {p.encerrada_motivo ? ` — ${p.encerrada_motivo}` : ""}
+                              </span>
+                              {/* Reabrir existe porque encerrar é reversível — e
+                                  dizer isso na confirmação só vale se o caminho
+                                  de volta estiver à vista. */}
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 shrink-0 gap-1 text-[11px]"
+                                onClick={() =>
+                                  acao(() =>
+                                    send(`/api/financeiro/parcelas/${p.id}/baixas`, "POST", {
+                                      acao: "reabrir",
+                                    }),
+                                  )
+                                }
+                                title="Volta a conta para o &quot;a pagar&quot;, com o saldo disponível"
+                              >
+                                <IconLockOpen className="h-3.5 w-3.5" />
+                                Reabrir
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </li>
                   ))}
@@ -603,12 +826,6 @@ export function ContasPagarPanel() {
           </p>
         )}
       </div>
-
-      {grupos.length > 0 && (
-        <p className="text-right text-sm font-medium">
-          Total do filtro: <span className="tabular-nums">{brl.format(totalGeral)}</span>
-        </p>
-      )}
 
       <Dialog open={novo} onOpenChange={setNovo}>
         {novo && dim && (
@@ -636,6 +853,18 @@ export function ContasPagarPanel() {
           />
         )}
       </Dialog>
+
+      <Dialog open={!!encerrando} onOpenChange={(o) => !o && setEncerrando(null)}>
+        {encerrando && (
+          <EncerrarDialog
+            parcela={encerrando}
+            onDone={() => {
+              setEncerrando(null);
+              void refetch();
+            }}
+          />
+        )}
+      </Dialog>
     </section>
   );
 }
@@ -650,38 +879,71 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
   const hoje = new Date().toISOString().slice(0, 10);
   const cent = (v: string) => Math.round((Number(v) || 0) * 100);
   const [data, setData] = useState(hoje);
-  const [valor, setValor] = useState(parcela.valor_previsto.toFixed(2));
+  /**
+   * Parte do SALDO, não do previsto. Numa conta que já recebeu baixas parciais,
+   * "pagamento total" significa pagar o que FALTA — pré-preencher com o
+   * previsto cobraria de novo o que já foi lançado e estouraria o teto.
+   */
+  const [valor, setValor] = useState(
+    (parcela.saldo > 0 ? parcela.saldo : parcela.valor_previsto).toFixed(2),
+  );
   const [desconto, setDesconto] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const previstoC = Math.round(parcela.valor_previsto * 100);
+  const saldoC = Math.round((parcela.saldo ?? parcela.valor_previsto) * 100);
+
+  /**
+   * Modo do diálogo. O envelope é EMERGENTE: não há marcador na despesa, a
+   * decisão é tomada aqui, na hora de pagar. Já tendo baixa lançada, abre em
+   * "parcial" — a conta já provou ser um envelope.
+   */
+  const [modo, setModo] = useState<"total" | "parcial">(
+    parcela.baixas?.length ? "parcial" : "total",
+  );
+  const [oQueFoi, setOQueFoi] = useState("");
+  const [valorParcial, setValorParcial] = useState("");
+  const parcialC = cent(valorParcial);
+  const saldoDepoisC = saldoC - parcialC;
+
+  // Base do desconto = o que falta pagar (saldo), não o previsto original.
+  const baseC = saldoC > 0 ? saldoC : previstoC;
 
   /** Digitou o desconto → recalcula o valor pago. */
   const mudarDesconto = (d: string) => {
     setDesconto(d);
-    const restanteC = Math.max(0, previstoC - cent(d));
+    const restanteC = Math.max(0, baseC - cent(d));
     setValor((restanteC / 100).toFixed(2));
   };
   /** Digitou o valor pago → deduz o desconto (0 se pagou igual ou mais). */
   const mudarValor = (v: string) => {
     setValor(v);
-    const difC = previstoC - cent(v);
+    const difC = baseC - cent(v);
     setDesconto(difC > 0 ? (difC / 100).toFixed(2) : "");
   };
 
-  const pagouAMais = cent(valor) > previstoC;
+  const pagouAMais = cent(valor) > baseC;
 
   const confirmar = async () => {
     setBusy(true);
     setErr(null);
     try {
-      await send(`/api/financeiro/parcelas/${parcela.id}`, "PATCH", {
-        acao: "baixar",
-        data_pagamento: data,
-        valor_realizado: Number(valor),
-        desconto: cent(desconto) > 0 ? Number(desconto) : null,
-      });
+      if (modo === "parcial") {
+        await send(`/api/financeiro/parcelas/${parcela.id}/baixas`, "POST", {
+          acao: "lancar",
+          valor: Number(valorParcial),
+          descricao: oQueFoi,
+          data,
+        });
+      } else {
+        await send(`/api/financeiro/parcelas/${parcela.id}`, "PATCH", {
+          acao: "baixar",
+          data_pagamento: data,
+          valor_realizado: Number(valor),
+          desconto: cent(desconto) > 0 ? Number(desconto) : null,
+        });
+      }
       onDone();
     } catch (e) {
       setErr((e as Error).message);
@@ -693,46 +955,268 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
   return (
     <DialogContent className="max-w-md">
       <DialogHeader>
-        <DialogTitle>Registrar pagamento</DialogTitle>
+        <DialogTitle>{modo === "parcial" ? "Lançar gasto" : "Registrar pagamento"}</DialogTitle>
       </DialogHeader>
       <p className="text-sm text-muted-foreground">
         {parcela.descricao}
         {parcela.num_parcelas > 1 ? ` (${parcela.numero}/${parcela.num_parcelas})` : ""} —
         previsto <strong>{brl.format(parcela.valor_previsto)}</strong>
+        {parcela.baixas?.length > 0 && (
+          <>
+            {" · "}saldo <strong>{brl.format(parcela.saldo)}</strong>
+          </>
+        )}
       </p>
-      <div className="grid grid-cols-3 gap-3">
-        <div className="flex flex-col gap-1">
-          <Label>Data do pagamento</Label>
-          <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label title="Abatimento conseguido (pagamento adiantado, negociação)">
-            Desconto
-          </Label>
-          <MoneyInput value={desconto} onChange={mudarDesconto} placeholder="R$ 0,00" />
-        </div>
-        <div className="flex flex-col gap-1">
-          <Label>Valor pago</Label>
-          <MoneyInput value={valor} onChange={mudarValor} />
-        </div>
+
+      {/* O seletor é o coração do desenho: em vez de declarar "isto é um
+          envelope" no cadastro, a decisão acontece aqui, quando a informação
+          existe. Ver docs/financeiro-baixas-parciais.md. */}
+      <div className="flex rounded-lg border border-border p-0.5">
+        {(
+          [
+            ["total", "Pagamento total"],
+            ["parcial", "Baixa parcial"],
+          ] as const
+        ).map(([k, rot]) => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setModo(k)}
+            className={cn(
+              "flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+              modo === k
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted",
+            )}
+          >
+            {rot}
+          </button>
+        ))}
       </div>
-      {cent(desconto) > 0 && (
-        <p className="text-xs text-emerald-600 dark:text-emerald-400">
-          Desconto de {brl.format(Number(desconto))} — paga{" "}
-          {brl.format(Number(valor))} em vez de {brl.format(parcela.valor_previsto)}.
-        </p>
-      )}
-      {pagouAMais && (
-        <p className="text-xs text-amber-600 dark:text-amber-400">
-          Valor pago maior que o previsto (juros/multa?) — será registrado como pago,
-          sem desconto.
-        </p>
+
+      {modo === "total" ? (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Data do pagamento</Label>
+              <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label title="Abatimento conseguido (pagamento adiantado, negociação)">
+                Desconto
+              </Label>
+              <MoneyInput value={desconto} onChange={mudarDesconto} placeholder="R$ 0,00" />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label>Valor pago</Label>
+              <MoneyInput value={valor} onChange={mudarValor} />
+            </div>
+          </div>
+          {cent(desconto) > 0 && (
+            <p className="text-xs text-emerald-600 dark:text-emerald-400">
+              Desconto de {brl.format(Number(desconto))} — paga{" "}
+              {brl.format(Number(valor))} em vez de {brl.format(parcela.valor_previsto)}.
+            </p>
+          )}
+          {pagouAMais && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Valor pago maior que o previsto (juros/multa?) — será registrado como pago,
+              sem desconto.
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Valor</Label>
+              <MoneyInput value={valorParcial} onChange={setValorParcial} placeholder="R$ 0,00" />
+            </div>
+            <div className="col-span-2 flex flex-col gap-1">
+              {/* Sem este campo a lista de baixas vira pilha de valores sem
+                  história — e o envelope perde o propósito. */}
+              <Label>O que foi</Label>
+              <Input
+                value={oQueFoi}
+                onChange={(e) => setOQueFoi(e.target.value)}
+                placeholder="vassouras, água sanitária…"
+              />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label>Data</Label>
+            <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
+          </div>
+          {parcialC > 0 && (
+            <p
+              className={cn(
+                "text-xs",
+                saldoDepoisC < 0
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-muted-foreground",
+              )}
+            >
+              {saldoDepoisC < 0 ? (
+                <>
+                  Estoura o previsto em{" "}
+                  <strong>{brl.format(Math.abs(saldoDepoisC) / 100)}</strong> — será
+                  registrado assim mesmo, porque o dinheiro já saiu.
+                </>
+              ) : (
+                <>
+                  Saldo após esta baixa:{" "}
+                  <strong>{brl.format(saldoDepoisC / 100)}</strong>
+                  {saldoDepoisC === 0 ? " — a conta será quitada." : ""}
+                </>
+              )}
+            </p>
+          )}
+        </>
       )}
       {err && <p className="text-xs text-destructive">{err}</p>}
       <DialogFooter>
         <DialogClose render={<Button variant="outline" />}>Cancelar</DialogClose>
-        <Button onClick={confirmar} disabled={busy}>
-          {busy ? "Salvando…" : "Confirmar pagamento"}
+        <Button
+          onClick={confirmar}
+          disabled={busy || (modo === "parcial" && parcialC <= 0)}
+        >
+          {busy
+            ? "Salvando…"
+            : modo === "parcial"
+              ? "Lançar gasto"
+              : "Confirmar pagamento"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
+
+/**
+ * Encerrar envelope: o saldo não será gasto.
+ *
+ * Motivo OBRIGATÓRIO — meses depois ninguém lembra se sobrou por economia ou
+ * por esquecimento de lançar, e é a diferença entre "planejamos demais" e
+ * "alguém não registrou".
+ */
+function EncerrarDialog({
+  parcela,
+  onDone,
+}: {
+  parcela: ParcelaRow;
+  onDone: () => void;
+}) {
+  const [motivo, setMotivo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const consumido = parcela.valor_previsto - parcela.saldo;
+
+  const confirmar = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await send(`/api/financeiro/parcelas/${parcela.id}/baixas`, "POST", {
+        acao: "encerrar",
+        motivo,
+      });
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pct =
+    parcela.valor_previsto > 0 ? (consumido / parcela.valor_previsto) * 100 : 0;
+
+  return (
+    <DialogContent className="max-w-lg">
+      <DialogHeader>
+        <DialogTitle>Encerrar envelope</DialogTitle>
+      </DialogHeader>
+
+      <p className="text-sm">
+        <strong>{parcela.descricao}</strong>
+        {parcela.num_parcelas > 1
+          ? ` (${parcela.numero}/${parcela.num_parcelas})`
+          : ""}
+      </p>
+
+      {/* Os números primeiro, porque é sobre eles que a decisão é tomada. */}
+      <div className="grid grid-cols-3 gap-2 rounded-lg border border-border bg-muted/30 p-3 text-center">
+        <div>
+          <p className="text-[11px] text-muted-foreground">Previsto</p>
+          <p className="text-sm font-medium tabular-nums">
+            {brl.format(parcela.valor_previsto)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] text-muted-foreground">Consumido</p>
+          <p className="text-sm font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+            {brl.format(consumido)}
+            <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+              {pct.toFixed(1).replace(".", ",")}%
+            </span>
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] text-muted-foreground">Não gasto</p>
+          <p className="text-sm font-medium tabular-nums text-amber-600 dark:text-amber-400">
+            {brl.format(parcela.saldo)}
+          </p>
+        </div>
+      </div>
+
+      {/* O QUE MUDA e O QUE NÃO MUDA, explícitos. Encerrar mexe no que a
+          diretoria olha, e "some do a pagar mas continua no DRE" é
+          contraintuitivo o bastante para precisar estar escrito. */}
+      <div className="flex flex-col gap-1.5 text-xs">
+        <p className="flex gap-2">
+          <span className="text-emerald-600 dark:text-emerald-400">✓</span>
+          <span>
+            A conta <strong>sai do &quot;a pagar&quot;</strong> — os{" "}
+            {brl.format(parcela.saldo)} restantes deixam de ser cobrados como
+            pendência.
+          </span>
+        </p>
+        <p className="flex gap-2">
+          <span className="text-muted-foreground">=</span>
+          <span>
+            No <strong>DRE</strong>, o previsto continua{" "}
+            {brl.format(parcela.valor_previsto)} e o realizado continua{" "}
+            {brl.format(consumido)}. Encerrar não apaga o que foi planejado — é
+            justamente a diferença entre os dois que mostra um envelope
+            superdimensionado.
+          </span>
+        </p>
+        <p className="flex gap-2">
+          <span className="text-muted-foreground">↺</span>
+          <span>
+            <strong>É reversível.</strong> Um botão &quot;Reabrir&quot; aparece
+            no lugar, e a conta volta com o saldo disponível.
+          </span>
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <Label>Motivo *</Label>
+        <Input
+          value={motivo}
+          onChange={(e) => setMotivo(e.target.value)}
+          placeholder="Compras do mês concluídas; saldo não será usado."
+          autoFocus
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Obrigatório: daqui a três meses, o motivo é o que distingue
+          &quot;economizamos&quot; de &quot;esqueceram de lançar&quot;.
+        </p>
+      </div>
+
+      {err && <p className="text-xs text-destructive">{err}</p>}
+      <DialogFooter>
+        <DialogClose render={<Button variant="outline" />}>Cancelar</DialogClose>
+        <Button onClick={confirmar} disabled={busy || !motivo.trim()}>
+          {busy ? "Encerrando…" : "Encerrar envelope"}
         </Button>
       </DialogFooter>
     </DialogContent>
@@ -744,11 +1228,15 @@ function SituacaoBadge({ s }: { s: SituacaoParcela }) {
     paga: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
     vencida: "bg-destructive/10 text-destructive",
     a_vencer: "bg-muted text-muted-foreground",
+    // Âmbar: nem verde (não acabou) nem vermelho (não está em falta) — é uma
+    // conta viva, com dinheiro já saindo dela.
+    parcial: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
   };
   const label: Record<SituacaoParcela, string> = {
     paga: "Paga",
     vencida: "Vencida",
     a_vencer: "A vencer",
+    parcial: "Parcial",
   };
   return (
     <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium", map[s])}>

@@ -236,7 +236,15 @@ export async function getOrcamentoComparativo(
     for (const f of expandirPorBu(cents(num(p.valor_previsto)), p.bu_id, rt)) {
       ensure(catId, f.bu_id).previsto += f.valorCents / 100;
     }
-    if (p.status === "paga") {
+    /**
+     * Realizado = `valor_realizado` em QUALQUER status, não só em 'paga'.
+     *
+     * Com as baixas parciais (0038), uma conta com R$ 380 de R$ 10.000
+     * consumidos tem status 'parcial' — e com o teste antigo contribuía ZERO
+     * para o realizado do orçamento, escondendo dinheiro que já saiu. Sem
+     * baixa o campo é 0 e a linha não contribui, que é o correto.
+     */
+    if (num(p.valor_realizado) !== 0) {
       for (const f of expandirPorBu(cents(num(p.valor_realizado)), p.bu_id, rt)) {
         ensure(catId, f.bu_id).realizado += f.valorCents / 100;
       }

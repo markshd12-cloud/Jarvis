@@ -14,6 +14,7 @@ import "server-only";
 import { z } from "zod";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { baixasPorParcela, lancarBaixa, recalcularParcela } from "./baixas";
 import { hojeSP } from "./competencia";
 import {
   buPrincipal,
@@ -291,9 +292,20 @@ export async function atualizarDespesa(
 }
 
 /**
- * Baixa: marca a parcela como paga (default valor = previsto, data = hoje).
- * `desconto` é informativo (quanto foi abatido na negociação); o que vale pro
- * DRE/Fluxo é `valor_realizado` — o que de fato saiu do caixa.
+ * Baixa CHEIA: quita o que falta da parcela.
+ *
+ * Desde a 0038 isto NÃO escreve `status`/`valor_realizado` direto — cria uma
+ * BAIXA e deixa `recalcularParcela` derivar os campos. Assim existe um caminho
+ * só, e toda parcela paga tem baixa (o que a migration retroativa também
+ * garantiu para o histórico). Dois lugares escrevendo status divergiriam na
+ * primeira vez que um deles fosse esquecido.
+ *
+ * O valor padrão é o SALDO, não o previsto: numa conta que já recebeu baixas
+ * parciais, pagar "o total" significa pagar o que falta. Usar o previsto
+ * cobraria de novo o que já foi lançado.
+ *
+ * `desconto` é informativo (quanto foi abatido na negociação) e continua na
+ * parcela; o que vale pro DRE é a soma das baixas.
  */
 export async function baixarParcela(
   companyId: string,
@@ -307,42 +319,61 @@ export async function baixarParcela(
   const admin = createAdminClient();
   const { data: p, error: e0 } = await admin
     .from("fin_parcelas")
-    .select("valor_previsto")
+    .select("valor_previsto, valor_realizado")
     .eq("company_id", companyId)
     .eq("id", id)
     .single();
   if (e0) throw new Error(`baixarParcela: ${e0.message}`);
+
+  const jaPago = Number(p.valor_realizado ?? 0);
+  const saldo = Number(p.valor_previsto) - jaPago;
+  const valor = opts.valor_realizado ?? saldo;
+  if (!(valor > 0))
+    throw new Error("Nada a pagar: a conta já está quitada.");
+
   const desconto =
     opts.desconto != null && Number(opts.desconto) > 0 ? Number(opts.desconto) : null;
-  const { error } = await admin
-    .from("fin_parcelas")
-    .update({
-      valor_realizado: opts.valor_realizado ?? Number(p.valor_previsto),
-      data_pagamento: opts.data_pagamento ?? hojeISO(),
-      desconto,
-      status: "paga",
-    })
-    .eq("company_id", companyId)
-    .eq("id", id);
-  if (error) throw new Error(`baixarParcela: ${error.message}`);
+  if (desconto !== null) {
+    const { error } = await admin
+      .from("fin_parcelas")
+      .update({ desconto })
+      .eq("company_id", companyId)
+      .eq("id", id);
+    if (error) throw new Error(`baixarParcela/desconto: ${error.message}`);
+  }
+
+  await lancarBaixa(companyId, id, {
+    valor,
+    data: opts.data_pagamento,
+    descricao: null,
+  });
 }
 
-/** Desfaz a baixa: volta a parcela para a_pagar (limpa realizado, pagamento e desconto). */
+/**
+ * Desfaz a baixa: apaga TODAS as baixas da parcela e recalcula.
+ *
+ * Apaga todas (e não só a última) porque a ação na tela é "desfazer o
+ * pagamento" — de uma conta quitada, não de um lançamento específico. Remover
+ * um gasto de um envelope é outra ação, o ✕ ao lado de cada baixa.
+ */
 export async function desfazerBaixa(companyId: string, id: string): Promise<void> {
   const admin = createAdminClient();
+  const { error: eDel } = await admin
+    .from("fin_baixas")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("parcela_id", id);
+  if (eDel) throw new Error(`desfazerBaixa/baixas: ${eDel.message}`);
+
   const { error } = await admin
     .from("fin_parcelas")
-    .update({
-      valor_realizado: null,
-      data_pagamento: null,
-      desconto: null,
-      status: "a_pagar",
-    })
+    .update({ desconto: null, encerrada_em: null, encerrada_motivo: null })
     .eq("company_id", companyId)
     .eq("id", id);
   if (error) throw new Error(`desfazerBaixa: ${error.message}`);
-}
 
+  await recalcularParcela(companyId, id);
+}
 export interface FiltrosParcela {
   grupo?: GrupoParcela;
   bu_id?: string;
@@ -402,7 +433,7 @@ export async function listParcelas(
     .from("fin_parcelas")
     .select(
       `id, numero, valor_previsto, valor_realizado, data_competencia, data_vencimento,
-       data_pagamento, status, metodo_pagamento, bu_id,
+       data_pagamento, status, metodo_pagamento, bu_id, encerrada_em, encerrada_motivo,
        business_units ( nome ),
        fin_despesas!inner ( id, descricao, num_parcelas, categoria_id, centro_custo_id,
          cancelada, fin_categorias ( nome ), fin_centros_custo ( nome ),
@@ -461,6 +492,15 @@ export async function listParcelas(
     (busData ?? []).map((b) => [b.id as string, b.nome as string]),
   );
 
+  /**
+   * Baixas de todas as parcelas numa consulta só (envelope). Sem isto seriam
+   * ~120 idas ao banco numa tela — uma por linha.
+   */
+  const baixas = await baixasPorParcela(
+    companyId,
+    rows.map((r) => r.id as string),
+  );
+
   const hoje = hojeISO();
   const linhas = rows.map((r): ParcelaRow => {
     const bu = one<{ nome: string }>(r.business_units as never);
@@ -472,11 +512,25 @@ export async function listParcelas(
       fin_centros_custo: unknown;
       fin_colaboradores: unknown;
     }>(r.fin_despesas as never)!;
-    const situacao: SituacaoParcela = r.data_pagamento
-      ? "paga"
-      : (r.data_vencimento as string) < hoje
-        ? "vencida"
-        : "a_vencer";
+    /**
+     * `parcial` vem ANTES de vencida/a vencer, e depois de paga.
+     *
+     * Uma conta com R$ 380 de R$ 10.000 consumidos não é "a vencer" (já saiu
+     * dinheiro) nem "vencida" (está sendo usada como planejado). Marcá-la como
+     * vencida no dia seguinte ao vencimento chamaria de atraso o que é consumo
+     * normal de envelope.
+     *
+     * `status === 'parcial'` é escrito por `recalcularParcela` — a única fonte
+     * de verdade desse campo depois da 0038.
+     */
+    const situacao: SituacaoParcela =
+      r.status === "parcial"
+        ? "parcial"
+        : r.data_pagamento
+          ? "paga"
+          : (r.data_vencimento as string) < hoje
+            ? "vencida"
+            : "a_vencer";
     return {
       id: r.id as string,
       despesa_id: desp.id,
@@ -506,6 +560,22 @@ export async function listParcelas(
       status: r.status as ParcelaRow["status"],
       metodo_pagamento: (r.metodo_pagamento as string | null) ?? null,
       situacao,
+      baixas: (baixas.get(r.id as string) ?? []).map((b) => ({
+        id: b.id,
+        data: b.data,
+        valor: b.valor,
+        descricao: b.descricao,
+        metodo_pagamento: b.metodo_pagamento,
+      })),
+      saldo:
+        (cents(Number(r.valor_previsto)) -
+          (baixas.get(r.id as string) ?? []).reduce(
+            (acc, b) => acc + cents(b.valor),
+            0,
+          )) /
+        100,
+      encerrada_em: (r.encerrada_em as string | null) ?? null,
+      encerrada_motivo: (r.encerrada_motivo as string | null) ?? null,
       rateio: fatiasDaParcela(
         rateios.get(r.id as string),
         Number(r.valor_previsto),
