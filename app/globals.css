@@ -83,6 +83,12 @@
      verde de marca, que é vivo e fica reservado para ação. */
   --fin-card: oklch(0.975 0.012 145);        /* ≈ #f2f9f2 */
   --fin-card-hover: oklch(0.955 0.020 145);  /* ≈ #e8f4e8 */
+  /* Etiqueta de rateio/BU. NÃO usa `--primary`: o verde de marca (#3afe28) é
+     neon e, como TEXTO sobre fundo claro, dá 1,27:1 de contraste — ilegível
+     (o mínimo é 4,5:1). Aqui um verde escuro chega a 6,5:1. */
+  --fin-tag-fg: oklch(0.45 0.14 145);        /* ≈ #036819 */
+  --fin-tag-bg: oklch(0.86 0.095 145);       /* ≈ #aae2ab */
+  --fin-tag-bd: oklch(0.76 0.13 145);
   --input: oklch(0.922 0 0);
   /* Foco/realce: verde de marca */
   --ring: var(--brand);
@@ -133,6 +139,13 @@
      ficar ACIMA do --background (preto puro) para o cartão existir como plano. */
   --fin-card: oklch(0.235 0.045 145);        /* ≈ #0f2410 */
   --fin-card-hover: oklch(0.285 0.050 145);  /* ≈ #19311a */
+  /* No escuro o verde de marca já dá 12:1 sobre o card — mantém no texto.
+     O FUNDO, porém, precisou escurecer e ganhar corpo: com o card agora em
+     musgo, um verde translúcido a 12% virava verde-sobre-verde e o chip
+     desaparecia. Cor sólida + borda devolvem o "quadradinho". */
+  --fin-tag-fg: var(--brand);
+  --fin-tag-bg: oklch(0.38 0.11 145);        /* ≈ #0d5117 */
+  --fin-tag-bd: oklch(0.48 0.13 145);
   --input: oklch(1 0 0 / 15%);
   --ring: var(--brand);
   --chart-1: var(--brand);
@@ -240,6 +253,17 @@
   .fin-card:hover {
     border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
     background-color: var(--fin-card-hover);
+  }
+
+  /* Etiqueta de rateio/BU dentro dos painéis financeiros. Existe como classe
+     (e não Tailwind solto) porque a cor precisa MUDAR por tema — no claro o
+     verde de marca some. */
+  .fin-tag {
+    background-color: var(--fin-tag-bg);
+    color: var(--fin-tag-fg);
+    /* A BORDA é o que faz o chip ler como "quadradinho". Só fundo, sobre um
+       card que agora também é esverdeado, não delimita nada. */
+    border: 1px solid var(--fin-tag-bd);
   }
 
   /* Linha de parcela DENTRO do cartão: herda o fundo do cartão, então o hover

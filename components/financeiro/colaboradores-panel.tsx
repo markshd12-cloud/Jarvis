@@ -234,7 +234,7 @@ export function ColaboradoresPanel() {
                   </span>
                   {c.profile_id && (
                     <span
-                      className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                      className="rounded fin-tag px-1.5 py-0.5 text-[10px]"
                       title="Vinculado a um usuário do painel de Empresas"
                     >
                       login

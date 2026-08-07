@@ -511,7 +511,7 @@ export function RecorrenciasPanel() {
                     {fatias.map((f) => (
                       <span
                         key={f.bu_id}
-                        className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                        className="rounded fin-tag px-1.5 py-0.5 text-[10px]"
                       >
                         {buNome(f.bu_id)} {f.percentual}%
                       </span>

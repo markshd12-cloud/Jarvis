@@ -336,7 +336,7 @@ export function DreConfigPanel({
                                   {c.nome}
                                   {c.jarvisManual > 0.01 && (
                                     <span
-                                      className="ml-1 rounded bg-primary/10 px-1 text-[10px] text-primary"
+                                      className="ml-1 rounded fin-tag px-1 text-[10px]"
                                       title="Lançado à mão no Jarvis — o Conta Azul não tem"
                                     >
                                       manual {brl.format(c.jarvisManual)}

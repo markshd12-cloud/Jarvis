@@ -547,7 +547,7 @@ export function ContasPagarPanel() {
                           {p.rateio.map((f) => (
                             <span
                               key={f.bu_id}
-                              className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary"
+                              className="rounded fin-tag px-1.5 py-0.5 text-[10px]"
                             >
                               {f.bu_nome} {f.percentual}% · {brl.format(f.valor)}
                             </span>
@@ -1179,7 +1179,7 @@ function DespesaForm({
                             title="Editar rateio desta parcela"
                             className="flex max-w-[16rem] items-center gap-1 rounded border border-border px-1.5 py-1 text-left hover:bg-muted"
                           >
-                            <span className="rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">
+                            <span className="rounded fin-tag px-1 text-[10px] font-medium">
                               rateio
                             </span>
                             <span className="truncate text-[11px] text-muted-foreground">
