@@ -26,6 +26,16 @@ import type { ManualSource } from "@/lib/db/sources";
 
 const initial: SourceState = {};
 const ACCEPT = ".html,.htm,.csv,.tsv,.txt,.md,.markdown,.json";
+/**
+ * Espelha `MAX_FILE_BYTES` de `lib/sources/extract.ts`.
+ *
+ * A validação real continua no servidor — esta existe para falhar NA HORA DE
+ * ESCOLHER, com uma mensagem que diz o tamanho. Sem ela o arquivo grande subia,
+ * estourava o teto do corpo da Server Action e o navegador mostrava uma página
+ * 404 sem pista nenhuma do motivo.
+ */
+const MAX_ARQUIVO = 5 * 1024 * 1024;
+const mb = (b: number) => `${(b / 1024 / 1024).toFixed(1).replace(".", ",")} MB`;
 
 export interface CompanyOption {
   id: string;
@@ -229,6 +239,7 @@ function ScopeFields({
 /** Formulário para adicionar uma fonte — por texto digitado OU por arquivo. */
 function AddSourceForm({ ctx, onDone }: { ctx: Ctx; onDone: () => void }) {
   const [state, action, pending] = useActionState(createSource, initial);
+  const [erroArquivo, setErroArquivo] = useState<string | null>(null);
 
   // Fecha ao salvar com sucesso (a lista recarrega via revalidatePath).
   useEffect(() => {
@@ -278,7 +289,7 @@ function AddSourceForm({ ctx, onDone }: { ctx: Ctx; onDone: () => void }) {
           defaultCompanyIds={defaultCompanies}
         />
 
-        <Field>
+        <Field data-invalid={erroArquivo ? true : undefined}>
           <FieldLabel htmlFor="new-file">Arquivo (opcional)</FieldLabel>
           <Input
             id="new-file"
@@ -286,7 +297,23 @@ function AddSourceForm({ ctx, onDone }: { ctx: Ctx; onDone: () => void }) {
             type="file"
             accept={ACCEPT}
             className="h-auto py-1.5"
+            aria-invalid={erroArquivo ? true : undefined}
+            onChange={(e) => {
+              const f = e.currentTarget.files?.[0];
+              if (f && f.size > MAX_ARQUIVO) {
+                setErroArquivo(
+                  `"${f.name}" tem ${mb(f.size)} — o limite é ${mb(MAX_ARQUIVO)}. ` +
+                    `Envie um arquivo menor ou cole o conteúdo no campo abaixo.`,
+                );
+                e.currentTarget.value = ""; // limpa: não deixa enviar o que já falhou
+              } else {
+                setErroArquivo(null);
+              }
+            }}
           />
+          {erroArquivo && (
+            <p className="text-xs text-destructive">{erroArquivo}</p>
+          )}
         </Field>
 
         <Field data-invalid={state.error ? true : undefined}>
