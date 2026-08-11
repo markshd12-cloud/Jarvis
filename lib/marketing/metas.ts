@@ -24,6 +24,9 @@ import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
 import { MARKETING_AD_ACCOUNTS } from "./config";
+// `today()` do módulo de métricas já resolve o fuso de São Paulo — o servidor é
+// UTC, e na virada do mês o fuso errado devolveria a competência anterior.
+import { today as hojeSP } from "./metrics";
 import { ganhoInscritosPorCanal } from "./youtube-analytics";
 
 /** Métricas que a tabela aceita. Só as duas primeiras estão em uso. */
@@ -37,6 +40,21 @@ export type MetricaMeta =
 /** `max` = TETO (menor é melhor). `min` = PISO (maior é melhor). */
 export type DirecaoMeta = "max" | "min";
 
+/**
+ * Como a métrica se comporta ao longo do mês — e é isso que decide se ela pode
+ * ser comparada com a meta no dia 11.
+ *
+ * | tipo         | exemplo             | comparável no meio do mês? |
+ * |--------------|---------------------|----------------------------|
+ * | `taxa`       | custo por resultado | **sim** — R$ 7,85/lead é R$ 7,85 no dia 5 ou no 30 |
+ * | `acumulado`  | seguidores ganhos   | **não** — 11 dias contra a meta do mês inteiro |
+ *
+ * Sem essa distinção, TODA meta acumulada nasce vermelha no dia 1º e vai
+ * esverdeando — o que ensina o time a ignorar a cor por três semanas, que é o
+ * mesmo que não ter meta. Ver `docs/marketing-metas-plano.md` §2.1.
+ */
+export type TipoMetrica = "taxa" | "acumulado";
+
 /** Um alvo mensurável — a linha da tela, exista meta cadastrada ou não. */
 export interface AlvoMeta {
   metrica: MetricaMeta;
@@ -47,6 +65,8 @@ export interface AlvoMeta {
   /** Contexto curto: "por lead", "por conversa", "@handle". */
   detalhe: string;
   direcao: DirecaoMeta;
+  /** Ver `TipoMetrica`: decide se cabe comparar antes do mês fechar. */
+  tipo: TipoMetrica;
   /** 'brl' formata como dinheiro; 'num' como inteiro. */
   unidade: "brl" | "num";
 }
@@ -64,6 +84,45 @@ export interface MetaComAtual extends AlvoMeta {
   desvio: number | null;
   /** `atual` é negativo? Perder seguidor é diferente de crescer pouco. */
   regressao: boolean;
+
+  /**
+   * A RÉGUA — o que o número significa, ao lado de onde ele é digitado.
+   *
+   * Existe por causa de um erro real: alguém cadastrou meta de **110.000** num
+   * perfil de 93.175 seguidores, querendo dizer "chegar a 110 mil". A métrica é
+   * *ganho no mês*, então a tela exibiu desvio de −108.960. O cabeçalho do bloco
+   * já avisava "ganho no mês (não o total)" e não bastou — texto explicando não
+   * compete com um campo vazio pedindo um número.
+   *
+   * Só existe para `tipo: "acumulado"`; taxa não tem "total" com que confundir.
+   */
+  baseline?: {
+    /** Onde a conta está hoje (93.175 seguidores). */
+    atualAbsoluto: number | null;
+    /** Ganho médio dos últimos meses fechados — a ordem de grandeza plausível. */
+    mediaHistorica: number | null;
+  };
+
+  /**
+   * O RITMO — comparação justa antes do mês fechar.
+   *
+   * Métrica acumulada comparada com a meta do mês inteiro no dia 11 é sempre
+   * injusta: nasce vermelha no dia 1º e vai esverdeando, o que treina o time a
+   * ignorar a cor por três semanas. Aqui a comparação é contra o **esperado até
+   * hoje**, e a projeção diz onde o mês termina no ritmo atual.
+   *
+   * `undefined` em mês fechado (não há o que projetar) e em `tipo: "taxa"`.
+   */
+  ritmo?: {
+    diasDecorridos: number;
+    diasNoMes: number;
+    /** Meta × (dias decorridos ÷ dias do mês). */
+    esperadoAteHoje: number;
+    /** Atual ÷ dias decorridos × dias do mês. `null` sem base. */
+    projecao: number | null;
+    /** Último dia REALMENTE coletado — o denominador honesto. */
+    ultimaColeta: string;
+  };
 }
 
 /** Só a marca sabe se conta lead ou conversa — ver `resultado` em config.ts. */
@@ -86,6 +145,7 @@ export function alvosDeMeta(handles: Map<string, string> = new Map()): AlvoMeta[
     rotulo: b.label,
     detalhe: rotuloResultado(b.resultado),
     direcao: "max" as const, // teto: gastar menos por resultado é melhor
+    tipo: "taxa" as const, // razão gasto/resultado — não acumula com os dias
     unidade: "brl" as const,
   }));
 
@@ -96,6 +156,7 @@ export function alvosDeMeta(handles: Map<string, string> = new Map()): AlvoMeta[
       rotulo: b.label,
       detalhe: handles.get(accountId) ? `@${handles.get(accountId)}` : accountId,
       direcao: "min" as const, // piso: ganhar mais seguidores é melhor
+      tipo: "acumulado" as const, // soma ao longo do mês
       unidade: "num" as const,
     })),
   );
@@ -115,6 +176,7 @@ export function alvosDeMeta(handles: Map<string, string> = new Map()): AlvoMeta[
       rotulo: b.label,
       detalhe: "inscritos no mês",
       direcao: "min" as const, // piso: crescer mais é melhor
+      tipo: "acumulado" as const, // soma ao longo do mês
       unidade: "num" as const,
     }),
   );
@@ -132,6 +194,23 @@ export function alvosDeMeta(handles: Map<string, string> = new Map()): AlvoMeta[
    */
   return [...custo, ...seguidores, ...inscritos];
 }
+
+/** Competência deslocada por `n` meses. `-1` = mês anterior. */
+function competenciaShift(competencia: string, n: number): string {
+  const [a, m] = competencia.split("-").map(Number);
+  const d = new Date(Date.UTC(a, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Atraso de consolidação da YouTube Analytics API.
+ *
+ * A API entrega os últimos dias incompletos ou vazios. Usar "hoje" como
+ * denominador do ritmo faria o cálculo dividir o ganho de 9 dias por 11, e um
+ * mês saudável apareceria atrasado. Constante em vez de detecção porque a
+ * resposta da API não diz qual foi o último dia com dado.
+ */
+const ATRASO_YT_DIAS = 2;
 
 /** Último dia da competência ('AAAA-MM' → 'AAAA-MM-DD'). */
 function ultimoDia(competencia: string): string {
@@ -199,12 +278,16 @@ async function custoPorResultado(competencia: string): Promise<Map<string, numbe
 /**
  * Ganho de seguidores no mês, por conta.
  *
+ * EXPORTADO para o Painel (`painel.ts`) somar a audiência do mês. A sutileza do
+ * "último snapshot ANTERIOR ao mês" (abaixo) é fácil de errar refazendo — por
+ * isso reuso em vez de duplicar.
+ *
  * Mede do ÚLTIMO snapshot ANTERIOR à competência até o último dentro dela — e
  * não do primeiro ao último do mês, que perderia o crescimento ocorrido entre a
  * virada e o primeiro snapshot. Sem snapshot anterior (a série começa em
  * 15/06/2026), cai para o primeiro do mês e o número fica parcial.
  */
-async function ganhoSeguidores(competencia: string): Promise<Map<string, number | null>> {
+export async function ganhoSeguidores(competencia: string): Promise<Map<string, number | null>> {
   const admin = createAdminClient();
   const { data } = await admin
     .from("social_daily_insights")
@@ -256,8 +339,66 @@ async function metasCadastradas(competencia: string): Promise<Map<string, number
  * Alvo sem meta cadastrada APARECE, com `valor: null` — é o estado que convida a
  * cadastrar, e some-lo esconderia justamente o que falta preencher.
  */
+/** Total de seguidores hoje, por conta — o "onde estamos" da régua. */
+async function totalSeguidores(): Promise<Map<string, number>> {
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("social_daily_insights")
+    .select("account_id, date, followers")
+    .eq("provider", "instagram")
+    .order("date", { ascending: false })
+    .limit(500);
+  const out = new Map<string, number>();
+  for (const r of data ?? []) {
+    // A consulta vem do mais recente para o mais antigo: o PRIMEIRO de cada
+    // conta já é o snapshot atual.
+    if (r.followers != null && !out.has(r.account_id as string))
+      out.set(r.account_id as string, Number(r.followers));
+  }
+  return out;
+}
+
+/**
+ * Ganho médio mensal dos últimos `n` meses FECHADOS.
+ *
+ * Fechados de propósito: incluir o mês corrente (que está pela metade) puxaria a
+ * média para baixo e faria a régua sugerir uma meta menor do que o time entrega.
+ */
+async function mediaHistorica(
+  competencia: string,
+  n: number,
+): Promise<{ ig: Map<string, number>; yt: Map<string, number> }> {
+  const meses = Array.from({ length: n }, (_, i) => competenciaShift(competencia, -(i + 1)));
+
+  const [igs, yts] = await Promise.all([
+    Promise.all(meses.map((m) => ganhoSeguidores(m).catch(() => new Map<string, number | null>()))),
+    Promise.all(
+      // Mês fechado tem TTL de 30 dias (ver `cache-ttl.ts`) — na prática isto
+      // custa uma consulta por mês a cada 30 dias, não a cada abertura da aba.
+      meses.map((m) => ganhoInscritosPorCanal(m).catch(() => new Map<string, number>())),
+    ),
+  ]);
+
+  const media = <T extends Map<string, number | null> | Map<string, number>>(
+    mapas: T[],
+  ): Map<string, number> => {
+    const soma = new Map<string, { total: number; n: number }>();
+    for (const mapa of mapas)
+      for (const [k, v] of mapa) {
+        if (v == null) continue;
+        const c = soma.get(k) ?? { total: 0, n: 0 };
+        c.total += v;
+        c.n += 1;
+        soma.set(k, c);
+      }
+    return new Map([...soma].map(([k, c]) => [k, c.total / c.n]));
+  };
+
+  return { ig: media(igs), yt: media(yts) };
+}
+
 export async function getMetasComAtual(competencia: string): Promise<MetaComAtual[]> {
-  const [handles, cadastradas, custos, ganhos, inscritos] = await Promise.all([
+  const [handles, cadastradas, custos, ganhos, inscritos, totais, medias] = await Promise.all([
     handlesInstagram(),
     metasCadastradas(competencia),
     custoPorResultado(competencia),
@@ -272,7 +413,30 @@ export async function getMetasComAtual(competencia: string): Promise<MetaComAtua
       console.error("[metas] Analytics do YouTube falhou — inscritos sem atual.", e);
       return new Map<string, number>();
     }),
+    // A régua degrada em silêncio: sem ela a tela volta a ser o que era, e isso
+    // é melhor do que a tela inteira falhar por causa de um número auxiliar.
+    totalSeguidores().catch(() => new Map<string, number>()),
+    mediaHistorica(competencia, 3).catch(() => ({
+      ig: new Map<string, number>(),
+      yt: new Map<string, number>(),
+    })),
   ]);
+
+  // --- ritmo: só faz sentido no mês CORRENTE ------------------------------- //
+  const hoje = hojeSP();
+  const mesCorrente = competencia === hoje.slice(0, 7);
+  const diasNoMes = Number(ultimoDia(competencia).slice(8, 10));
+  const diaHoje = Number(hoje.slice(8, 10));
+
+  /**
+   * Dias decorridos POR FONTE, não um número só.
+   *
+   * O Instagram é snapshot diário e chega até ontem/hoje; o YouTube Analytics
+   * consolida com ~2 dias de atraso. Usar o mesmo denominador para os dois faria
+   * o YouTube parecer atrasado todo mês, por um motivo que não é de desempenho.
+   */
+  const diasIg = Math.max(1, Math.min(diaHoje, diasNoMes));
+  const diasYt = Math.max(1, Math.min(diaHoje - ATRASO_YT_DIAS, diasNoMes));
 
   return alvosDeMeta(handles).map((a) => {
     const valor = cadastradas.get(`${a.metrica}|${a.alvo}`) ?? null;
@@ -293,7 +457,35 @@ export async function getMetasComAtual(competencia: string): Promise<MetaComAtua
           ? valor - atual
           : atual - valor;
 
-    return { ...a, valor, atual, desvio, regressao: (atual ?? 0) < 0 };
+    // --- régua (só acumulado: taxa não tem "total" com que confundir) ------ //
+    const ehYt = a.metrica === "seguidores_yt";
+    const baseline =
+      a.tipo === "acumulado"
+        ? {
+            // O YouTube não entra em `atualAbsoluto`: o total público é
+            // arredondado (o CPPEM marca "387.000" há semanas) e uma régua
+            // arredondada convida ao mesmo erro que ela deveria evitar.
+            atualAbsoluto: ehYt ? null : (totais.get(a.alvo) ?? null),
+            mediaHistorica: (ehYt ? medias.yt : medias.ig).get(a.alvo) ?? null,
+          }
+        : undefined;
+
+    // --- ritmo -------------------------------------------------------------- //
+    const dias = ehYt ? diasYt : diasIg;
+    const ritmo =
+      a.tipo === "acumulado" && mesCorrente && valor != null
+        ? {
+            diasDecorridos: dias,
+            diasNoMes,
+            esperadoAteHoje: (valor * dias) / diasNoMes,
+            projecao: atual != null ? (atual / dias) * diasNoMes : null,
+            ultimaColeta: ehYt
+              ? `${competencia}-${String(Math.min(diaHoje - ATRASO_YT_DIAS, diasNoMes)).padStart(2, "0")}`
+              : hoje,
+          }
+        : undefined;
+
+    return { ...a, valor, atual, desvio, regressao: (atual ?? 0) < 0, baseline, ritmo };
   });
 }
 

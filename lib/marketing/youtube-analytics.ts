@@ -18,6 +18,7 @@ import { cachedSwr } from "@/lib/cache/kv";
 
 import { MARKETING_AD_ACCOUNTS } from "./config";
 import { listarConexoes, tokenValido } from "./youtube-oauth";
+import { TTL_LEITURA_CARA, TTL_MES_FECHADO } from "@/lib/marketing/cache-ttl";
 
 const BASE = "https://youtubeanalytics.googleapis.com/v2/reports";
 const DATA_API = "https://www.googleapis.com/youtube/v3";
@@ -337,7 +338,7 @@ export async function detalheDoCanal(
    */
   return cachedSwr(
     `yt-analytics:${channelId}:${janela.inicio}:${janela.fim}`,
-    30 * 60_000,
+    TTL_LEITURA_CARA,
     () => detalheDoCanalAoVivo(channelId, janela),
     { cacheIf: (d) => d !== null },
   );
@@ -501,15 +502,22 @@ export interface AnalyticsCanal {
  */
 export async function analyticsPorCompetencia(
   competencia: string,
+  opts: { force?: boolean } = {},
 ): Promise<AnalyticsCanal[]> {
   // Mesmo motivo do `detalheDoCanal`: alimenta as metas, que são recarregadas a
   // cada troca de competência. Lista vazia não é cacheada — é o estado de
-  // "desconectado", e prendê-lo por 30 min esconderia a reconexão.
+  // "desconectado", e prendê-lo esconderia a reconexão.
+  //
+  // Mês FECHADO nunca muda de valor → TTL longo. Sem isso, a régua histórica e o
+  // histórico por competência dispararia uma consulta à Analytics API por mês
+  // exibido, toda vez que o cache de 6h virasse.
+  const fechada = competencia < hojeSP().slice(0, 7);
   return cachedSwr(
     `yt-analytics-comp:${competencia}`,
-    30 * 60_000,
+    fechada ? TTL_MES_FECHADO : TTL_LEITURA_CARA,
     () => analyticsPorCompetenciaAoVivo(competencia),
-    { cacheIf: (d) => d.length > 0 },
+    // `force` só vem do cron de aquecimento — ver `lib/marketing/cache-ttl.ts`.
+    { cacheIf: (d) => d.length > 0, force: opts.force },
   );
 }
 

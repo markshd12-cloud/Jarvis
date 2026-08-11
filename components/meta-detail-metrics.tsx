@@ -186,6 +186,21 @@ export function MetaDetailMetrics({ data }: { data: MetaDetail }) {
         </span>
       </div>
 
+      {/* Recorte ANUNCIADO. Este painel lê a Graph API na hora, e período longo
+          volta vazio por rate limit — o que na tela viraria "sem dados", pior
+          que um recorte explicado. O subtítulo já mostra o período real; aqui
+          fica o porquê de ele ser menor que o pedido. */}
+      {data.recorte ? (
+        <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          Você pediu de {ddmm(data.recorte.pedidoSince)} a{" "}
+          {ddmm(data.recorte.pedidoUntil)}. Este painel é lido ao vivo na Meta e vai
+          até <strong>{data.recorte.tetoDias} dias</strong> — acima disso a consulta
+          esbarra no limite da API e volta vazia. Mostrando os{" "}
+          {data.recorte.tetoDias} dias mais recentes. Os cards acima cobrem o
+          período inteiro.
+        </p>
+      ) : null}
+
       {!data.hasData ? (
         <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
           {data.erro

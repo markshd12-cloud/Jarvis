@@ -71,6 +71,7 @@ function EmBreve({ nome }: { nome: string }) {
 
 /** Quais abas o usuário PODE ver — derivado de permissão, não de dado carregado. */
 export interface AbasDisponiveis {
+  painel: boolean;
   meta: boolean;
   metas: boolean;
   instagram: boolean;
@@ -81,6 +82,7 @@ export interface AbasDisponiveis {
 
 export function MarketingShell({
   disponivel,
+  painel,
   meta,
   metas,
   instagram,
@@ -99,6 +101,8 @@ export function MarketingShell({
    * slot só diz se ESTA aba já tem conteúdo.
    */
   disponivel: AbasDisponiveis;
+  /** Aba Painel — a de abertura do módulo (decisão de 2026-08-11). */
+  painel: React.ReactNode | null;
   meta: React.ReactNode | null;
   /** Aba Metas — null quando o usuário não tem a permissão `marketing`. */
   metas: React.ReactNode | null;
@@ -114,11 +118,13 @@ export function MarketingShell({
   const has = disponivel;
 
   const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode }[] = [
+    // PRIMEIRO da lista de propósito: `firstReady` pega o primeiro pronto, e é
+    // assim que o Painel virou a aba de abertura do módulo.
+    { key: "painel", label: "Painel", ready: has.painel, icon: <IconLayoutDashboard className={iconCls} /> },
     { key: "meta", label: "Meta Ads", ready: has.meta, icon: <IconBrandMeta className={iconCls} /> },
     { key: "metas", label: "Metas", ready: has.metas, icon: <IconTargetArrow className={iconCls} /> },
     { key: "instagram", label: "Instagram", ready: has.instagram, icon: <IconBrandInstagram className={iconCls} /> },
     { key: "ga4", label: "GA4 / Site", ready: has.ga4, icon: <IconWorld className={iconCls} /> },
-    { key: "painel", label: "Painel", ready: false, icon: <IconLayoutDashboard className={iconCls} /> },
     { key: "youtube", label: "YouTube", ready: has.youtube, icon: <IconBrandYoutube className={iconCls} /> },
     { key: "cac", label: "CAC", ready: has.cac, icon: <IconCoin className={iconCls} /> },
   ];
@@ -177,7 +183,7 @@ export function MarketingShell({
           {active === "metas" ? slot(has.metas, metas, "Metas") : null}
           {active === "instagram" ? slot(has.instagram, instagram, "Instagram") : null}
           {active === "ga4" ? slot(has.ga4, ga4, "GA4") : null}
-          {active === "painel" ? <EmBreve nome="Painel consolidado" /> : null}
+          {active === "painel" ? slot(has.painel, painel, "Painel") : null}
           {active === "youtube" ? slot(has.youtube, youtube, "YouTube") : null}
           {active === "cac" ? slot(has.cac, cac, "CAC — requer Marketing + Financeiro") : null}
         </div>

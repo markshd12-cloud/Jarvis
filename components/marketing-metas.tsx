@@ -110,28 +110,88 @@ function CampoMeta({
     err && "border-destructive",
   );
 
+  /**
+   * Aviso de ordem de grandeza — AVISO, não bloqueio.
+   *
+   * Dispara quando o número digitado passa de 10× o ganho médio dos últimos
+   * meses. Foi o caso dos 110.000 num perfil que cresce ~1.000/mês: 93× a
+   * média, e nada na tela questionou.
+   *
+   * Não bloqueia porque meta ambiciosa existe e é legítima — a tela levanta a
+   * dúvida e deixa a decisão com quem tem o contexto.
+   */
+  const media = item.baseline?.mediaHistorica ?? null;
+  const digitado = Number(v.replace(/\./g, "").replace(",", "."));
+  const implausivel =
+    media != null && media > 0 && Number.isFinite(digitado) && digitado > media * 10;
+
   // Dinheiro usa a máscara BRL; seguidores são inteiros simples.
-  return item.unidade === "brl" ? (
-    <MoneyInput
-      value={v}
-      onChange={setV}
-      onBlur={() => void salvar()}
-      onKeyDown={enter}
-      placeholder="meta…"
-      disabled={busy}
-      className={classe}
-    />
-  ) : (
-    <Input
-      value={v}
-      onChange={(e) => setV(e.target.value.replace(/\D/g, ""))}
-      onBlur={() => void salvar()}
-      onKeyDown={enter}
-      placeholder="meta…"
-      disabled={busy}
-      inputMode="numeric"
-      className={classe}
-    />
+  const campo =
+    item.unidade === "brl" ? (
+      <MoneyInput
+        value={v}
+        onChange={setV}
+        onBlur={() => void salvar()}
+        onKeyDown={enter}
+        placeholder="meta…"
+        disabled={busy}
+        className={classe}
+      />
+    ) : (
+      <Input
+        value={v}
+        onChange={(e) => setV(e.target.value.replace(/\D/g, ""))}
+        onBlur={() => void salvar()}
+        onKeyDown={enter}
+        placeholder="meta…"
+        disabled={busy}
+        inputMode="numeric"
+        className={classe}
+      />
+    );
+
+  if (!implausivel) return campo;
+
+  return (
+    <span className="flex flex-col items-end gap-0.5">
+      {campo}
+      <span className="max-w-52 text-right text-[10px] leading-tight text-amber-600 dark:text-amber-400">
+        {Math.round(digitado / (media as number))}× o ganho médio. Quis dizer o
+        TOTAL de seguidores? Aqui a meta é o ganho DO MÊS.
+      </span>
+    </span>
+  );
+}
+
+/** Onde a conta está hoje e quanto ela costuma crescer — a ordem de grandeza. */
+function Regua({ item }: { item: MetaComAtual }) {
+  const b = item.baseline;
+  if (!b || (b.atualAbsoluto == null && b.mediaHistorica == null)) return null;
+
+  const partes: string[] = [];
+  if (b.atualAbsoluto != null) partes.push(`hoje ${num.format(b.atualAbsoluto)}`);
+  if (b.mediaHistorica != null)
+    partes.push(`média 3 meses ${num.format(Math.round(b.mediaHistorica))}/mês`);
+
+  return (
+    <span className="block truncate text-[11px] text-muted-foreground/80">
+      {partes.join(" · ")}
+    </span>
+  );
+}
+
+/** Esperado até hoje e projeção do mês — a leitura justa antes de fechar. */
+function Ritmo({ item }: { item: MetaComAtual }) {
+  const r = item.ritmo;
+  if (!r || item.atual == null) return null;
+  return (
+    <span
+      className="block truncate text-[11px] text-muted-foreground/80"
+      title={`Ritmo linear sobre ${r.diasDecorridos} de ${r.diasNoMes} dias (última coleta ${r.ultimaColeta}). Aproximação: campanha concentrada no fim do mês quebra a hipótese.`}
+    >
+      esperado até hoje {fmt(r.esperadoAteHoje, item.unidade)}
+      {r.projecao != null ? ` · projeção ${fmt(r.projecao, item.unidade)}` : ""}
+    </span>
   );
 }
 
@@ -143,9 +203,43 @@ function CampoMeta({
 function Desvio({ item }: { item: MetaComAtual }) {
   if (item.desvio == null)
     return <span className="text-xs text-muted-foreground/60">—</span>;
-  const bom = item.desvio >= 0;
-  const base = item.valor ?? 0;
-  const pct = base > 0 ? (item.desvio / base) * 100 : null;
+
+  /**
+   * Métrica ACUMULADA no mês corrente compara contra o **esperado até hoje**,
+   * não contra a meta cheia.
+   *
+   * Sem isto, uma meta de seguidores nasce vermelha no dia 1º e vai esverdeando
+   * até o dia 30 — e a cor deixa de significar "está ruim" para significar "o
+   * mês ainda não acabou". Três semanas de vermelho falso por mês ensinam o time
+   * a ignorar a coluna inteira.
+   */
+  const usaRitmo = item.ritmo != null && item.atual != null;
+  const referencia = usaRitmo ? (item.ritmo as NonNullable<typeof item.ritmo>).esperadoAteHoje : (item.valor ?? 0);
+  const desvio = usaRitmo
+    ? item.direcao === "max"
+      ? referencia - (item.atual as number)
+      : (item.atual as number) - referencia
+    : item.desvio;
+
+  const bom = desvio >= 0;
+  const base = usaRitmo ? referencia : (item.valor ?? 0);
+  const pct = base > 0 ? (desvio / base) * 100 : null;
+  if (usaRitmo)
+    return (
+      <span
+        className={cn(
+          "tabular-nums",
+          bom
+            ? "text-emerald-600 dark:text-emerald-400"
+            : "text-red-500 dark:text-red-400",
+        )}
+        title={`Comparado ao esperado até hoje (${fmt(referencia, item.unidade)}), não à meta cheia do mês`}
+      >
+        {desvio > 0 ? "+" : ""}
+        {fmt(desvio, item.unidade)}
+        <span className="block text-[10px] font-normal opacity-80">no ritmo</span>
+      </span>
+    );
   return (
     <span
       className={cn(
@@ -263,6 +357,14 @@ export function MarketingMetasPanel({
                       <span className="block truncate text-[11px] text-muted-foreground">
                         {m.detalhe}
                       </span>
+                      {/* A RÉGUA. Alguém cadastrou 110.000 num perfil de 93.175
+                          seguidores querendo dizer "chegar a 110 mil"; a
+                          métrica é ganho no mês. O cabeçalho do bloco já
+                          avisava e não bastou — texto explicando não compete
+                          com um campo vazio pedindo um número. Com a ordem de
+                          grandeza ao lado, ninguém digita 110.000. */}
+                      <Regua item={m} />
+                      <Ritmo item={m} />
                     </span>
 
                     <span className="flex justify-end pr-4">

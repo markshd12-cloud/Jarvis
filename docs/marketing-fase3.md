@@ -25,7 +25,10 @@ uma promessa: aba cinza permanente vira ruído e, com o tempo, mentira.
 agora?" sem obrigar a visitar seis abas. Hoje o Marketing tem seis painéis
 excelentes e nenhuma visão de conjunto — quem chega precisa saber onde procurar.
 
-**Estado.** Aba `painel` já existe no dock como "(em breve)". Nenhum código.
+**Estado.** ✅ **CONSTRUÍDO em 2026-08-11** — `lib/marketing/painel.ts` +
+`components/marketing-painel.tsx`, ligado como **aba inicial** do módulo. Ganhou
+dois blocos que não estavam nesta proposta (saúde das fontes e tendência de 90
+dias) e um seletor de mês. Ver [`marketing-painel.md`](marketing-painel.md).
 
 ## O que já temos para montar (nada de integração nova)
 
@@ -245,8 +248,8 @@ ninguém** — nem de metas cadastradas, nem de decisão de gestão, nem do Pain
 | | Esforço | Depende de | Bloqueado hoje? |
 |---|---|---|---|
 | **Contexto no chat** | baixo | nada | não |
-| **Painel** | médio | metas cadastradas (para o Bloco 2) | parcialmente |
-| **Modo TV** | baixo | **o Painel existir** | sim |
+| ~~**Painel**~~ | ✅ FEITO 2026-08-11 | — | — |
+| **Modo TV** | baixo | ~~o Painel existir~~ | **DESTRAVADO** (o Painel existe) |
 
 **Ordem recomendada: chat → painel → TV.**
 

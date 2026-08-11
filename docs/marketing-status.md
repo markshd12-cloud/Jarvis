@@ -190,18 +190,21 @@ reporta o catálogo inteiro por período).
 > servidor não o cobre. **Google Ads (`AW-17332184690`) segue funcionando** — vai direto ao Google,
 > sem passar pelo servidor; por isso ninguém percebeu. Conserto no GTM (container Servidor → Tags),
 > fora do Jarvis — passo a passo em `docs/ga4-sgtm-diagnostico.md`.
-- **Passo 10 · Painel consolidado** — visão geral cross-channel. 5 blocos propostos (linha do mês,
-  semáforo de metas, distribuição por marca, funil paralelo, alertas). Esforço MÉDIO, sem
-  integração nova. ⚠️ o semáforo depende de `mkt_metas`, que em 2026-08-11 tem **3 metas de 11
-  alvos** — e uma delas está errada por 100× (ver `marketing-metas-plano.md` §0). Ordenado por
-  "pior primeiro", o semáforo estrearia com esse erro no topo.
+- ✅ **Passo 10 · Painel consolidado** — **FEITO 2026-08-11**. `lib/marketing/painel.ts` +
+  `components/marketing-painel.tsx`, **aba inicial** do módulo. 7 blocos: saúde das fontes, linha do
+  mês (4 números + delta vs mesmos dias do mês anterior), alertas, semáforo de metas, distribuição
+  por marca, tendência 90d (com custo/resultado em média móvel 7d) e funis. Seletor de mês por
+  `?comp`. Desenho em `docs/marketing-painel.md`.
 - ~~**Passo 11 · Comparativo entre canais**~~ — ❌ **DESATIVADO em 2026-08-05**. Com o TikTok fora
   sobra um único canal pago, e IG/YouTube não têm custo atribuído — o orgânico apareceria como
   infinitamente eficiente. Exige antes decisão de gestão sobre rateio do custo de conteúdo.
-- **Passo 12 · Modo TV** — 5 slides, reusando `painel-tv.tsx`. Esforço BAIXO, mas **bloqueado
-  pelo Passo 10**: o TV consome o objeto consolidado do Painel, não faz fetch próprio.
-- **Passo 13 · Contexto no chat** — hoje cobre Meta + YouTube (público). Faltam Metas, CAC, GA4,
-  Instagram e YouTube nível B. Esforço BAIXO e **sem dependências** — recomendado como próximo.
+- **Passo 12 · Modo TV** — 5 slides, reusando `painel-tv.tsx`. Esforço BAIXO e **DESTRAVADO desde
+  2026-08-11**: o Painel existe e já devolve o objeto consolidado (`PainelResumo`) que o TV consome.
+- **Passo 13 · Contexto no chat** — hoje cobre Meta + YouTube (público, ARREDONDADO = resposta
+  errada). Faltam Metas, CAC, GA4, Instagram e YouTube nível B. **Arquitetado em
+  `docs/marketing-fase4.md`** (blocos com gatilho próprio + orçamento de tamanho).
+- **Passo 14 · Metas — 8 melhorias** e **Passo 15 · Cron aquece cache**: arquitetados em
+  `docs/marketing-fase4.md`. O cron é o de menor esforço e melhora tudo que já existe.
 
 ## Padrão para adicionar um canal novo (checklist)
 1. `lib/marketing/<canal>.ts` (server-only): fetch + normalizar. Ao vivo (cache) OU sync p/ tabela.

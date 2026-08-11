@@ -6,7 +6,8 @@
  * obtido por JWT assinado com `node:crypto` (RS256) — sem lib extra. GLOBAL (sem
  * company_id): o gate é `can(ctx, "ga4")` na página. Server-only.
  *
- * Lê AO VIVO (como o Conta Azul), com cache de 10 min — GA4 é rápido (poucas
+ * Lê AO VIVO (como o Conta Azul), com cache longo aquecido por cron
+ * (`cache-ttl.ts`) — GA4 é rápido (poucas
  * chamadas) e não precisa de tabela/sync próprio. Degrada gracioso: erro/sem
  * credencial → `hasData:false` (o dashboard some a seção sem quebrar).
  */
@@ -15,6 +16,7 @@ import "server-only";
 import { cachedSwr } from "@/lib/cache/kv";
 import { getGoogleAccessToken } from "@/lib/google/auth";
 import { GA4_PROPERTY_ID } from "@/lib/marketing/config";
+import { TTL_LEITURA_CARA } from "@/lib/marketing/cache-ttl";
 
 const SCOPE = "https://www.googleapis.com/auth/analytics.readonly";
 const API_BASE = `https://analyticsdata.googleapis.com/v1beta/properties/${GA4_PROPERTY_ID}`;
@@ -448,10 +450,10 @@ async function computeGa4(): Promise<Ga4Overview> {
 // SWR de 2 camadas (memória + Supabase `cache_kv`): sobrevive a redeploy e é
 // compartilhado entre réplicas. São 8 runReports por load frio — com cache, isso
 // roda no máximo 1× a cada 10 min globalmente. Ver `lib/cache/kv.ts`.
-const TTL = 10 * 60_000;
+const TTL = TTL_LEITURA_CARA; // ver lib/marketing/cache-ttl.ts
 
 /** Visão do GA4 (28 dias). Cache SWR 10 min; degrada gracioso em falha. */
-export async function getGa4Overview(): Promise<Ga4Overview> {
+export async function getGa4Overview(opts: { force?: boolean } = {}): Promise<Ga4Overview> {
   const compute = async (): Promise<Ga4Overview> => {
     try {
       return await computeGa4();
@@ -460,7 +462,11 @@ export async function getGa4Overview(): Promise<Ga4Overview> {
       return empty();
     }
   };
-  return cachedSwr("ga4:overview:28d", TTL, compute, { cacheIf: (d) => d.hasData });
+  // `force` só vem do cron de aquecimento — ver `lib/marketing/cache-ttl.ts`.
+  return cachedSwr("ga4:overview:28d", TTL, compute, {
+    cacheIf: (d) => d.hasData,
+    force: opts.force,
+  });
 }
 
 // --------------------------- Fase 3 — tempo real ---------------------------- //

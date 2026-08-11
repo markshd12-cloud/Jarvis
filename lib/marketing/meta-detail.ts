@@ -3,7 +3,8 @@
  *
  * Diferente do overview (que sincroniza o nível-conta p/ `marketing_daily_insights`
  * e o painel lê da tabela), o detalhe por-nível tem volume grande demais p/ um
- * sync diário. Então lê ao vivo da Insights API com cache de 10 min — mesmo ethos
+ * sync diário. Então lê ao vivo da Insights API com cache longo aquecido por
+ * cron (ver `cache-ttl.ts`) — mesmo ethos
  * do GA4. Para não estourar o rate limit (erro 17), pede o SUMMARY do período
  * (sem `time_increment`), já ordenado por gasto (`sort=spend_descending`) e com
  * `limit`, e usa backoff. Server-only, GLOBAL (gate `can(ctx,"marketing")`).
@@ -21,7 +22,12 @@ import {
   META_ENV,
   META_GRAPH_BASE,
 } from "@/lib/marketing/config";
-import { daysAgo, today } from "@/lib/marketing/metrics";
+import {
+  inclusiveDays,
+  resolveRange,
+  shiftIso,
+} from "@/lib/marketing/dashboard";
+import { TTL_LEITURA_CARA } from "@/lib/marketing/cache-ttl";
 
 // ------------------------------- tipos ------------------------------------- //
 
@@ -76,6 +82,14 @@ export interface MetaDetail {
   atualizadoEm: string;
   /** Preenchido quando a API falhou (rate limit, token) — UI mostra aviso. */
   erro?: string;
+  /**
+   * Período que o usuário PEDIU, quando foi maior que o teto e teve de ser
+   * recortado. `undefined` = o período exibido é o pedido.
+   *
+   * Existe para a tela nunca exibir um intervalo diferente do que diz exibir:
+   * recortar em silêncio faria o painel afirmar "a 11/08" mostrando outra coisa.
+   */
+  recorte?: { pedidoSince: string; pedidoUntil: string; tetoDias: number };
 }
 
 // ------------------------------- graph ------------------------------------- //
@@ -284,24 +298,87 @@ async function computeDetail(brand: string | null, since: string, until: string)
 
 // ------------------------------- cache ------------------------------------- //
 
-// Cache 10 min (SWR de 2 camadas: memória + Supabase). Ver `lib/cache/kv.ts`.
-const TTL = 10 * 60_000;
+// SWR de 2 camadas (memória + Supabase). TTL e o porquê em `cache-ttl.ts`.
+const TTL = TTL_LEITURA_CARA; // ver lib/marketing/cache-ttl.ts
 
 /**
- * Top campanhas + anúncios ao vivo (padrão: últimos 30 dias). Cache 10 min por
- * (marca, período), compartilhado/persistente. Degrada gracioso: falha →
- * `hasData:false` + `erro` p/ a UI (e não cacheia o erro).
+ * Teto de dias do detalhe ao vivo.
+ *
+ * Este é o ÚNICO painel da aba que bate na Graph API na hora — o resto lê do
+ * nosso banco. Cada leitura são 2 níveis (campanha e anúncio) × N contas, em
+ * sequência e com backoff. Um ano de janela multiplica o volume e o pedido
+ * volta vazio por rate limit (erro 17), que na tela vira "sem dados" — pior que
+ * um recorte anunciado.
+ *
+ * 90 dias cobre trimestre, que é o recorte de gestão real, e ainda cabe
+ * folgado no limite.
  */
-export async function getMetaDetail(
-  opts: { brand?: string | null; days?: number } = {},
-): Promise<MetaDetail> {
+const TETO_DIAS = 90;
+
+/** Filtros da tela aceitos pelos painéis ao vivo. */
+export interface JanelaAoVivo {
+  brand?: string | null;
+  range?: string;
+  since?: string;
+  until?: string;
+  /**
+   * Recalcula ignorando o cache ainda válido. Só o cron de aquecimento usa.
+   *
+   * Sem isto o aquecimento seria inócuo: com TTL de 6h e cron de 3/3h, a
+   * entrada AINDA ESTÁ FRESCA quando o cron roda, e o `cachedSwr` devolveria o
+   * valor guardado sem recalcular nada.
+   */
+  force?: boolean;
+}
+
+/**
+ * Traduz o filtro da tela na janela que estes painéis vão pedir à Graph API.
+ *
+ * Usa `resolveRange` do `dashboard.ts` — a MESMA função do painel de cima, para
+ * os dois nunca discordarem sobre que período está na tela.
+ */
+function janelaDoFiltro(opts: JanelaAoVivo): {
+  since: string;
+  until: string;
+  recorte?: { pedidoSince: string; pedidoUntil: string; tetoDias: number };
+} {
+  const pedido = resolveRange({
+    range: opts.range,
+    since: opts.since,
+    until: opts.until,
+  });
+
+  const dias = inclusiveDays(pedido.since, pedido.until);
+  if (dias <= TETO_DIAS) return { since: pedido.since, until: pedido.until };
+
+  // Recorta mantendo o FIM do período: quem pede "janeiro até hoje" quer o que
+  // está acontecendo agora, não janeiro. Cortar pelo começo daria o oposto.
+  return {
+    since: shiftIso(pedido.until, -(TETO_DIAS - 1)),
+    until: pedido.until,
+    recorte: {
+      pedidoSince: pedido.since,
+      pedidoUntil: pedido.until,
+      tetoDias: TETO_DIAS,
+    },
+  };
+}
+
+/**
+ * Top campanhas + anúncios ao vivo. Cache por (marca, período),
+ * compartilhado/persistente. Degrada gracioso: falha → `hasData:false` + `erro`
+ * p/ a UI (e não cacheia o erro).
+ *
+ * SEGUE O FILTRO da tela, recortado a `TETO_DIAS` — e quando recorta, avisa em
+ * `recorte`.
+ */
+export async function getMetaDetail(opts: JanelaAoVivo = {}): Promise<MetaDetail> {
   const brand = opts.brand ?? null;
-  const since = daysAgo(Math.max(1, Math.trunc(opts.days ?? 30)));
-  const until = today();
+  const { since, until, recorte } = janelaDoFiltro(opts);
 
   if (!META_ENV.accessToken) {
     return {
-      hasData: false, since, until, brand, campaigns: [], ads: [],
+      hasData: false, since, until, brand, campaigns: [], ads: [], recorte,
       atualizadoEm: new Date().toISOString(), erro: "META_ACCESS_TOKEN ausente no ambiente.",
     };
   }
@@ -317,9 +394,23 @@ export async function getMetaDetail(
       };
     }
   };
-  return cachedSwr(`meta-detail:${brand ?? "all"}:${since}:${until}`, TTL, compute, {
-    cacheIf: (d) => d.hasData,
-  });
+  const dados = await cachedSwr(
+    `meta-detail:${brand ?? "all"}:${since}:${until}`,
+    TTL,
+    compute,
+    { cacheIf: (d) => d.hasData, force: opts.force },
+  );
+
+  /**
+   * `recorte` entra DEPOIS do cache, de propósito.
+   *
+   * A chave usa o período JÁ recortado, então "últimos 90 dias" e "último ano"
+   * resolvem para a mesma janela e compartilham a entrada — só que o primeiro
+   * não teve recorte e o segundo teve. Guardar o aviso dentro do valor faria um
+   * herdar o do outro: ora o painel avisaria recorte sem ter recortado, ora
+   * recortaria calado. O dado é o mesmo; o aviso é do pedido.
+   */
+  return recorte ? { ...dados, recorte } : dados;
 }
 
 // =========================================================================== //
@@ -348,6 +439,8 @@ export interface MetaBreakdowns {
   region: BreakdownSegment[]; // top por gasto
   atualizadoEm: string;
   erro?: string;
+  /** Igual ao do `MetaDetail`: período pedido, quando teve de ser recortado. */
+  recorte?: { pedidoSince: string; pedidoUntil: string; tetoDias: number };
 }
 
 /** Linha crua de um breakdown (as dimensões vêm como campos no topo). */
@@ -463,15 +556,16 @@ async function computeBreakdowns(
 
 /**
  * Breakdowns de público/posicionamento ao vivo (idade, gênero, plataforma,
- * dispositivo, região), padrão 30 dias. Cache 10 min por (marca, período),
+ * dispositivo, região). Cache por (marca, período),
  * compartilhado/persistente (ver `lib/cache/kv.ts`).
  */
 export async function getMetaBreakdowns(
-  opts: { brand?: string | null; days?: number } = {},
+  opts: JanelaAoVivo = {},
 ): Promise<MetaBreakdowns> {
   const brand = opts.brand ?? null;
-  const since = daysAgo(Math.max(1, Math.trunc(opts.days ?? 30)));
-  const until = today();
+  // Mesma janela do detalhe: os dois vivem na mesma tela, sob o mesmo filtro.
+  // Períodos diferentes lado a lado é o bug que estamos corrigindo.
+  const { since, until, recorte } = janelaDoFiltro(opts);
 
   const vazio = (erro?: string): MetaBreakdowns => ({
     hasData: false, since, until, brand,
@@ -489,7 +583,12 @@ export async function getMetaBreakdowns(
       return vazio((error as Error).message);
     }
   };
-  return cachedSwr(`meta-breakdowns:${brand ?? "all"}:${since}:${until}`, TTL, compute, {
-    cacheIf: (d) => d.hasData,
-  });
+  const dados = await cachedSwr(
+    `meta-breakdowns:${brand ?? "all"}:${since}:${until}`,
+    TTL,
+    compute,
+    { cacheIf: (d) => d.hasData, force: opts.force },
+  );
+  // Fora do cache pelo mesmo motivo do detalhe — ver comentário lá.
+  return recorte ? { ...dados, recorte } : dados;
 }

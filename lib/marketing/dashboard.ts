@@ -55,22 +55,32 @@ export interface MarketingDashboard {
   series: DailyPoint[];
 }
 
-/** ISO (AAAA-MM-DD) deslocado por `delta` dias. Meio-dia evita borda de fuso. */
-function shiftIso(iso: string, delta: number): string {
+/**
+ * ISO (AAAA-MM-DD) deslocado por `delta` dias. Meio-dia evita borda de fuso.
+ * Exportado junto com `resolveRange` — quem resolve a janela precisa dos dois.
+ */
+export function shiftIso(iso: string, delta: number): string {
   const d = new Date(`${iso}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() + delta);
   return d.toISOString().slice(0, 10);
 }
 
 /** Dias entre duas datas ISO, inclusivo nas pontas. */
-function inclusiveDays(a: string, b: string): number {
+export function inclusiveDays(a: string, b: string): number {
   const ms =
     new Date(`${b}T12:00:00Z`).getTime() - new Date(`${a}T12:00:00Z`).getTime();
   return Math.round(ms / 86_400_000) + 1;
 }
 
-/** Resolve o preset + datas custom em um intervalo `[since, until]` (fuso SP). */
-function resolveRange(q: MarketingQuery): {
+/**
+ * Resolve o preset + datas custom em um intervalo `[since, until]` (fuso SP).
+ *
+ * EXPORTADO porque o detalhe ao vivo (`meta-detail.ts`) precisa da MESMA regra.
+ * Enquanto ele tinha janela própria, os dois painéis da mesma tela mostravam
+ * períodos diferentes — o de cima obedecia ao filtro, o de baixo ficava fixo em
+ * 30 dias móveis. Duas resoluções separadas voltariam a divergir.
+ */
+export function resolveRange(q: MarketingQuery): {
   range: RangeKey;
   since: string;
   until: string;

@@ -18,8 +18,10 @@ import { CacMetrics } from "@/components/cac-metrics";
 import { getCompanyId } from "@/lib/db/company";
 import { getGa4Overview, getGa4Realtime } from "@/lib/marketing/ga4";
 import { getMetaDetail, getMetaBreakdowns } from "@/lib/marketing/meta-detail";
+import { getPainelMarketing } from "@/lib/marketing/painel";
 import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { MarketingMetrics } from "@/components/marketing-metrics";
+import { MarketingPainel } from "@/components/marketing-painel";
 import { MarketingMetasPanel } from "@/components/marketing-metas";
 import { getMetasComAtual } from "@/lib/marketing/metas";
 import { listarConexoes } from "@/lib/marketing/youtube-oauth";
@@ -151,7 +153,7 @@ export default async function MarketingPage({
    * O padrão precisa espelhar o `firstReady` do shell (primeira aba permitida),
    * senão a página buscaria os dados de uma aba e o shell mostraria outra.
    */
-  const abaPadrao = canMarketing ? "meta" : canGa4 ? "ga4" : "painel";
+  const abaPadrao = canMarketing ? "painel" : canGa4 ? "ga4" : "painel";
   const aba = one(sp.aba) ?? abaPadrao;
   const ehAba = (k: string) => aba === k;
   // Competência das METAS ('AAAA-MM'). Independente do range das outras abas:
@@ -201,6 +203,7 @@ export default async function MarketingPage({
   })();
 
   const [
+    painel,
     marketing,
     metaDetail,
     metaBreakdowns,
@@ -217,6 +220,14 @@ export default async function MarketingPage({
     cac,
   ] = await Promise.all([
     // Cada linha só dispara se a SUA aba estiver aberta — ver a nota em `aba`.
+    // O Painel é a única leitura que toca VÁRIAS fontes; por isso o timeout
+    // longo. Ele degrada por bloco internamente (ver `painel.ts`), então um
+    // estouro aqui só acontece se tudo estiver lento ao mesmo tempo.
+    canMarketing && ehAba("painel")
+      // `competencia` é o MESMO estado da aba Metas (`?comp`): uma competência
+      // para o módulo, em vez de cada aba com o próprio mês.
+      ? comTimeout(getPainelMarketing(competencia), T_YOUTUBE, "painel")
+      : Promise.resolve(null),
     canMarketing && ehAba("meta")
       ? comTimeout(
           getMarketingDashboard({
@@ -229,8 +240,33 @@ export default async function MarketingPage({
           "meta-overview",
         )
       : Promise.resolve(null),
-    canMarketing && ehAba("meta") ? comTimeout(getMetaDetail({ brand }), T_LENTO, "meta-detail") : Promise.resolve(null),
-    canMarketing && ehAba("meta") ? comTimeout(getMetaBreakdowns({ brand }), T_LENTO, "meta-breakdowns") : Promise.resolve(null),
+    // Os dois ao vivo recebem o MESMO filtro do painel de cima. Antes recebiam
+    // só a marca e ficavam presos em 30 dias móveis — a tela mostrava dois
+    // períodos ao mesmo tempo e o seletor de datas parecia não funcionar.
+    canMarketing && ehAba("meta")
+      ? comTimeout(
+          getMetaDetail({
+            brand,
+            range: one(sp.range),
+            since: one(sp.since),
+            until: one(sp.until),
+          }),
+          T_LENTO,
+          "meta-detail",
+        )
+      : Promise.resolve(null),
+    canMarketing && ehAba("meta")
+      ? comTimeout(
+          getMetaBreakdowns({
+            brand,
+            range: one(sp.range),
+            since: one(sp.since),
+            until: one(sp.until),
+          }),
+          T_LENTO,
+          "meta-breakdowns",
+        )
+      : Promise.resolve(null),
     canMarketing && ehAba("instagram") ? comTimeout(getInstagramOverview({ brand }), T_RAPIDO, "ig-overview") : Promise.resolve(null),
     canMarketing && ehAba("instagram") ? comTimeout(getInstagramFunnel({ brand }), T_LENTO, "ig-funnel") : Promise.resolve(null),
     canMarketing && ehAba("instagram") ? comTimeout(getInstagramAudience({ brand }), T_RAPIDO, "ig-audience") : Promise.resolve(null),
@@ -265,6 +301,7 @@ export default async function MarketingPage({
       // Permissão, não presença de dado: os slots das abas inativas são `null`
       // por desenho, e o dock precisa continuar completo mesmo assim.
       disponivel={{
+        painel: canMarketing,
         meta: canMarketing,
         metas: canMarketing,
         instagram: canMarketing,
@@ -272,6 +309,7 @@ export default async function MarketingPage({
         youtube: canMarketing,
         cac: canCac,
       }}
+      painel={painel ? <MarketingPainel data={painel} /> : null}
       meta={
         marketing ? (
           <div className="flex flex-col gap-8">

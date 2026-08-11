@@ -85,6 +85,16 @@ export function MetaBreakdownsPanel({ data }: { data: MetaBreakdowns }) {
         </span>
       </div>
 
+      {/* Mesmo recorte do detalhe ao vivo — este painel também lê a Graph API
+          na hora. Ver `janelaDoFiltro` em `lib/marketing/meta-detail.ts`. */}
+      {data.recorte ? (
+        <p className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          Período pedido: {ddmm(data.recorte.pedidoSince)} a{" "}
+          {ddmm(data.recorte.pedidoUntil)}. Leitura ao vivo limitada a{" "}
+          <strong>{data.recorte.tetoDias} dias</strong> — mostrando os mais recentes.
+        </p>
+      ) : null}
+
       {!data.hasData ? (
         <div className="rounded-xl border border-dashed border-border p-6 text-sm text-muted-foreground">
           {data.erro

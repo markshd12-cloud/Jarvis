@@ -4,9 +4,12 @@ Escrito em 2026-08-11. Sucede a proposta de 5 blocos de
 [`marketing-fase3.md`](marketing-fase3.md) §1, agora com **decisão tomada** e com
 o estado real de cada fonte medido, não suposto.
 
-> ✅ **DECIDIDO 2026-08-11:** o Painel será a **aba inicial** do módulo de
-> Marketing. Ver §6 — a troca só entra junto com o Painel pronto, porque hoje ela
-> faria todo mundo cair num placeholder "em breve".
+> ✅ **CONSTRUÍDO em 2026-08-11.** `lib/marketing/painel.ts` (composição) +
+> `components/marketing-painel.tsx` (7 blocos), ligado como **aba inicial**.
+> Este documento deixou de ser proposta e passou a descrever o que existe.
+> O que foi ALÉM da proposta: faixa de saúde das fontes, tendência de 90 dias com
+> custo/resultado em média móvel, e seletor de mês por `?comp` (o mesmo da aba
+> Metas).
 
 ---
 
