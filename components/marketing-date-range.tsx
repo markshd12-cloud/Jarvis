@@ -8,7 +8,7 @@
  * `useSearchParams`. Uncontrolled + `key` no pai (re-monta quando o período
  * muda por outro filtro, refletindo as novas datas).
  */
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useRef } from "react";
 
 export function MarketingDateRange({
@@ -22,15 +22,29 @@ export function MarketingDateRange({
 }) {
   const router = useRouter();
   const params = useSearchParams();
+  /**
+   * A PÁGINA ATUAL, nunca um caminho fixo: este painel é usado no `/dashboard` e
+   * no `/marketing`. Aqui havia `/dashboard` cravado, então aplicar um intervalo
+   * dentro do Marketing jogava o usuário para o Dashboard — e o filtro parecia
+   * "não funcionar", quando na verdade tinha funcionado noutra tela.
+   *
+   * Os chips de preset (7/30 dias) já tinham corrigido isso passando `basePath`
+   * de mão em mão; este componente ficou de fora. `usePathname()` dispensa o
+   * encanamento — e é o que impede a regressão de voltar.
+   */
+  const pathname = usePathname();
   const sinceRef = useRef<HTMLInputElement>(null);
   const untilRef = useRef<HTMLInputElement>(null);
 
   const apply = () => {
+    // Parte dos params ATUAIS: preserva `aba=meta` no Marketing (sem isso o
+    // filtro devolveria o usuário à primeira aba) e os filtros da Conta Azul no
+    // Dashboard.
     const p = new URLSearchParams(params.toString());
     p.set("range", "custom");
     p.set("since", sinceRef.current?.value || since);
     p.set("until", untilRef.current?.value || until);
-    router.push(`/dashboard?${p.toString()}`, { scroll: false });
+    router.push(`${pathname}?${p.toString()}`, { scroll: false });
   };
 
   return (

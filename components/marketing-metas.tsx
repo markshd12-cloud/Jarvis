@@ -24,7 +24,15 @@ function fmt(v: number | null, unidade: "brl" | "num"): string {
   return unidade === "brl" ? brl.format(v) : num.format(Math.round(v));
 }
 
-/** Rótulo curto do que a meta cobra, para o cabeçalho de cada bloco. */
+/**
+ * Rótulo curto do que a meta cobra, para o cabeçalho de cada bloco.
+ *
+ * Um grupo aqui só aparece se `alvosDeMeta()` devolver linhas daquela métrica —
+ * a lista abaixo tem que ESPELHAR o que o servidor produz. Havia um grupo `cac`
+ * que nunca renderizava (o servidor não devolve CAC de propósito: é meta de
+ * custo, não alavanca do Marketing — ver `lib/marketing/metas.ts`); ficava como
+ * texto morto contradizendo a decisão.
+ */
 const GRUPOS: { metrica: string; titulo: string; ajuda: string }[] = [
   {
     metrica: "custo_resultado",
@@ -43,12 +51,6 @@ const GRUPOS: { metrica: string; titulo: string; ajuda: string }[] = [
     titulo: "Inscritos no YouTube",
     ajuda:
       "Ganho LÍQUIDO de inscritos no mês — ganhos menos perdidos, direto da conta do dono do canal. O número público do YouTube é arredondado e não serve para medir o mês. Meta é PISO: quanto maior, melhor.",
-  },
-  {
-    metrica: "cac",
-    titulo: "CAC — custo de aquisição por cliente",
-    ajuda:
-      "(Marketing + Comercial) ÷ vendas do mês. O realizado conta só o que foi pago; a aba CAC mostra também o previsto. Uma linha só, global: o Conta Azul não informa a unidade da venda, então não há CAC por BU em reais. Meta é TETO: quanto menor, melhor.",
   },
 ];
 
@@ -300,13 +302,16 @@ export function MarketingMetasPanel({
         );
       })}
 
+      {/* Os inscritos do YouTube ESTAVAM listados aqui como "ainda de fora", pelo
+          arredondamento da API pública. Deixou de valer quando o OAuth do dono
+          entrou: hoje há bloco de YouTube na tabela acima, e o texto contradizia
+          a própria tela. O que segue de fora, segue por outros motivos. */}
       <p className="text-[11px] text-muted-foreground">
-        <strong>Ainda de fora:</strong> inscritos do YouTube — a API pública arredonda
-        para 3 dígitos significativos acima de 1.000 (o CPPEM marca 387.000 há semanas),
-        então o ganho mensal daria zero. O número exato vem de{" "}
-        <code>subscribersGained</code> na YouTube Analytics API, que exige o OAuth do
-        dono do canal. CAC e receita do YouTube seguem pelo mesmo motivo: falta dado,
-        não código.
+        <strong>Fora desta tela de propósito:</strong> o <strong>CAC</strong> não é meta
+        do Marketing — é meta de custo, e quem decide o quanto se gasta em Comercial não
+        é quem faz campanha. Ele é consequência das metas acima e fica como leitura na
+        aba própria. A <strong>receita do YouTube</strong> fica de fora por falta de
+        dado: canais não monetizados não devolvem valor nenhum.
       </p>
     </div>
   );

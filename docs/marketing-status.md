@@ -181,9 +181,20 @@ reporta o catálogo inteiro por período).
   do dock. Volta se e quando fizer sentido.
 
 ### Fase 3 — Consolidação · **estruturada em `docs/marketing-fase3.md`**
+> ✅ **2026-08-11 — o Painel será a ABA INICIAL do módulo** (decisão do requisitante). Entra junto
+> com o Painel pronto, não antes. Desenho detalhado em `docs/marketing-painel.md`.
+> ❌ **GA4 sem coleta desde 29/07/2026** — **causa isolada em 2026-08-11**: o hit chega ao
+> `sgtm.cppem.com.br/g/collect` e é ACEITO (**200 OK** + cookie FPID), mas o container do SERVIDOR
+> não encaminha para o GA4 (0 eventos em 7 dias). Suspeito nº 1: o evento chega como
+> `PageView_Cppem` (nome customizado que a propriedade nunca registrou) e o gatilho da tag GA4 do
+> servidor não o cobre. **Google Ads (`AW-17332184690`) segue funcionando** — vai direto ao Google,
+> sem passar pelo servidor; por isso ninguém percebeu. Conserto no GTM (container Servidor → Tags),
+> fora do Jarvis — passo a passo em `docs/ga4-sgtm-diagnostico.md`.
 - **Passo 10 · Painel consolidado** — visão geral cross-channel. 5 blocos propostos (linha do mês,
   semáforo de metas, distribuição por marca, funil paralelo, alertas). Esforço MÉDIO, sem
-  integração nova. ⚠️ o semáforo depende de `mkt_metas`, hoje VAZIA.
+  integração nova. ⚠️ o semáforo depende de `mkt_metas`, que em 2026-08-11 tem **3 metas de 11
+  alvos** — e uma delas está errada por 100× (ver `marketing-metas-plano.md` §0). Ordenado por
+  "pior primeiro", o semáforo estrearia com esse erro no topo.
 - ~~**Passo 11 · Comparativo entre canais**~~ — ❌ **DESATIVADO em 2026-08-05**. Com o TikTok fora
   sobra um único canal pago, e IG/YouTube não têm custo atribuído — o orgânico apareceria como
   infinitamente eficiente. Exige antes decisão de gestão sobre rateio do custo de conteúdo.

@@ -61,8 +61,11 @@ por faixa de desvio.
 
 É o bloco que dá direção à tela: sem ele, o Painel informa; com ele, ele cobra.
 
-> ⚠️ **Depende de metas cadastradas.** Hoje `mkt_metas` tem **zero linhas**. Sem
-> cadastro, este bloco nasce vazio e o Painel perde metade do valor.
+> ⚠️ **Depende de metas cadastradas.** Em 2026-08-11: **3 metas para 11 alvos** —
+> e uma delas confunde "ganho no mês" com "total de seguidores", exibindo desvio
+> de −108.960. Ordenado pela pior primeiro, é justamente essa que abriria o bloco.
+> Ver [`marketing-metas-plano.md`](marketing-metas-plano.md) — arrumar as metas
+> vem antes de construir o semáforo.
 
 ### Bloco 3 · Distribuição por marca
 Barras comparando as 4 marcas em investimento e resultado lado a lado. Responde
@@ -108,9 +111,13 @@ fontes ao mesmo tempo — exatamente o problema que acabamos de resolver. Mitiga
 reusar os caches existentes (SWR de 10–30 min em Meta detail, CAC e YouTube) e
 aquecê-los no cron de 6/6h, para a primeira visita do dia não pagar o preço cheio.
 
-**Decisão sua:** o Painel deve virar a **aba inicial** do módulo? Faz sentido —
-é a visão de abertura —, mas muda o comportamento de quem já usa o Meta Ads como
-primeira tela.
+✅ **DECIDIDO em 2026-08-11: o Painel será a aba inicial do módulo.** A troca entra
+junto com o Painel pronto — promovê-lo antes faria todo mundo aterrissar no
+placeholder "em breve". Efeito colateral aceito: quem hoje entra pelo Meta Ads
+passa a ver o Painel.
+
+O desenho detalhado (blocos, ordem na tela, saúde das fontes medida) está em
+[`marketing-painel.md`](marketing-painel.md).
 
 ---
 
@@ -249,8 +256,10 @@ antes dele.
 
 ## Pendências que atravessam os três
 
-- **`mkt_metas` está vazia.** Doze alvos esperando número. Afeta o Bloco 2 do
-  Painel, o slide 2 do TV e o bloco 3.1 do chat.
+- **`mkt_metas` quase vazia e com uma meta errada.** 3 de 11 alvos preenchidos em
+  2026-08-11, e a de seguidores está 100× fora de escala. Afeta o Bloco 2 do
+  Painel, o slide 2 do TV e o bloco 3.1 do chat — os três exibiriam o mesmo erro.
+  Plano de correção em [`marketing-metas-plano.md`](marketing-metas-plano.md).
 - **Cron não aquece cache.** Hoje a primeira visita do dia paga o custo cheio de
   cada integração. Vira gargalo visível no Painel e no TV.
 - **CAC com realizado zerado.** Nenhuma parcela do banco próprio foi baixada.
