@@ -1,6 +1,9 @@
 import { InstagramFunnelPanel } from "@/components/instagram-funnel";
+import { MarketingBrandFilter } from "@/components/marketing-brand-filter";
+import { MARKETING_AD_ACCOUNTS } from "@/lib/marketing/config";
 import { InteractiveLineChart } from "@/components/charts/interactive-line";
 import type { InstagramFunnel } from "@/lib/marketing/instagram-funnel";
+import type { MetaComAtual } from "@/lib/marketing/metas";
 import type {
   IgBrandFollowers,
   IgFormatStat,
@@ -49,14 +52,46 @@ function mediaLabel(m: IgMedia): string {
   return "Post";
 }
 
+/**
+ * Variação contra o mesmo número no período anterior.
+ *
+ * A aba não tinha comparação NENHUMA: mostrava "54.086 contas engajadas" e o
+ * leitor não tinha como saber se era bom. `null` quando não há base — período
+ * anterior sem dado, ou base zero (que daria "+∞%").
+ */
+function Delta({ atual, anterior }: { atual: number; anterior: number | null }) {
+  if (anterior == null || anterior === 0) return null;
+  const v = (atual - anterior) / anterior;
+  const neutro = Math.abs(v) < 0.005;
+  return (
+    <p
+      className={`mt-0.5 text-[11px] font-medium tabular-nums ${
+        neutro
+          ? "text-muted-foreground"
+          : v > 0
+            ? "text-emerald-600 dark:text-emerald-400"
+            : "text-red-500 dark:text-red-400"
+      }`}
+    >
+      {neutro ? "—" : `${v > 0 ? "▲" : "▼"} ${Math.abs(Math.round(v * 100))}%`}
+      <span className="font-normal opacity-70"> vs anterior</span>
+    </p>
+  );
+}
+
 function Kpi({
   label,
   value,
   highlight = false,
+  atual,
+  anterior,
 }: {
   label: string;
   value: string;
   highlight?: boolean;
+  /** Par para o delta. Omitir os dois esconde a linha de variação. */
+  atual?: number;
+  anterior?: number | null;
 }) {
   return (
     <div
@@ -70,16 +105,31 @@ function Kpi({
       <p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">
         {value}
       </p>
+      {atual != null ? <Delta atual={atual} anterior={anterior ?? null} /> : null}
     </div>
   );
 }
 
-/** Barras horizontais de seguidores por marca (verde da marca). */
-function FollowersBars({ items }: { items: IgBrandFollowers[] }) {
+/**
+ * Barras horizontais de seguidores por marca, com o progresso da META do mês.
+ *
+ * A meta de `seguidores_ig` vive na aba Metas e o painel não sabia que ela
+ * existia — era preciso trocar de aba só para saber se o número é bom.
+ */
+function FollowersBars({
+  items,
+  metaPorMarca,
+}: {
+  items: IgBrandFollowers[];
+  metaPorMarca: Map<string, { meta: number; atual: number }>;
+}) {
   const max = Math.max(1, ...items.map((i) => i.followers));
   return (
     <ul className="flex flex-col gap-3">
-      {items.map((it, i) => (
+      {items.map((it, i) => {
+        const m = metaPorMarca.get(it.brand);
+        const pct = m && m.meta > 0 ? m.atual / m.meta : null;
+        return (
         <li key={it.brand} className="flex flex-col gap-1">
           <div className="flex items-baseline justify-between gap-2 text-sm">
             <span className="text-muted-foreground">{it.brand}</span>
@@ -94,8 +144,25 @@ function FollowersBars({ items }: { items: IgBrandFollowers[] }) {
               }}
             />
           </div>
+          {pct != null ? (
+            <div className="flex items-baseline justify-between gap-2 text-[11px] tabular-nums">
+              <span className="text-muted-foreground">
+                meta do mês {count(m!.meta)}
+              </span>
+              <span
+                className={
+                  pct >= 1
+                    ? "font-medium text-emerald-600 dark:text-emerald-400"
+                    : "text-muted-foreground"
+                }
+              >
+                {count(m!.atual)} ({Math.round(pct * 100)}%)
+              </span>
+            </div>
+          ) : null}
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 }
@@ -258,27 +325,72 @@ export function InstagramMetrics({
   funnel,
   audience,
   stories,
+  metas,
 }: {
   data: InstagramOverview;
   /** Só na página /marketing (detalhe); no dashboard ficam undefined → ocultos. */
   funnel?: InstagramFunnel | null;
   audience?: InstagramAudience | null;
   stories?: InstagramStories | null;
+  /** Metas do mês — só as de `seguidores_ig` são usadas aqui. */
+  metas?: MetaComAtual[] | null;
 }) {
-  const { totalFollowers, followersByBrand, series, posts, topMedia, byFormat, brand } =
-    data;
+  const {
+    totalFollowers,
+    ganhoSeguidores,
+    followersByBrand,
+    series,
+    posts,
+    anterior,
+    topMedia,
+    byFormat,
+    brand,
+    since,
+    until,
+  } = data;
+
+  /**
+   * Metas de seguidores COM valor, indexadas pela marca.
+   *
+   * A aba Metas cadastra por PERFIL (account_id) e o painel agrupa por marca —
+   * uma marca com dois perfis (o "Everton") soma as duas metas, que é a leitura
+   * certa: o card mostra os seguidores somados da marca.
+   */
+  const metaPorMarca = new Map<string, { meta: number; atual: number }>();
+  for (const m of metas ?? []) {
+    if (m.metrica !== "seguidores_ig" || m.valor == null) continue;
+    const cur = metaPorMarca.get(m.rotulo) ?? { meta: 0, atual: 0 };
+    cur.meta += m.valor;
+    cur.atual += m.atual ?? 0;
+    metaPorMarca.set(m.rotulo, cur);
+  }
+
+  /**
+   * Só marcas COM conta de Instagram entram no filtro.
+   *
+   * Derivado do config, não do dado: uma marca sem post no período continua
+   * clicável, e o clique explica o vazio ("sem publicação") em vez de a marca
+   * simplesmente não existir no filtro.
+   */
+  const marcas = MARKETING_AD_ACCOUNTS.filter((b) => b.instagram.length).map(
+    (b) => b.label,
+  );
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-lg font-semibold tracking-tight">
-          Instagram · orgânico
-        </h2>
-        <p className="text-sm text-muted-foreground">
-          {brand ? `${brand} · ` : "Todas as marcas · "}
-          {followersByBrand.length}{" "}
-          {followersByBrand.length === 1 ? "conta" : "contas"}
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div className="flex flex-col gap-1">
+          <h2 className="text-lg font-semibold tracking-tight">
+            Instagram · orgânico
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            {brand ? `${brand} · ` : "Todas as marcas · "}
+            {ddmm(since)} a {ddmm(until)} · {followersByBrand.length}{" "}
+            {followersByBrand.length === 1 ? "conta" : "contas"}
+            {anterior ? ` · vs ${ddmm(anterior.since)} a ${ddmm(anterior.until)}` : ""}
+          </p>
+        </div>
+        <MarketingBrandFilter marcas={marcas} aba="instagram" />
       </div>
 
       {!data.hasData ? (
@@ -291,11 +403,33 @@ export function InstagramMetrics({
           {/* KPIs (sem delta: métricas orgânicas ainda sem período anterior) */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             <Kpi label="Seguidores" value={count(totalFollowers)} highlight />
-            <Kpi label="Posts recentes" value={count(posts.count)} />
-            <Kpi label="Curtidas" value={count(posts.likes)} />
-            <Kpi label="Comentários" value={count(posts.comments)} />
+            {/* O delta é do GANHO no período, não do total: comparar totais daria
+                sempre "+0,1%" e esconderia se o período foi bom ou ruim. */}
+            <Kpi
+              label="Ganho no período"
+              value={`${ganhoSeguidores >= 0 ? "+" : ""}${count(ganhoSeguidores)}`}
+              atual={ganhoSeguidores}
+              anterior={anterior?.ganhoSeguidores ?? null}
+            />
+            <Kpi
+              label="Posts"
+              value={count(posts.count)}
+              atual={posts.count}
+              anterior={anterior?.posts ?? null}
+            />
+            <Kpi
+              label="Engajamento"
+              value={count(posts.engagement)}
+              atual={posts.engagement}
+              anterior={anterior?.engagement ?? null}
+            />
             <Kpi label="Salvos" value={count(posts.saved)} />
-            <Kpi label="Alcance" value={count(posts.reach)} />
+            <Kpi
+              label="Alcance dos posts"
+              value={count(posts.reach)}
+              atual={posts.reach}
+              anterior={anterior?.reach ?? null}
+            />
           </div>
 
           {/* Funil da conta (só no /marketing) */}
@@ -306,7 +440,7 @@ export function InstagramMetrics({
             <div className="rounded-xl border border-border bg-card p-4">
               <div className="mb-3 flex items-baseline justify-between gap-3">
                 <h3 className="text-sm font-semibold tracking-tight">
-                  Crescimento de seguidores
+                  Crescimento, alcance e engajamento
                 </h3>
                 <span className="text-xs text-muted-foreground">
                   total das marcas
@@ -317,12 +451,29 @@ export function InstagramMetrics({
                   <InteractiveLineChart
                     points={series.map((p) => ({
                       label: ddmm(p.date),
-                      values: { followers: p.followers },
+                      values: {
+                        followers: p.followers,
+                        reach: p.reach,
+                        engagement: p.engagement,
+                      },
                     }))}
+                    /**
+                     * `reach` JÁ ERA gravado em `social_daily_insights` desde o
+                     * primeiro sync e nunca aparecia em lugar nenhum — dado pago
+                     * em chamada de API e descartado.
+                     *
+                     * Cada série tem escala própria (seguidores na casa dos
+                     * 90 mil, engajamento na das centenas), e a distinção é por
+                     * FORMA além de cor: a paleta do repo é monocromática (hue
+                     * 142.5), então cor sozinha não separa.
+                     */
                     series={[
                       { key: "followers", label: "Seguidores", color: "var(--brand)", area: true, baseline: "min", format: "int" },
+                      { key: "reach", label: "Alcance", color: "var(--chart-3)", dashed: true, format: "int" },
+                      { key: "engagement", label: "Engajamento", color: "var(--chart-5)", format: "int" },
                     ]}
-                    ariaLabel="Crescimento de seguidores por dia"
+                    legend
+                    ariaLabel="Seguidores, alcance e engajamento por dia"
                   />
                   <div className="mt-1 flex justify-between text-[11px] text-muted-foreground">
                     <span>{ddmm(series[0].date)}</span>
@@ -346,7 +497,7 @@ export function InstagramMetrics({
               <h3 className="mb-4 text-sm font-semibold tracking-tight">
                 Seguidores por marca
               </h3>
-              <FollowersBars items={followersByBrand} />
+              <FollowersBars items={followersByBrand} metaPorMarca={metaPorMarca} />
             </div>
           </div>
 

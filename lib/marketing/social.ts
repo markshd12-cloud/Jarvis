@@ -12,16 +12,90 @@
  * começa "rasa" (um ponto) e ganha forma conforme o sync roda dia após dia.
  */
 import { createAdminClient } from "@/lib/supabase/admin";
+import { inclusiveDays, resolveRange, shiftIso } from "@/lib/marketing/dashboard";
+
+/**
+ * Filtro da tela aceito por TODOS os leitores do Instagram.
+ *
+ * Antes cada um tinha janela própria e fixa — overview usava o histórico
+ * inteiro, funil 28 dias, audiência 14, stories 24h — enquanto o seletor de
+ * período ficava no topo da tela sem governar nada. Era o mesmo defeito
+ * corrigido no Meta Ads em 2026-08-11.
+ */
+export interface JanelaIg {
+  brand?: string;
+  range?: string;
+  since?: string;
+  until?: string;
+}
+
+/** O período pedido e o ANTERIOR de igual duração (base dos deltas). */
+export interface PeriodoIg {
+  since: string;
+  until: string;
+  antSince: string;
+  antUntil: string;
+}
+
+/**
+ * Resolve o filtro usando a MESMA função do Meta Ads (`resolveRange`), para as
+ * duas abas nunca discordarem sobre que período está na tela.
+ */
+export function periodoIg(opts: JanelaIg): PeriodoIg {
+  const { since, until } = resolveRange({
+    range: opts.range,
+    since: opts.since,
+    until: opts.until,
+  });
+  // Período anterior de igual duração, imediatamente antes de `since`.
+  const dias = inclusiveDays(since, until);
+  const antUntil = shiftIso(since, -1);
+  return { since, until, antSince: shiftIso(antUntil, -(dias - 1)), antUntil };
+}
+
+/**
+ * Lê uma tabela inteira em páginas de 1.000.
+ *
+ * O PostgREST devolve no máximo 1.000 linhas por requisição e **não avisa** que
+ * truncou — responde 200 com o pedaço. `social_audience` já tem 12.632 linhas, e
+ * a leitura de 14 dias vinha silenciosamente cortada: parte dos breakdowns
+ * sumia da tela sem erro, sem log e sem nada indicando que faltou.
+ */
+async function lerTudo<T>(
+  /** Recebe a consulta JÁ montada, e só aplica o `range` de cada página. */
+  montar: () => { range: (de: number, ate: number) => PromiseLike<{ data: unknown[] | null }> },
+): Promise<T[]> {
+  const PAGINA = 1000;
+  const out: T[] = [];
+  // Teto de segurança: 50 páginas = 50 mil linhas. Se estourar, o problema é a
+  // consulta (janela larga demais), não a paginação.
+  for (let p = 0; p < 50; p++) {
+    const de = p * PAGINA;
+    const { data } = await montar().range(de, de + PAGINA - 1);
+    const lote = (data ?? []) as T[];
+    out.push(...lote);
+    if (lote.length < PAGINA) break;
+  }
+  return out;
+}
 
 export interface IgBrandFollowers {
   brand: string;
   followers: number;
 }
 
-/** Total de seguidores no dia (soma de todas as contas). */
+/**
+ * Um dia da série. `reach` e `engagement` entram junto com `followers`.
+ *
+ * O alcance JÁ ERA gravado em `social_daily_insights` desde sempre e nunca
+ * aparecia em lugar nenhum — dado pago em chamada de API e jogado fora. O
+ * engajamento vem dos posts do dia (`social_media_insights.posted_at`).
+ */
 export interface IgFollowersPoint {
   date: string;
   followers: number;
+  reach: number;
+  engagement: number;
 }
 
 export interface IgMedia {
@@ -41,16 +115,36 @@ export interface IgMedia {
   postedAt: string | null;
 }
 
+/** Agregados do período ANTERIOR, para os deltas. `null` sem base. */
+export interface IgAnterior {
+  since: string;
+  until: string;
+  ganhoSeguidores: number;
+  posts: number;
+  engagement: number;
+  reach: number;
+}
+
 export interface InstagramOverview {
   hasData: boolean;
   /** Marca filtrada (null = todas). */
   brand: string | null;
+  /** Período exibido — resolvido do filtro da tela. */
+  since: string;
+  until: string;
   totalFollowers: number;
+  /**
+   * Ganho de seguidores NO PERÍODO.
+   *
+   * O delta se aplica a este número, não a `totalFollowers`: comparar totais
+   * daria sempre "+0,1%" e esconderia se o mês foi bom ou ruim.
+   */
+  ganhoSeguidores: number;
   /** Seguidores por marca, do maior para o menor. */
   followersByBrand: IgBrandFollowers[];
   /** Total de seguidores por dia (curva de crescimento). */
   series: IgFollowersPoint[];
-  /** Agregado dos posts recentes considerados. */
+  /** Agregado dos posts do período. */
   posts: {
     count: number;
     likes: number;
@@ -60,6 +154,8 @@ export interface InstagramOverview {
     reach: number;
     engagement: number;
   };
+  /** Mesmos agregados no período anterior de igual duração. */
+  anterior: IgAnterior | null;
   /** Melhores posts por engajamento (limite aplicado pelo chamador). */
   topMedia: IgMedia[];
   /** Desempenho por formato (Reels/Carrossel/Imagem/Vídeo). */
@@ -81,6 +177,7 @@ interface DailyRow {
   brand: string;
   date: string;
   followers: number | null;
+  reach: number | null;
 }
 
 interface MediaRow {
@@ -98,13 +195,17 @@ interface MediaRow {
   posted_at: string | null;
 }
 
-const emptyOverview = (brand: string | null): InstagramOverview => ({
+const emptyOverview = (brand: string | null, p: PeriodoIg): InstagramOverview => ({
   hasData: false,
   brand,
+  since: p.since,
+  until: p.until,
   totalFollowers: 0,
+  ganhoSeguidores: 0,
   followersByBrand: [],
   series: [],
   posts: { count: 0, likes: 0, comments: 0, saved: 0, shares: 0, reach: 0, engagement: 0 },
+  anterior: null,
   topMedia: [],
   byFormat: [],
 });
@@ -122,40 +223,63 @@ function formatLabel(mediaType: string | null, productType: string | null): stri
  * `topLimit` limita a lista de melhores posts (default 6).
  */
 export async function getInstagramOverview(
-  opts: { brand?: string; topLimit?: number } = {},
+  opts: JanelaIg & { topLimit?: number } = {},
 ): Promise<InstagramOverview> {
   const { brand } = opts;
   const topLimit = opts.topLimit ?? 6;
+  const per = periodoIg(opts);
   const admin = createAdminClient();
 
-  let dailyQ = admin
-    .from("social_daily_insights")
-    .select("account_id, brand, date, followers")
-    .eq("provider", "instagram")
-    .order("date", { ascending: true });
-  if (brand) dailyQ = dailyQ.eq("brand", brand);
+  /**
+   * A série diária vem do INÍCIO DO PERÍODO ANTERIOR até o fim do pedido.
+   *
+   * Precisa do anterior inteiro para calcular o ganho de lá (último menos
+   * primeiro), e de um dia ANTES do `since` para o ganho do período pedido não
+   * perder o crescimento ocorrido na virada.
+   */
+  const dailyDesde = shiftIso(per.antSince, -1);
+  const dailyQ = () => {
+    let q = admin
+      .from("social_daily_insights")
+      .select("account_id, brand, date, followers, reach")
+      .eq("provider", "instagram")
+      .gte("date", dailyDesde)
+      .lte("date", per.until)
+      .order("date", { ascending: true });
+    if (brand) q = q.eq("brand", brand);
+    return q;
+  };
 
-  let mediaQ = admin
-    .from("social_media_insights")
-    .select(
-      "media_id, brand, media_type, media_product_type, permalink, caption, reach, likes, comments, saved, shares, posted_at",
-    )
-    .eq("provider", "instagram")
-    // Stories têm edge/métricas próprias (ver getInstagramStories) — fora do feed.
-    .neq("media_product_type", "STORY")
-    .order("posted_at", { ascending: false })
-    .limit(200);
-  if (brand) mediaQ = mediaQ.eq("brand", brand);
+  const mediaQ = () => {
+    let q = admin
+      .from("social_media_insights")
+      .select(
+        "media_id, brand, media_type, media_product_type, permalink, caption, reach, likes, comments, saved, shares, posted_at",
+      )
+      .eq("provider", "instagram")
+      // Stories têm edge/métricas próprias (ver getInstagramStories) — fora do feed.
+      .neq("media_product_type", "STORY")
+      .gte("posted_at", `${per.antSince}T00:00:00Z`)
+      .lte("posted_at", `${per.until}T23:59:59Z`)
+      .order("posted_at", { ascending: false });
+    if (brand) q = q.eq("brand", brand);
+    return q;
+  };
 
-  const [{ data: dailyData }, { data: mediaData }] = await Promise.all([
-    dailyQ,
-    mediaQ,
+  // Paginado: o `limit(200)` anterior descartava posts em silêncio quando o
+  // período era largo, e o teto de 1.000 do PostgREST faria o mesmo.
+  const [dailyTudo, mediaTudo] = await Promise.all([
+    lerTudo<DailyRow>(dailyQ),
+    lerTudo<MediaRow>(mediaQ),
   ]);
 
-  const daily = (dailyData as DailyRow[] | null) ?? [];
-  const media = (mediaData as MediaRow[] | null) ?? [];
+  // Recorta o que pertence ao período PEDIDO (o resto é base de comparação).
+  const daily = dailyTudo.filter((r) => r.date >= per.since && r.date <= per.until);
+  const media = mediaTudo.filter(
+    (m) => (m.posted_at ?? "").slice(0, 10) >= per.since,
+  );
 
-  if (daily.length === 0 && media.length === 0) return emptyOverview(brand ?? null);
+  if (daily.length === 0 && media.length === 0) return emptyOverview(brand ?? null, per);
 
   // Seguidores por marca: último snapshot de cada conta, somado por marca.
   // (Uma marca pode ter mais de uma conta de IG — ex.: Everton.)
@@ -173,14 +297,50 @@ export async function getInstagramOverview(
     .sort((a, b) => b.followers - a.followers);
   const totalFollowers = followersByBrand.reduce((s, b) => s + b.followers, 0);
 
-  // Curva de crescimento: total de seguidores por dia (soma das contas no dia).
-  const byDate = new Map<string, number>();
+  // Curva por dia: seguidores (soma das contas), alcance (soma das contas) e
+  // engajamento (soma dos posts publicados naquele dia).
+  const byDate = new Map<string, IgFollowersPoint>();
+  const ponto = (d: string) =>
+    byDate.get(d) ?? { date: d, followers: 0, reach: 0, engagement: 0 };
   for (const r of daily) {
-    byDate.set(r.date, (byDate.get(r.date) ?? 0) + (r.followers ?? 0));
+    const p = ponto(r.date);
+    p.followers += r.followers ?? 0;
+    p.reach += r.reach ?? 0;
+    byDate.set(r.date, p);
   }
-  const series: IgFollowersPoint[] = [...byDate]
-    .map(([date, followers]) => ({ date, followers }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  for (const m of media) {
+    const d = (m.posted_at ?? "").slice(0, 10);
+    if (!d) continue;
+    const p = ponto(d);
+    p.engagement +=
+      (m.likes ?? 0) + (m.comments ?? 0) + (m.saved ?? 0) + (m.shares ?? 0);
+    byDate.set(d, p);
+  }
+  const series: IgFollowersPoint[] = [...byDate.values()].sort((a, b) =>
+    a.date.localeCompare(b.date),
+  );
+
+  /**
+   * Ganho de seguidores num intervalo: total do último dia menos o do dia
+   * ANTERIOR ao início.
+   *
+   * Medir do primeiro ao último dia DENTRO do intervalo perderia o crescimento
+   * ocorrido entre a virada e o primeiro snapshot — o mesmo cuidado que
+   * `ganhoSeguidores` em `metas.ts` já toma.
+   */
+  const ganhoEntre = (de: string, ate: string): number => {
+    const totalNoDia = (d: string) =>
+      dailyTudo.filter((r) => r.date === d).reduce((s, r) => s + (r.followers ?? 0), 0);
+    const dias = [...new Set(dailyTudo.map((r) => r.date))].sort();
+    const dentro = dias.filter((d) => d >= de && d <= ate);
+    if (dentro.length === 0) return 0;
+    const anteriores = dias.filter((d) => d < de);
+    const partida = anteriores.length
+      ? totalNoDia(anteriores[anteriores.length - 1])
+      : totalNoDia(dentro[0]);
+    return totalNoDia(dentro[dentro.length - 1]) - partida;
+  };
+  const ganhoSeguidores = ganhoEntre(per.since, per.until);
 
   // Posts: agregado + ranking por engajamento.
   const enriched: IgMedia[] = media.map((m) => {
@@ -243,9 +403,45 @@ export async function getInstagramOverview(
     }))
     .sort((a, b) => b.avgEngagement - a.avgEngagement);
 
+  // --- período anterior, para os deltas ----------------------------------- //
+  const mediaAnt = mediaTudo.filter((m) => {
+    const d = (m.posted_at ?? "").slice(0, 10);
+    return d >= per.antSince && d <= per.antUntil;
+  });
+  const dailyAnt = dailyTudo.filter(
+    (r) => r.date >= per.antSince && r.date <= per.antUntil,
+  );
+  const temAnterior = dailyAnt.length > 0 || mediaAnt.length > 0;
+  const anterior: IgAnterior | null = temAnterior
+    ? {
+        since: per.antSince,
+        until: per.antUntil,
+        ganhoSeguidores: ganhoEntre(per.antSince, per.antUntil),
+        posts: mediaAnt.length,
+        engagement: mediaAnt.reduce(
+          (s, m) =>
+            s + (m.likes ?? 0) + (m.comments ?? 0) + (m.saved ?? 0) + (m.shares ?? 0),
+          0,
+        ),
+        /**
+         * Alcance dos POSTS, não o da conta.
+         *
+         * `posts.reach` (o número que aparece no card) soma o alcance de cada
+         * publicação; `social_daily_insights.reach` é o alcance da CONTA no dia,
+         * que é outra métrica e não deduplica entre posts. Comparar um com o
+         * outro produziria um delta sem significado.
+         */
+        reach: mediaAnt.reduce((s, m) => s + (m.reach ?? 0), 0),
+      }
+    : null;
+
   return {
     hasData: true,
     brand: brand ?? null,
+    since: per.since,
+    until: per.until,
+    ganhoSeguidores,
+    anterior,
     totalFollowers,
     followersByBrand,
     series,
@@ -295,20 +491,39 @@ const GENDER_LABEL: Record<string, string> = { F: "Feminino", M: "Masculino", U:
  * popular `social_audience` (precisa de ≥100 seguidores p/ a demografia).
  */
 export async function getInstagramAudience(
-  opts: { brand?: string } = {},
+  opts: JanelaIg = {},
 ): Promise<InstagramAudience> {
   const { brand } = opts;
   const admin = createAdminClient();
-  const desde = new Date(Date.now() - 14 * 86_400_000).toISOString().slice(0, 10);
+  const per = periodoIg(opts);
 
-  let q = admin
-    .from("social_audience")
-    .select("account_id, breakdown, segment, value, captured_on")
-    .eq("provider", "instagram")
-    .gte("captured_on", desde);
-  if (brand) q = q.eq("brand", brand);
-  const { data } = await q;
-  const rows = (data as AudienceRowDb[] | null) ?? [];
+  /**
+   * Janela: 14 dias ANTES do fim do período pedido.
+   *
+   * A audiência é um SNAPSHOT (a composição de quem segue hoje), não um
+   * acumulado do período — por isso a janela existe só para achar a captura
+   * mais recente, e o leitor descarta o resto logo abaixo. 14 dias cobrem
+   * folgadamente qualquer falha de sync.
+   */
+  const desde = shiftIso(per.until, -14);
+
+  // PAGINADO: são ~600 linhas por dia × 14 dias. O `limit` implícito de 1.000 do
+  // PostgREST cortava sem avisar, e breakdowns inteiros sumiam da tela.
+  const rows = await lerTudo<AudienceRowDb>(() => {
+    let q = admin
+      .from("social_audience")
+      .select("account_id, breakdown, segment, value, captured_on")
+      .eq("provider", "instagram")
+      .gte("captured_on", desde)
+      .lte("captured_on", per.until)
+      // Ordem estável é obrigatória ao paginar: sem ela o PostgREST pode
+      // repetir ou pular linhas entre páginas.
+      .order("captured_on", { ascending: false })
+      .order("account_id", { ascending: true })
+      .order("segment", { ascending: true });
+    if (brand) q = q.eq("brand", brand);
+    return q;
+  });
 
   const empty: InstagramAudience = {
     hasData: false, brand: brand ?? null,
@@ -404,29 +619,43 @@ interface StoryRowDb {
  * `metrics`. Só há dados enquanto o sync capturar stories ativos (≤24h).
  */
 export async function getInstagramStories(
-  opts: { brand?: string; limit?: number } = {},
+  opts: JanelaIg & { limit?: number } = {},
 ): Promise<InstagramStories> {
   const { brand } = opts;
   const limit = opts.limit ?? 30;
+  const per = periodoIg(opts);
   const admin = createAdminClient();
 
-  let q = admin
-    .from("social_media_insights")
-    .select("media_id, brand, permalink, reach, views, shares, metrics, posted_at")
-    .eq("provider", "instagram")
-    .eq("media_product_type", "STORY")
-    .order("posted_at", { ascending: false })
-    .limit(limit);
-  if (brand) q = q.eq("brand", brand);
-  const { data } = await q;
-  const rows = (data as StoryRowDb[] | null) ?? [];
+  /**
+   * Agora segue o PERÍODO, não as últimas 24h.
+   *
+   * Story some do Instagram em 24h, mas o que o sync capturou fica no nosso
+   * banco para sempre. A tela mostrava só o que ainda estava no ar e ignorava
+   * todo o histórico já pago — em muitos dias isso significava "nenhum story",
+   * quando havia dezenas gravados.
+   */
+  const rows = await lerTudo<StoryRowDb>(() => {
+    let q = admin
+      .from("social_media_insights")
+      .select("media_id, brand, permalink, reach, views, shares, metrics, posted_at")
+      .eq("provider", "instagram")
+      .eq("media_product_type", "STORY")
+      .gte("posted_at", `${per.since}T00:00:00Z`)
+      .lte("posted_at", `${per.until}T23:59:59Z`)
+      .order("posted_at", { ascending: false });
+    if (brand) q = q.eq("brand", brand);
+    return q;
+  });
 
   const empty: InstagramStories = {
     hasData: false, brand: brand ?? null, count: 0, reach: 0, replies: 0, navigation: 0, items: [],
   };
   if (rows.length === 0) return empty;
 
-  const items: IgStory[] = rows.map((r) => {
+  // `limit` agora corta só a LISTA exibida; os agregados (count/reach/replies)
+  // usam o período inteiro. Antes limitava a própria consulta, e o total ficava
+  // preso no teto — "30 stories" mesmo havendo 200.
+  const todos: IgStory[] = rows.map((r) => {
     const m = r.metrics ?? {};
     return {
       mediaId: r.media_id,
@@ -444,10 +673,11 @@ export async function getInstagramStories(
   return {
     hasData: true,
     brand: brand ?? null,
-    count: items.length,
-    reach: items.reduce((s, i) => s + (i.reach ?? 0), 0),
-    replies: items.reduce((s, i) => s + i.replies, 0),
-    navigation: items.reduce((s, i) => s + i.navigation, 0),
-    items,
+    // Agregados sobre TODOS os stories do período; `items` é só a lista exibida.
+    count: todos.length,
+    reach: todos.reduce((s, i) => s + (i.reach ?? 0), 0),
+    replies: todos.reduce((s, i) => s + i.replies, 0),
+    navigation: todos.reduce((s, i) => s + i.navigation, 0),
+    items: todos.slice(0, limit),
   };
 }

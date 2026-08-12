@@ -267,14 +267,34 @@ export default async function MarketingPage({
           "meta-breakdowns",
         )
       : Promise.resolve(null),
-    canMarketing && ehAba("instagram") ? comTimeout(getInstagramOverview({ brand }), T_RAPIDO, "ig-overview") : Promise.resolve(null),
-    canMarketing && ehAba("instagram") ? comTimeout(getInstagramFunnel({ brand }), T_LENTO, "ig-funnel") : Promise.resolve(null),
-    canMarketing && ehAba("instagram") ? comTimeout(getInstagramAudience({ brand }), T_RAPIDO, "ig-audience") : Promise.resolve(null),
-    canMarketing && ehAba("instagram") ? comTimeout(getInstagramStories({ brand }), T_RAPIDO, "ig-stories") : Promise.resolve(null),
+    // Os quatro leitores do Instagram recebem o MESMO filtro da tela. Antes cada
+    // um tinha janela fixa própria (histórico / 28d / 14d / 24h) e o seletor de
+    // período não governava nada — o mesmo defeito corrigido no Meta Ads.
+    ...(() => {
+      const janelaIg = {
+        brand,
+        range: one(sp.range),
+        since: one(sp.since),
+        until: one(sp.until),
+      };
+      const seAba = <T,>(p: () => Promise<T>, ms: number, rot: string) =>
+        canMarketing && ehAba("instagram")
+          ? comTimeout(p(), ms, rot)
+          : Promise.resolve(null);
+      return [
+        seAba(() => getInstagramOverview(janelaIg), T_RAPIDO, "ig-overview"),
+        seAba(() => getInstagramFunnel(janelaIg), T_LENTO, "ig-funnel"),
+        seAba(() => getInstagramAudience(janelaIg), T_RAPIDO, "ig-audience"),
+        seAba(() => getInstagramStories(janelaIg), T_RAPIDO, "ig-stories"),
+      ] as const;
+    })(),
     canGa4 && ehAba("ga4") ? comTimeout(getGa4Overview(), T_LENTO, "ga4-overview") : Promise.resolve(null),
     canGa4 && ehAba("ga4") ? comTimeout(getGa4Realtime(), T_RAPIDO, "ga4-realtime") : Promise.resolve(null),
     canMarketing && ehAba("youtube") ? comTimeout(getYoutubeOverview({ brand }), T_RAPIDO, "youtube") : Promise.resolve(null),
-    canMarketing && ehAba("metas")
+    // Também na aba INSTAGRAM: o painel de lá mostra o progresso da meta de
+    // seguidores ao lado de cada marca. Sem isso era preciso trocar de aba só
+    // para saber se o número é bom.
+    canMarketing && (ehAba("metas") || ehAba("instagram"))
       ? comTimeout(getMetasComAtual(competencia), T_RAPIDO, "metas")
       : Promise.resolve(null),
     canMarketing && ehAba("youtube") ? comTimeout(listarConexoes(), T_RAPIDO, "yt-conexoes") : Promise.resolve(null),
@@ -340,6 +360,7 @@ export default async function MarketingPage({
             funnel={igFunnel}
             audience={igAudience}
             stories={igStories}
+            metas={metas}
           />
         ) : null
       }

@@ -14,7 +14,7 @@ import "server-only";
 
 import { cachedSwr } from "@/lib/cache/kv";
 import { MARKETING_BRANDS, META_ENV, META_GRAPH_BASE } from "@/lib/marketing/config";
-import { daysAgo, today } from "@/lib/marketing/metrics";
+import { periodoIg, type JanelaIg } from "@/lib/marketing/social";
 
 export interface InstagramFunnel {
   hasData: boolean;
@@ -112,11 +112,15 @@ async function computeFunnel(brand: string | null, since: string, until: string)
  * período), persistente. Degrada gracioso: falha → `hasData:false` + `erro`.
  */
 export async function getInstagramFunnel(
-  opts: { brand?: string | null; days?: number } = {},
+  opts: JanelaIg & { brand?: string | null } = {},
 ): Promise<InstagramFunnel> {
   const brand = opts.brand ?? null;
-  const since = daysAgo(Math.max(1, Math.trunc(opts.days ?? 28)));
-  const until = today();
+  // Segue o filtro da tela, como os outros três leitores do Instagram.
+  const { since, until } = periodoIg({
+    range: opts.range,
+    since: opts.since,
+    until: opts.until,
+  });
 
   const vazio = (erro?: string): InstagramFunnel => ({
     hasData: false, brand, since, until,
