@@ -57,13 +57,57 @@ export async function aquecerCaches(): Promise<ResultadoAquecimento> {
   const inicio = Date.now();
   const competencia = today().slice(0, 7);
 
-  const tarefas: { chave: string; run: () => Promise<unknown> }[] = [
-    { chave: "meta-detail", run: () => getMetaDetail({ force: true }) },
-    { chave: "meta-breakdowns", run: () => getMetaBreakdowns({ force: true }) },
-    { chave: "ga4-overview", run: () => getGa4Overview({ force: true }) },
+  /**
+   * Cada tarefa precisa dizer se o resultado REALMENTE aqueceu.
+   *
+   * Sem isto o aquecimento mente. Os leitores deste módulo degradam por dentro:
+   * `getMetaDetail` captura a falha da Graph API e devolve `hasData:false` +
+   * `erro` em vez de lançar. Como nada chega aqui como exceção, um `try/catch`
+   * puro marcaria `ok:true` — e, pior, o `cacheIf: d => d.hasData` teria
+   * impedido a gravação, deixando o cache com o valor ANTIGO.
+   *
+   * Aconteceu no primeiro deploy: o cron logou `ok:true, ms:50112` enquanto o
+   * log da aplicação registrava "Meta Graph API: An unknown error occurred" e a
+   * entrada no `cache_kv` continuava com o carimbo de horas antes.
+   */
+  interface Tarefa {
+    chave: string;
+    run: () => Promise<unknown>;
+    /** `null` quando aqueceu; texto do motivo quando não. */
+    conferir: (r: unknown) => string | null;
+  }
+
+  /** Leitores com o par `hasData`/`erro` (Meta detail, breakdowns, GA4). */
+  const conferirHasData = (r: unknown): string | null => {
+    const d = r as { hasData?: boolean; erro?: string };
+    if (d?.hasData) return null;
+    return d?.erro ?? "leitor devolveu hasData:false (cache NÃO foi gravado)";
+  };
+
+  /** Leitores que devolvem lista — vazia significa desconectado/sem resposta. */
+  const conferirLista = (r: unknown): string | null =>
+    Array.isArray(r) && r.length > 0 ? null : "lista vazia (cache NÃO foi gravado)";
+
+  const tarefas: Tarefa[] = [
+    {
+      chave: "meta-detail",
+      run: () => getMetaDetail({ force: true }),
+      conferir: conferirHasData,
+    },
+    {
+      chave: "meta-breakdowns",
+      run: () => getMetaBreakdowns({ force: true }),
+      conferir: conferirHasData,
+    },
+    {
+      chave: "ga4-overview",
+      run: () => getGa4Overview({ force: true }),
+      conferir: conferirHasData,
+    },
     {
       chave: "youtube-analytics",
       run: () => analyticsPorCompetencia(competencia, { force: true }),
+      conferir: conferirLista,
     },
   ];
 
@@ -71,12 +115,14 @@ export async function aquecerCaches(): Promise<ResultadoAquecimento> {
   for (const t of tarefas) {
     const t0 = Date.now();
     try {
-      await t.run();
-      itens.push({ chave: t.chave, ok: true, ms: Date.now() - t0 });
+      const r = await t.run();
+      const motivo = t.conferir(r);
+      if (motivo) console.warn(`[aquecer] ${t.chave} NÃO aqueceu: ${motivo}`);
+      itens.push({ chave: t.chave, ok: !motivo, ms: Date.now() - t0, erro: motivo ?? undefined });
     } catch (e) {
       // Uma fonte fora do ar não aborta as outras — mesma regra do Painel.
       const erro = (e as Error).message;
-      console.error(`[aquecer] ${t.chave} falhou:`, erro);
+      console.error(`[aquecer] ${t.chave} lançou:`, erro);
       itens.push({ chave: t.chave, ok: false, ms: Date.now() - t0, erro });
     }
   }
