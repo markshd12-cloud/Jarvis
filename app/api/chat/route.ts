@@ -426,6 +426,21 @@ async function* principalWithGeminiFallback(params: {
       (error as Error).message,
       (error as { detail?: string }).detail ?? "",
     );
+
+    /**
+     * Avisa NA TELA que o motor mudou.
+     *
+     * Sem isso a troca é invisível: o usuário recebe uma resposta de qualidade
+     * diferente sem saber por quê, e conclui que "o Jarvis piorou". O motivo
+     * mais comum é limite de uso da conta do Claude — que passa sozinho.
+     */
+    const limite = /limite de uso|rate.?limit/i.test((error as Error).message);
+    yield {
+      type: "status",
+      label: limite
+        ? "Limite do Claude atingido — respondendo com o Gemini…"
+        : "Claude indisponível — respondendo com o Gemini…",
+    };
   }
 
   yield { type: "status", label: "Pensando…" };

@@ -410,6 +410,32 @@ export async function* streamClaudeText(
       );
     }
 
+    /**
+     * ERRO PRIMEIRO — antes de considerar `resultText` uma resposta.
+     *
+     * Quando a conta bate o limite, o CLI NÃO devolve deltas: manda uma
+     * mensagem SINTÉTICA (`model: "<synthetic>"`) e fecha com
+     * `is_error: true`, `api_error_status: 429` e
+     * `result: "You've hit your session limit · resets 12:40am (UTC)"`.
+     *
+     * O bloco abaixo (entregar `resultText` quando não houve delta) existe para
+     * o caso legítimo de streaming desligado — mas vinha ANTES desta checagem.
+     * Resultado: a frase do erro era entregue ao usuário COMO SE FOSSE A
+     * RESPOSTA, `yieldedText` virava true, e o `throw` que aciona o fallback
+     * para o Gemini nunca acontecia.
+     *
+     * Ou seja: o fallback existia, estava correto, e era desarmado por esta
+     * ordem de linhas. Todo o chat respondia "You've hit your session limit"
+     * com o Gemini disponível ao lado.
+     */
+    if (resultIsError) {
+      throw new ClaudeCliError(
+        "Claude retornou erro (possível limite de uso/rate limit da conta)",
+        // `resultText` carrega a hora do reset — informação útil no log.
+        [resultText, stderr.trim()].filter(Boolean).join("\n") || undefined,
+      );
+    }
+
     // Sem streaming de deltas (ex.: partial desligado) mas com texto final:
     // entrega o texto completo de uma vez.
     if (!yieldedText && resultText) {
@@ -418,10 +444,10 @@ export async function* streamClaudeText(
     }
 
     if (!yieldedText) {
-      const reason = resultIsError
-        ? "Claude retornou erro (possível limite de uso/rate limit da conta)"
-        : `Claude CLI terminou sem resposta (exit ${exitCode ?? "?"})`;
-      throw new ClaudeCliError(reason, stderr.trim() || undefined);
+      throw new ClaudeCliError(
+        `Claude CLI terminou sem resposta (exit ${exitCode ?? "?"})`,
+        stderr.trim() || undefined,
+      );
     }
   } finally {
     clearTimeout(timer);
