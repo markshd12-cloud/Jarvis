@@ -913,6 +913,16 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
   );
   const [oQueFoi, setOQueFoi] = useState("");
   const [valorParcial, setValorParcial] = useState("");
+  /**
+   * Método da BAIXA, que pode diferir do método da parcela.
+   *
+   * Uma despesa-envelope ("reposição de estoque") é consumida por compras
+   * avulsas: uma no PIX, outra no cartão. Herdar o método da parcela apagaria
+   * essa diferença — e é justamente ela que o financeiro precisa conciliar com
+   * o extrato. Nasce com o da parcela porque é o palpite certo na maioria das
+   * vezes; vazio, o backend mantém a herança.
+   */
+  const [metodoParcial, setMetodoParcial] = useState(parcela.metodo_pagamento ?? "");
   const parcialC = cent(valorParcial);
   const saldoDepoisC = saldoC - parcialC;
 
@@ -944,6 +954,8 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
           valor: Number(valorParcial),
           descricao: oQueFoi,
           data,
+          // Vazio → o backend herda o método da parcela (ver `lancarBaixa`).
+          metodo_pagamento: metodoParcial || null,
         });
       } else {
         await send(`/api/financeiro/parcelas/${parcela.id}`, "PATCH", {
@@ -1052,9 +1064,30 @@ function BaixaDialog({ parcela, onDone }: { parcela: ParcelaRow; onDone: () => v
               />
             </div>
           </div>
-          <div className="flex flex-col gap-1">
-            <Label>Data</Label>
-            <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>Data</Label>
+              <Input type="date" value={data} onChange={(e) => setData(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label title="Como este gasto foi pago. Pode diferir do método da parcela.">
+                Método de pagamento
+              </Label>
+              <select
+                className={cn(selectCls, "h-9")}
+                value={metodoParcial}
+                onChange={(e) => setMetodoParcial(e.target.value)}
+              >
+                <option value="" className={optionCls}>
+                  —
+                </option>
+                {METODOS_PAGAMENTO.map((m) => (
+                  <option key={m} value={m} className={optionCls}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
           {parcialC > 0 && (
             <p
