@@ -127,6 +127,15 @@ export type DreRow =
       avOrc: number;
       /** Alguma folha do grupo tem meta cadastrada. */
       temMeta: boolean;
+      /**
+       * O `previsto` desta linha é a META, não o valor apurado.
+       *
+       * Só o Faturamento Bruto, só no regime de COMPETÊNCIA — ver
+       * `previstoDoFaturamento` abaixo. A UI usa isto para rotular a célula.
+       */
+      previstoEhMeta?: boolean;
+      /** Deveria mostrar a meta, mas não há meta cadastrada → a UI mostra "—". */
+      previstoSemMeta?: boolean;
       children: DreChild[];
     }
   | {
@@ -1019,14 +1028,44 @@ async function computeDre(
         accOrc += c.orcado;
         const grupoTemMeta = c.children.some((ch) => ch.temMeta);
         accTemMeta = accTemMeta || grupoTemMeta;
+
+        /**
+         * FATURAMENTO BRUTO no regime de COMPETÊNCIA: o previsto é a META.
+         *
+         * Para DESPESA, "previsto" é conta já lançada — existe compromisso de
+         * verdade. Para RECEITA não há equivalente: a nota é emitida conforme
+         * acontece, então o "previsto" apurado é só um realizado parcial (em
+         * ago/2026: R$ 60.907 emitidos contra R$ 55.796 recebidos — dois retratos
+         * do mesmo fato). Quem responde "quanto esperamos faturar" é a meta.
+         *
+         * ⚠️ Escopo deliberadamente cirúrgico (decisão de 2026-08-13): só esta
+         * linha, só neste regime. `receitaBrutaPrev` (base do AV de TODAS as
+         * outras linhas) e `accPrev` (os totalizadores) seguem com o valor
+         * apurado — trocá-los mexeria no DRE inteiro.
+         *
+         * Sem meta cadastrada NÃO cai no apurado: `previstoSemMeta` faz a UI
+         * mostrar "—". Ausência de meta não é meta zero, e disfarçar esconderia
+         * justamente o mês que ninguém planejou.
+         */
+        const ehFaturamento = (c.item.codigo ?? "") === "01";
+        const trocaPorMeta = regime === "competencia" && ehFaturamento;
+        const previstoLinha = trocaPorMeta ? c.orcado : c.previsto;
+
         rows.push({
           kind: "group",
           codigo: c.item.codigo ?? "",
           label: c.item.descricao,
           valor: c.valor,
           av: av(c.valor, receitaBruta),
-          previsto: c.previsto,
-          avPrev: av(c.previsto, receitaBrutaPrev),
+          previsto: previstoLinha,
+          ...(trocaPorMeta
+            ? { previstoEhMeta: true, previstoSemMeta: !grupoTemMeta }
+            : {}),
+          // O AV do Faturamento é 100% por definição (ele É a base). Calcular
+          // meta ÷ apurado daria 523% em agosto.
+          avPrev: trocaPorMeta
+            ? (grupoTemMeta ? 100 : 0)
+            : av(c.previsto, receitaBrutaPrev),
           orcado: c.orcado,
           avOrc: av(c.orcado, receitaBrutaOrc),
           temMeta: grupoTemMeta,

@@ -357,6 +357,8 @@ export function DreTable({
     bold,
     small,
     metaEditor,
+    previstoEhMeta,
+    previstoSemMeta,
   }: {
     valor: number;
     previsto: number;
@@ -370,6 +372,10 @@ export function DreTable({
     small?: boolean;
     /** Substitui a célula Meta por um editor (Faturamento Bruto, no fechamento). */
     metaEditor?: ReactNode;
+    /** O previsto desta linha é a META (Faturamento Bruto, regime competência). */
+    previstoEhMeta?: boolean;
+    /** Deveria ser meta, mas não há meta cadastrada → mostra "—". */
+    previstoSemMeta?: boolean;
   }) => {
     const txt = small ? "text-xs" : "text-sm";
 
@@ -435,7 +441,20 @@ export function DreTable({
     return (
       <>
         <span className="text-right">
-          <Valor value={previsto} bold={bold} />
+          {/* Sem meta cadastrada, "—" e não 0,00: ausência de meta não é meta
+              zero, e mostrar zero esconderia o mês que ninguém planejou. */}
+          {previstoSemMeta ? (
+            <span
+              className={cn("text-muted-foreground/60", txt)}
+              title="Nenhuma meta de faturamento cadastrada nesta competência."
+            >
+              —
+            </span>
+          ) : (
+            <span title={previstoEhMeta ? "Meta de faturamento da competência" : undefined}>
+              <Valor value={previsto} bold={bold} />
+            </span>
+          )}
         </span>
         {/* O respiro vai no AV% do PREVISTO: ele fecha o par "previsto + sua
             análise", separando-o do par do realizado. Sem isso as quatro colunas
@@ -664,6 +683,10 @@ export function DreTable({
                   avOrc={row.avOrc}
                   orcado={row.orcado}
                   temMeta={row.temMeta}
+                  // Só a linha de GRUPO carrega as flags: o Faturamento Bruto no
+                  // regime de competência mostra a META no previsto.
+                  previstoEhMeta={row.previstoEhMeta}
+                  previstoSemMeta={row.previstoSemMeta}
                 />
               </button>
 

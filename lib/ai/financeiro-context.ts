@@ -14,11 +14,22 @@ import "server-only";
 import { caGet } from "@/lib/contaazul/client";
 import { CONTA_AZUL_RESOURCES } from "@/lib/contaazul/config";
 import { getContaAzulDashboard } from "@/lib/contaazul/dashboard";
+import { getDre, type DreResult } from "@/lib/contaazul/dre";
 import { listarInadimplentes } from "@/lib/financeiro/inadimplentes";
 
-// Termos que indicam pergunta financeira (receita/despesa/caixa/etc.).
+/**
+ * Termos que indicam pergunta financeira (receita/despesa/caixa/etc.).
+ *
+ * ⚠️ `custo` faltava e o buraco era grande: "quais são nossos custos fixos e
+ * variáveis?" NÃO acionava este bloco, e o chat respondia pelo RAG — que só tem
+ * as definições, não os números. O usuário recebia "não encontrei os valores"
+ * com o DRE inteiro disponível ao lado.
+ *
+ * Entraram junto os termos do vocabulário de gestão que levam à mesma resposta:
+ * margem, EBITDA, ponto de equilíbrio, orçamento.
+ */
 const FINANCE_RE =
-  /(despesa|receita|faturamen|fatur[ao]|contas?\s+a\s+(pagar|receber)|\ba\s+(pagar|receber)\b|inadimpl|vencid|\bcaixa\b|fluxo\s+de\s+caixa|\bdre\b|\bsaldo\b|financeir|\blucro\b|quanto\s+.*(receb|pag|fatur|entr|sa[ií]))/i;
+  /(despesa|receita|faturamen|fatur[ao]|\bcustos?\b|contas?\s+a\s+(pagar|receber)|\ba\s+(pagar|receber)\b|inadimpl|vencid|\bcaixa\b|fluxo\s+de\s+caixa|\bdre\b|\bsaldo\b|financeir|\blucro\b|margem|ebitda|ponto\s+de\s+equil[ií]brio|or[çc]amento|\bfixos?\b|\bvari[áa]ve\w*)/i;
 
 export function isFinancialQuery(text: string): boolean {
   return FINANCE_RE.test(text);
@@ -69,6 +80,13 @@ const MESES = [
   "janeiro", "fevereiro", "março", "abril", "maio", "junho",
   "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
 ];
+
+/** Competência ('AAAA-MM') deslocada por `delta` meses. */
+function ymAdd(ym: string, delta: number): string {
+  const [a, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(a, m - 1 + delta, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
 
 /** 'AAAA-MM' → 'junho/2026'. */
 function nomeMes(ym: string): string {
@@ -194,5 +212,55 @@ export async function buildFinanceiroBlock(
     }
   }
 
-  return header + secHoje + secMensal + secAberto + secInadimplentes;
+  return (
+    header + secHoje + secMensal + secAberto + secInadimplentes + (await secDre(companyId, mesAtual))
+  );
+}
+
+/**
+ * ESTRUTURA do DRE — a abertura que faltava.
+ *
+ * O bloco acima só tinha TOTAIS por mês. Perguntado "quais são nossas despesas
+ * fixas e variáveis?", o modelo respondia que "os dados fornecem apenas o valor
+ * total das despesas por mês, sem categorização" — e estava certo sobre o que
+ * recebeu. A resposta existia no DRE, que nunca era injetado.
+ *
+ * O plano de contas da empresa JÁ separa: o grupo administrativo se chama
+ * "Despesas Gerais de Administrativas (Fixas)". Basta entregar a estrutura.
+ *
+ * Dois meses: o ÚLTIMO FECHADO (base confiável) e o corrente (situação). Só os
+ * grupos de nível 1 — a abertura por categoria multiplicaria o prompt por dez
+ * para responder a pergunta seguinte, não esta.
+ */
+async function secDre(companyId: string, mesAtual: string): Promise<string> {
+  const anterior = ymAdd(mesAtual, -1);
+  const [ant, atual] = await Promise.all([
+    getDre(companyId, anterior, null, "previsto-realizado").catch(() => null),
+    getDre(companyId, mesAtual, null, "previsto-realizado").catch(() => null),
+  ]);
+  if (!ant?.connected && !atual?.connected) return "";
+
+  const linhas = (d: DreResult | null) =>
+    !d?.connected
+      ? "  (sem dados)"
+      : (d.rows as { label?: string; previsto?: number; valor?: number }[])
+          .map(
+            (r) =>
+              `  ${r.label ?? ""}: previsto ${brl.format(Math.abs(r.previsto ?? 0))} · realizado ${brl.format(Math.abs(r.valor ?? 0))}`,
+          )
+          .join("\n");
+
+  return (
+    `\n\n### DRE por estrutura — fixo × variável (fonte de verdade para "custos/despesas fixas e variáveis")\n` +
+    `O plano de contas separa assim:\n` +
+    `- **VARIÁVEL** = "Custos" (mercadoria, hora-aula, frete) + "Despesas Variáveis de Venda" (comissão, Meta Ads, Google Ads).\n` +
+    `- **FIXO** = "Despesas Gerais de Administrativas (Fixas)" (salário, aluguel, INSS/FGTS, utilidades, softwares).\n` +
+    `Some os dois primeiros para o total variável. Valores em módulo; despesa reduz o resultado.\n\n` +
+    `#### ${anterior} (mês fechado — use como referência)\n${linhas(ant)}\n\n` +
+    `#### ${mesAtual} (mês corrente)\n${linhas(atual)}\n` +
+    `⚠️ No mês corrente o REALIZADO é parcial: só entra o que já foi baixado como pago. ` +
+    `Contas ainda não baixadas não aparecem, então o realizado do mês em curso SEMPRE parece ` +
+    `melhor que a realidade. Para "quanto gastamos", prefira o PREVISTO do mês corrente ou o ` +
+    `mês fechado.`
+  );
 }

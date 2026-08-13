@@ -14,6 +14,7 @@ import {
   IconUser,
 } from "@tabler/icons-react";
 
+import { BotaoExtrair } from "@/components/financeiro/botao-extrair";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -350,10 +351,18 @@ export function ContasPagarPanel() {
             Dívidas próprias com parcelamento — clique para ver as parcelas
           </p>
         </div>
+        {/* Extração: leva o período e a BU que estão na tela como padrão, e
+            deixa esticar o intervalo (ex.: ago/2026 a dez/2027). */}
+        <BotaoExtrair
+          className="ml-auto"
+          fonte="contas-pagar"
+          competencia={filtros.competencia}
+          comRateio
+          extra={{ bu: filtros.bu_id || undefined }}
+        />
         <Button
           variant="outline"
           size="sm"
-          className="ml-auto"
           disabled={!dim}
           onClick={() => setNovo(true)}
         >

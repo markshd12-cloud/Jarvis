@@ -1,5 +1,6 @@
 "use client";
 
+import { BotaoExtrair } from "@/components/financeiro/botao-extrair";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronDownIcon } from "lucide-react";
@@ -383,6 +384,18 @@ export function FinanceiroShell() {
                 <DropdownMenuItem onClick={() => setBuId("sem")}>Sem BU</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Extração do DRE. Leva competência, regime e BU da tela como
+                padrão; o período é esticável no próprio diálogo. */}
+            <BotaoExtrair
+              fonte="dre"
+              competencia={competencia}
+              extra={{
+                regime: regimeApi,
+                bu: buId || undefined,
+                buNome: buId ? buLabel : undefined,
+              }}
+            />
 
             <div className="ml-auto flex items-center gap-2">
               {dre?.estruturaFonte === "cache" ? (
