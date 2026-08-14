@@ -105,6 +105,16 @@ export type DreChild = {
    * como "sem informação" em vez de estouro.
    */
   temMeta: boolean;
+  /**
+   * O `previsto` desta folha é a META, não o valor apurado.
+   *
+   * Mesma regra da linha de grupo (ver `previstoDoFaturamento`): só as folhas do
+   * Faturamento Bruto, só no regime de COMPETÊNCIA. Sem isto o grupo mostrava a
+   * meta e o detalhe mostrava o emitido — abrir a linha contradizia o total.
+   */
+  previstoEhMeta?: boolean;
+  /** Deveria mostrar a meta, mas esta folha não tem meta cadastrada → "—". */
+  previstoSemMeta?: boolean;
   /** Cabeçalho de subgrupo (03.1/03.2) — renderiza um pouco mais forte. */
   sub?: boolean;
   /**
@@ -149,6 +159,16 @@ export type DreRow =
       avOrc: number;
       /** Algum grupo acumulado até aqui tem meta cadastrada. */
       temMeta: boolean;
+      /**
+       * O `previsto` desta linha é o RESULTADO PLANEJADO (meta de faturamento −
+       * despesas orçadas), não a soma corrente do apurado.
+       *
+       * Só a última totalizadora (LUCRO LÍQUIDO), só no regime de COMPETÊNCIA —
+       * ver `resultadoPlanejado` abaixo. A UI usa isto para rotular a célula.
+       */
+      previstoEhMeta?: boolean;
+      /** Deveria mostrar o planejado, mas não há meta alguma → a UI mostra "—". */
+      previstoSemMeta?: boolean;
     };
 export interface DreResult {
   connected: boolean;
@@ -1002,6 +1022,15 @@ async function computeDre(
     // Base do AV da meta: a receita bruta PLANEJADA. Ver a nota em `avOrc`.
     const receitaBrutaOrc = g01?.orcado ?? 0;
 
+    /**
+     * Índice da ÚLTIMA totalizadora — a linha de fundo do DRE (LUCRO LÍQUIDO).
+     *
+     * Por posição, não pelo texto: o rótulo vem do plano de contas do CA e pode
+     * ser renomeado lá; "a última soma" é estrutural e não depende de wording.
+     */
+    let ultimaTotal = -1;
+    for (let i = 0; i < calc.length; i++) if ("tot" in calc[i]) ultimaTotal = i;
+
     // Passe 2: linhas com AV (realizado sobre RB realizada; previsto sobre RB
     // prevista) e totalizadores (soma corrente dos dois lados).
     const rows: DreRow[] = [];
@@ -1009,15 +1038,39 @@ async function computeDre(
     let accPrev = 0;
     let accOrc = 0;
     let accTemMeta = false;
-    for (const c of calc) {
+    for (let idx = 0; idx < calc.length; idx++) {
+      const c = calc[idx];
       if ("tot" in c) {
+        /**
+         * LUCRO LÍQUIDO no regime de COMPETÊNCIA: o previsto é o RESULTADO
+         * PLANEJADO — meta de faturamento menos despesas orçadas.
+         *
+         * Pelo mesmo motivo do Faturamento Bruto (ver `previstoDoFaturamento`):
+         * a soma corrente do apurado joga a despesa do mês INTEIRO, já lançada,
+         * contra a receita emitida ATÉ AQUI. Em ago/2026 isso dá −R$ 190.917 —
+         * um prejuízo que não existe, e que some assim que a receita do mês
+         * termina de ser emitida. O planejado responde "quanto esperamos
+         * lucrar", que é a pergunta que esta linha existe para responder.
+         *
+         * `accOrc` já é exatamente essa conta: ele acumula `c.orcado` de todos
+         * os grupos, e o grupo 01 tem a meta de faturamento.
+         */
+        const planejado = regime === "competencia" && idx === ultimaTotal;
+
         rows.push({
           kind: "subtotal",
           label: c.tot.descricao,
           valor: acc,
           av: av(acc, receitaBruta),
-          previsto: accPrev,
-          avPrev: av(accPrev, receitaBrutaPrev),
+          previsto: planejado ? accOrc : accPrev,
+          ...(planejado
+            ? { previstoEhMeta: true, previstoSemMeta: !accTemMeta }
+            : {}),
+          // AV do planejado sobre a receita PLANEJADA: medir um resultado de
+          // meta contra a receita emitida parcial daria percentual sem sentido.
+          avPrev: planejado
+            ? av(accOrc, receitaBrutaOrc)
+            : av(accPrev, receitaBrutaPrev),
           orcado: accOrc,
           avOrc: av(accOrc, receitaBrutaOrc),
           temMeta: accTemMeta,
@@ -1072,7 +1125,20 @@ async function computeDre(
           children: c.children.map((ch) => ({
             ...ch,
             av: av(ch.valor, receitaBruta),
-            avPrev: av(ch.previsto, receitaBrutaPrev),
+            ...(trocaPorMeta
+              ? {
+                  previsto: ch.orcado,
+                  previstoEhMeta: true,
+                  previstoSemMeta: !ch.temMeta,
+                  /**
+                   * AV da folha sobre a META do grupo, não sobre a receita
+                   * apurada. O grupo vale 100% aqui, então a folha precisa ser
+                   * "quanto desta meta é esta fonte" — medi-la contra o emitido
+                   * daria 184% na Mensalidade do Colégio e nada somaria 100.
+                   */
+                  avPrev: av(ch.orcado, c.orcado),
+                }
+              : { avPrev: av(ch.previsto, receitaBrutaPrev) }),
             avOrc: av(ch.orcado, receitaBrutaOrc),
           })),
         });

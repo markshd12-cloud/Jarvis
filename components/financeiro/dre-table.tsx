@@ -446,12 +446,18 @@ export function DreTable({
           {previstoSemMeta ? (
             <span
               className={cn("text-muted-foreground/60", txt)}
-              title="Nenhuma meta de faturamento cadastrada nesta competência."
+              title="Nenhuma meta cadastrada nesta competência."
             >
               —
             </span>
           ) : (
-            <span title={previstoEhMeta ? "Meta de faturamento da competência" : undefined}>
+            <span
+              title={
+                previstoEhMeta
+                  ? "Valor PLANEJADO da competência (meta), não o apurado até agora"
+                  : undefined
+              }
+            >
               <Valor value={previsto} bold={bold} />
             </span>
           )}
@@ -641,6 +647,10 @@ export function DreTable({
                   avOrc={row.avOrc}
                   orcado={row.orcado}
                   temMeta={row.temMeta}
+                  // LUCRO LÍQUIDO no regime de competência: o previsto é o
+                  // resultado PLANEJADO, não a soma corrente do apurado.
+                  previstoEhMeta={row.previstoEhMeta}
+                  previstoSemMeta={row.previstoSemMeta}
                   bold
                 />
               </div>
@@ -743,6 +753,10 @@ export function DreTable({
                         avOrc={leaf.avOrc}
                         orcado={leaf.orcado}
                         temMeta={leaf.temMeta}
+                        // Mesmas flags do grupo: no Faturamento Bruto sob
+                        // competência, a folha também mostra a META no previsto.
+                        previstoEhMeta={leaf.previstoEhMeta}
+                        previstoSemMeta={leaf.previstoSemMeta}
                         bold={leaf.sub}
                         small
                         metaEditor={

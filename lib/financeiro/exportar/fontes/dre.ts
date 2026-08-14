@@ -166,6 +166,17 @@ export async function extrairDre(
     });
   }
 
+  if (regime === "competencia") {
+    avisos.push({
+      nivel: "atencao",
+      texto:
+        'Regime "competência": na coluna Previsto, o FATURAMENTO BRUTO (e suas categorias) e o ' +
+        "LUCRO LÍQUIDO trazem o valor PLANEJADO (a meta), não o apurado — receita não tem " +
+        '"previsto" de verdade, a nota é emitida conforme acontece. As demais linhas seguem com o ' +
+        "apurado, então a coluna Previsto NÃO fecha de cima para baixo nessas duas linhas.",
+    });
+  }
+
   if (regime === "previsto-realizado") {
     avisos.push({
       nivel: "nota",
