@@ -337,6 +337,7 @@ export default async function MarketingPage({
               data={marketing}
               allBrands={allBrands}
               basePath="/marketing"
+              aba="meta"
             />
             {metaDetail ? (
               <>

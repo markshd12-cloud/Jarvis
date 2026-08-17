@@ -64,6 +64,14 @@ interface Selection {
   brand: string | null;
   /** Página em que este painel está renderizado (`/dashboard` ou `/marketing`). */
   base: string;
+  /**
+   * Aba ativa do Marketing, quando há uma (`/dashboard` não tem abas).
+   *
+   * Precisa viajar junto com os filtros: a aba mora em `?aba=` e este arquivo
+   * monta a query DO ZERO, então sem ela o link some com o parâmetro e a casca
+   * cai na aba de abertura — ver a nota em `buildHref`.
+   */
+  aba?: string;
 }
 
 /**
@@ -73,10 +81,16 @@ interface Selection {
  * usado tanto no `/dashboard` quanto no `/marketing`. Com `/dashboard` cravado
  * aqui, clicar em qualquer filtro dentro do Marketing (período OU marca) jogava o
  * usuário pro Dashboard — que mostra os cards financeiros do Conta Azul.
+ *
+ * ⚠️ E a query é montada DO ZERO, não a partir da atual (server component: não
+ * há `useSearchParams`). Tudo que precisa sobreviver ao clique tem que estar
+ * listado aqui — foi assim que o `?aba=` se perdeu, e filtrar por período ou
+ * marca dentro da aba Meta devolvia o usuário ao Painel.
  */
 function buildHref(sel: Selection, overrides: Partial<Selection>): string {
   const m = { ...sel, ...overrides };
   const p = new URLSearchParams();
+  if (m.aba) p.set("aba", m.aba);
   if (m.range && m.range !== "30") p.set("range", m.range);
   if (m.range === "custom") {
     p.set("since", m.since);
@@ -264,14 +278,17 @@ export function MarketingMetrics({
   data,
   allBrands,
   basePath = "/dashboard",
+  aba,
 }: {
   data: MarketingDashboard;
   allBrands: string[];
   /** Página onde o painel está: os filtros recarregam AQUI, não em outra rota. */
   basePath?: string;
+  /** Aba do Marketing a preservar nos filtros. Ausente no `/dashboard`. */
+  aba?: string;
 }) {
   const { total, previous, brands, range, since, until, brand, series } = data;
-  const sel: Selection = { range, since, until, brand, base: basePath };
+  const sel: Selection = { range, since, until, brand, base: basePath, aba };
 
   return (
     <div className="flex flex-col gap-5">
