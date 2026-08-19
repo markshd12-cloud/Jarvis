@@ -38,6 +38,12 @@ import { ColaboradoresPanel } from "@/components/financeiro/colaboradores-panel"
 import { ContasPagarPanel } from "@/components/financeiro/contas-pagar-panel";
 import { DreConfigPanel } from "@/components/financeiro/dre-config-panel";
 import { DreTable } from "@/components/financeiro/dre-table";
+import {
+  EH_MODO,
+  SeletorPeriodo,
+  resolverPeriodo,
+  type ModoPeriodo,
+} from "@/components/financeiro/seletor-periodo";
 import { FluxoCaixaPanel } from "@/components/financeiro/fluxo-caixa-panel";
 import { InadimplentesPanel } from "@/components/financeiro/inadimplentes-panel";
 import { OrcamentoPanel } from "@/components/financeiro/orcamento-panel";
@@ -90,17 +96,6 @@ const TABS: { key: TabKey; label: string; ready: boolean; icon: React.ReactNode 
     { key: "colaboradores", label: "Colaboradores", ready: true, icon: <IconUsers className={iconCls} /> },
     { key: "clientes", label: "Clientes", ready: true, icon: <IconAddressBook className={iconCls} /> },
   ];
-
-const MESES_ABREV = [
-  "Jan", "Fev", "Mar", "Abr", "Mai", "Jun",
-  "Jul", "Ago", "Set", "Out", "Nov", "Dez",
-];
-
-/** 'AAAA-MM' → 'Jul/2026'. */
-function labelCompetencia(ym: string): string {
-  const [y, m] = ym.split("-").map(Number);
-  return `${MESES_ABREV[(m - 1) % 12]}/${y}`;
-}
 
 const brl = (n: number) =>
   n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -178,7 +173,17 @@ export function FinanceiroShell() {
     (v) => /^\d{4}-\d{2}$/.test(v),
     competenciaAtual(),
   );
-  const setCompetencia = (v: string) => setParams({ comp: v });
+
+  /**
+   * Recorte de PERÍODO do DRE: mês (padrão), trimestre, ano ou intervalo livre.
+   *
+   * Trimestre e ano são DERIVADOS de `comp` — ver o cabeçalho do
+   * `SeletorPeriodo`. Só o livre carrega `de`/`ate` próprios.
+   */
+  const modoPeriodo = param("per", EH_MODO, "mes") as ModoPeriodo;
+  const perDe = param("de", (v) => /^\d{4}-\d{2}$/.test(v), competencia);
+  const perAte = param("ate", (v) => /^\d{4}-\d{2}$/.test(v), competencia);
+  const periodo = resolverPeriodo(modoPeriodo, competencia, perDe, perAte);
 
   // BU do DRE: "" = Todas (consolidado); id = uma unidade (usa rateio + espelho);
   // "sem" = receita sem BU resolvida.
@@ -255,7 +260,11 @@ export function FinanceiroShell() {
     let cancel = false;
     setLoading(true);
     fetch(
-      `/api/financeiro/dre?competencia=${competencia}${buId ? `&bu=${buId}` : ""}` +
+      // `de`/`ate` SEMPRE: um mês é o período de um mês só, e a rota trata os
+      // dois casos pelo mesmo caminho — sem ramo separado para não divergirem.
+      `/api/financeiro/dre?competencia=${competencia}` +
+        `&de=${periodo.de}&ate=${periodo.ate}` +
+        (buId ? `&bu=${buId}` : "") +
         (regimeApi === "previsto-realizado" ? "&regime=previsto-realizado" : ""),
     )
       .then((r) => r.json())
@@ -287,7 +296,7 @@ export function FinanceiroShell() {
     return () => {
       cancel = true;
     };
-  }, [competencia, active, reloadKey, buId, regimeApi]);
+  }, [competencia, periodo.de, periodo.ate, active, reloadKey, buId, regimeApi]);
 
   const dockItems = TABS.map((tab) => ({
     title: tab.ready ? tab.label : `${tab.label} (em breve)`,
@@ -355,19 +364,24 @@ export function FinanceiroShell() {
 
           {/* Filtros — Button + DropdownMenu padrão do Jarvis */}
           <div className="flex flex-wrap items-center gap-2">
-            <DropdownMenu>
-              <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
-                Competência: {labelCompetencia(competencia)}
-                <ChevronDownIcon />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                {competencias.map((m) => (
-                  <DropdownMenuItem key={m} onClick={() => setCompetencia(m)}>
-                    {labelCompetencia(m)}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SeletorPeriodo
+              modo={modoPeriodo}
+              comp={competencia}
+              de={perDe}
+              ate={perAte}
+              competencias={competencias}
+              onChange={(v) =>
+                setParams({
+                  // "mes" é o padrão: sai da URL em vez de virar `per=mes`.
+                  per: v.modo === "mes" ? null : v.modo,
+                  ...(v.comp ? { comp: v.comp } : {}),
+                  // `de`/`ate` só existem no livre — nos outros sujariam o
+                  // endereço com datas que ninguém lê.
+                  de: v.modo === "livre" ? (v.de ?? null) : null,
+                  ate: v.modo === "livre" ? (v.ate ?? null) : null,
+                })
+              }
+            />
 
             <DropdownMenu>
               <DropdownMenuTrigger render={<Button variant="outline" size="sm" />}>
@@ -389,7 +403,8 @@ export function FinanceiroShell() {
                 padrão; o período é esticável no próprio diálogo. */}
             <BotaoExtrair
               fonte="dre"
-              competencia={competencia}
+              competencia={periodo.de}
+              ate={periodo.ate}
               extra={{
                 regime: regimeApi,
                 bu: buId || undefined,
@@ -516,7 +531,10 @@ export function FinanceiroShell() {
             despesaFonte={dre?.despesaFonte ?? "contaazul"}
             temOrcamento={dre?.temOrcamento ?? false}
             temPrevReal={dre?.temPrevReal ?? false}
-            competencia={competencia}
+            // Sem competência num período de vários meses: a meta é cadastrada
+            // POR competência, então o editor não teria em qual mês gravar. Isso
+            // desliga só o campo — a coluna Meta continua somando e aparecendo.
+            competencia={periodo.meses > 1 ? undefined : competencia}
             // BU e regime seguem para o detalhamento de cada linha: sem eles a
             // soma do popup não fecharia com a linha que foi clicada.
             buId={buId || null}

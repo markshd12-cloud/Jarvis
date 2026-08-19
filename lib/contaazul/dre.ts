@@ -172,7 +172,16 @@ export type DreRow =
     };
 export interface DreResult {
   connected: boolean;
+  /** Competência de referência. Num período, a ÚLTIMA (ver `periodo`). */
   competencia: string;
+  /**
+   * Presente só quando a leitura cobre MAIS DE UMA competência (trimestre, ano,
+   * intervalo livre). Ausente = mês único, o caminho de sempre.
+   *
+   * A UI usa para rotular a tela e para desligar o que só faz sentido em um mês
+   * (editar a meta do faturamento grava numa competência).
+   */
+  periodo?: { de: string; ate: string; meses: number };
   /** Receita Bruta REALIZADA (base do AV% realizado). */
   receitaBruta: number;
   /** Receita Bruta PREVISTA (base do AV% previsto). Igual à realizada no modo CA. */

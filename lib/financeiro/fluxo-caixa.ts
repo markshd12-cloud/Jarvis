@@ -6,17 +6,42 @@
  *
  * - Entradas: `fin_receita_snapshot` (Passo 10). Realizado = recebido, na data de
  *   pagamento; Previsto = a receber, na data de vencimento.
- * - Saídas: `fin_parcelas`. Realizado = paga, na data de pagamento; Previsto =
- *   (prevista/a_pagar/atrasada), na data de vencimento. Cancelada nunca entra.
+ * - Saídas REALIZADO: `fin_baixas` (migration 0038), na data de CADA baixa — não
+ *   `fin_parcelas.data_pagamento`. Ver a nota grande abaixo: é o ajuste de
+ *   2026-08-19.
+ * - Saídas PREVISTO: `fin_parcelas` — o saldo ainda em aberto (previsto − Σ
+ *   baixas − desconto) de quem não está "paga", na data de VENCIMENTO.
+ *   Cancelada nunca entra.
  *
  * Sem conciliação bancária (fora de escopo do PRD): o acumulado parte de 0 — é o
  * saldo do FLUXO no período, não o saldo bancário absoluto.
+ *
+ * ## Por que ler `fin_baixas`, e não `fin_parcelas.data_pagamento`/`valor_realizado`
+ *
+ * Antes deste ajuste, a saída realizada saía de UMA data por parcela
+ * (`data_pagamento`, ou `data_vencimento` quando `status='parcial'`). Isso é
+ * exatamente o que a migration 0038 existe para resolver — do próprio comentário
+ * dela: *"a parcela tem UM `data_pagamento`. Se as compras acontecem em 05/08,
+ * 20/08 e 03/09, uma data só obriga a mentir sobre duas — e quebra o regime
+ * Visão de Caixa, que agrupa por quando o dinheiro se move. Com data por baixa,
+ * cada compra cai no mês certo sozinha."* E para `status='parcial'` (sem baixa
+ * nenhuma "fechando" a parcela), `data_pagamento` fica `null` — então o código
+ * antigo caía no bucket do VENCIMENTO, que é data de PLANO, não de caixa. Uma
+ * conta com vencimento em agosto mas paga em julho aparecia como saída de
+ * agosto; o dinheiro, de fato, já tinha saído em julho.
+ *
+ * A migration 0038 já fez a migração retroativa (uma baixa por parcela paga
+ * antes dela existir) exatamente para que `fin_baixas` pudesse ser a ÚNICA fonte
+ * do realizado, sem precisar de dois caminhos que divergem — e é isso que este
+ * arquivo passa a fazer. Conferido em 2026-08-19: soma de `fin_baixas.valor` =
+ * soma de `fin_parcelas.valor_realizado`, ao centavo, nas 3.254 parcelas da
+ * empresa — não há paga/parcial sem baixa correspondente.
  */
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { mesCorrente } from "./competencia";
 import { expandirPorBu, listRateios } from "./rateio";
+import { mesCorrente } from "./competencia";
 
 const cents = (v: number) => Math.round(v * 100);
 
@@ -42,7 +67,16 @@ export interface FluxoCaixaResult {
   buId: string | null;
   periodo: { de: string; ate: string };
   buckets: FluxoBucket[];
-  totais: { entrada: number; saida: number; liquido: number };
+  totais: {
+    entrada: number;
+    saida: number;
+    liquido: number;
+    /** Quebra previsto × realizado dos totais — a UI usa para as colunas do modo "ambos". */
+    entradaPrev: number;
+    entradaReal: number;
+    saidaPrev: number;
+    saidaReal: number;
+  };
   sincronizadoEm: string | null; // frescor do snapshot de receita
 }
 
@@ -96,14 +130,22 @@ function bucketsVazios(modo: FluxoModo, de: string, ate: string): FluxoBucket[] 
 const bucketKey = (modo: FluxoModo, isoDate: string): string =>
   modo === "mensal" ? isoDate.slice(0, 7) : isoDate.slice(0, 10);
 
-interface ParcelaRow {
+/** Parcelas em aberto (previsto = saldo ainda não baixado) na janela de vencimento. */
+interface ParcelaPrevRow {
   id: string;
   valor_previsto: unknown;
   valor_realizado: unknown;
+  desconto: unknown;
   status: string;
   data_vencimento: string;
-  data_pagamento: string | null;
   bu_id: string | null;
+}
+/** Cada baixa é o dinheiro saindo de fato — uma linha por pagamento real. */
+interface BaixaRow {
+  id: string;
+  parcela_id: string;
+  data: string;
+  valor: unknown;
 }
 interface ReceitaRow {
   valor: unknown;
@@ -115,8 +157,10 @@ interface ReceitaRow {
 }
 
 /**
- * Pagina uma query do PostgREST em blocos de 1000 (o teto padrão do servidor).
- * Sem isto, um ano de parcelas/receita seria SILENCIOSAMENTE truncado em 1000.
+ * Pagina uma query do PostgREST em blocos de 1000 (o teto padrão do servidor),
+ * com `.order()` obrigatório: sem ordem explícita, o Postgres não garante a
+ * MESMA ordem entre duas chamadas de `.range()` — e páginas sucessivas podem
+ * pular ou repetir linhas. Ver `listParcelas` (mesmo padrão).
  */
 async function pageAll<T>(
   build: (
@@ -171,27 +215,43 @@ export async function getFluxoCaixa(
 
   const admin = createAdminClient();
 
-  // Sobre-busca por vencimento OU pagamento na janela; o regime é decidido em JS.
-  const janelaOr = `and(data_vencimento.gte.${de},data_vencimento.lte.${ate}),and(data_pagamento.gte.${de},data_pagamento.lte.${ate})`;
-
-  const [parcRows, recRows] = await Promise.all([
-    pageAll<ParcelaRow>((from, to) => {
-      // NÃO filtra bu_id no banco: com rateio, uma parcela pode pertencer
-      // parcialmente ao buId filtrado. O filtro por BU é proporcional, em JS.
+  const [parcRows, baixaRows, recRows] = await Promise.all([
+    // Previsto de saída: só quem ainda deve algo (não paga, não cancelada),
+    // pela data em que o compromisso VENCE.
+    pageAll<ParcelaPrevRow>((from, to) => {
       const q = admin
         .from("fin_parcelas")
-        .select("id, valor_previsto, valor_realizado, status, data_vencimento, data_pagamento, bu_id")
+        .select("id, valor_previsto, valor_realizado, desconto, status, data_vencimento, bu_id")
         .eq("company_id", companyId)
-        .neq("status", "cancelada")
-        .or(janelaOr);
+        .not("status", "in", "(cancelada,paga)")
+        .gte("data_vencimento", de)
+        .lte("data_vencimento", ate)
+        .order("data_vencimento", { ascending: true })
+        .order("id", { ascending: true });
       return q.range(from, to);
-    }, "parcelas"),
+    }, "parcelas-previsto"),
+    // Realizado de saída: cada baixa, na data em que o dinheiro de fato saiu.
+    pageAll<BaixaRow>((from, to) => {
+      const q = admin
+        .from("fin_baixas")
+        .select("id, parcela_id, data, valor")
+        .eq("company_id", companyId)
+        .gte("data", de)
+        .lte("data", ate)
+        .order("data", { ascending: true })
+        .order("id", { ascending: true });
+      return q.range(from, to);
+    }, "baixas"),
     pageAll<ReceitaRow>((from, to) => {
       let q = admin
         .from("fin_receita_snapshot")
         .select("valor, recebido, data_vencimento, data_pagamento, bu_id, sincronizado_em")
         .eq("company_id", companyId)
-        .or(janelaOr);
+        .or(
+          `and(data_vencimento.gte.${de},data_vencimento.lte.${ate}),and(data_pagamento.gte.${de},data_pagamento.lte.${ate})`,
+        )
+        .order("data_vencimento", { ascending: true, nullsFirst: true })
+        .order("data_pagamento", { ascending: true, nullsFirst: true });
       if (buId) q = q.eq("bu_id", buId);
       return q.range(from, to);
     }, "receita"),
@@ -201,55 +261,73 @@ export async function getFluxoCaixa(
   const porChave = new Map(buckets.map((b) => [b.chave, b]));
   const dentro = (iso: string) => iso >= de && iso <= ate;
 
-  // Saídas (fin_parcelas). Rateio só importa quando há filtro por BU (senão o
-  // valor cheio entra no bucket de tempo, independentemente do rateio).
-  const rateios = buId
-    ? await listRateios(companyId, parcRows.map((p) => p.id))
-    : null;
-  /** Valor da parcela atribuível ao filtro de BU (proporcional ao rateio). */
-  const parcelaValor = (p: ParcelaRow, valor: number): number | null => {
+  // --- rateio por BU, só quando há filtro --------------------------------- //
+  // A BU de uma baixa é a da PARCELA que ela consome (fase 1 do rateio: a baixa
+  // HERDA o rateio do envelope — ver docs/financeiro-baixas-parciais.md). As
+  // baixas podem apontar para parcelas fora da janela de vencimento (pagamento
+  // antecipado, ou parcela com vencimento em outro mês), então o bu_id delas é
+  // buscado à parte, não reaproveitado de `parcRows`.
+  let buPorParcela = new Map<string, string | null>();
+  let rateiosPrev: Map<string, { bu_id: string; percentual: number }[]> | null = null;
+  let rateiosBaixa: Map<string, { bu_id: string; percentual: number }[]> | null = null;
+  if (buId) {
+    const idsBaixa = [...new Set(baixaRows.map((b) => b.parcela_id))];
+    const idsFaltantes = idsBaixa.filter((id) => !parcRows.some((p) => p.id === id));
+    if (idsFaltantes.length) {
+      const LOTE = 200;
+      for (let i = 0; i < idsFaltantes.length; i += LOTE) {
+        const { data, error } = await admin
+          .from("fin_parcelas")
+          .select("id, bu_id")
+          .eq("company_id", companyId)
+          .in("id", idsFaltantes.slice(i, i + LOTE));
+        if (error) throw new Error(`getFluxoCaixa (bu-das-baixas): ${error.message}`);
+        for (const r of data ?? []) buPorParcela.set(r.id as string, r.bu_id as string | null);
+      }
+    }
+    for (const p of parcRows) buPorParcela.set(p.id, p.bu_id);
+
+    rateiosPrev = await listRateios(companyId, parcRows.map((p) => p.id));
+    rateiosBaixa = await listRateios(companyId, idsBaixa);
+  }
+  /** Fatia de um valor atribuível ao filtro de BU (proporcional ao rateio da parcela). */
+  const fatiaBu = (
+    parcelaId: string,
+    parcelaBuId: string | null,
+    valor: number,
+    rateios: Map<string, { bu_id: string; percentual: number }[]> | null,
+  ): number | null => {
     if (!buId) return valor;
-    if (!p.bu_id) return null;
-    const fatia = expandirPorBu(cents(valor), p.bu_id, rateios!.get(p.id)).find(
+    if (!parcelaBuId) return null;
+    const fatia = expandirPorBu(cents(valor), parcelaBuId, rateios?.get(parcelaId)).find(
       (f) => f.bu_id === buId,
     );
     return fatia ? fatia.valorCents / 100 : null;
   };
+
+  // --- Saída PREVISTO: saldo em aberto, por vencimento --------------------- //
   for (const p of parcRows) {
-    const paga = p.status === "paga";
-    const iso = paga ? p.data_pagamento ?? p.data_vencimento : p.data_vencimento;
-    if (!iso || !dentro(iso)) continue;
-    const b = porChave.get(bucketKey(modo, iso));
+    if (!dentro(p.data_vencimento)) continue;
+    const b = porChave.get(bucketKey(modo, p.data_vencimento));
     if (!b) continue;
-    if (paga) {
-      const v = parcelaValor(p, num(p.valor_realizado ?? p.valor_previsto));
-      if (v !== null) b.saidaReal += v;
-    } else {
-      /**
-       * Parcialmente consumida (envelope da 0038): o que JÁ SAIU vai para
-       * `saidaReal` e só o SALDO continua previsto. Antes o previsto levava o
-       * valor cheio e o realizado ficava zero — o fluxo de caixa mostrava como
-       * "vai sair" um dinheiro que já tinha saído, e contava duas vezes ao
-       * longo do tempo.
-       *
-       * Os dois vão no bucket do VENCIMENTO, não na data de cada baixa. Fatiar
-       * pelas datas das baixas é o passo seguinte, junto do mesmo ajuste no DRE
-       * (ver docs/financeiro-baixas-parciais.md).
-       */
-      const real = num(p.valor_realizado);
-      if (real !== 0) {
-        const vr = parcelaValor(p, real);
-        if (vr !== null) b.saidaReal += vr;
-      }
-      const restante = num(p.valor_previsto) - real;
-      if (restante > 0) {
-        const v = parcelaValor(p, restante);
-        if (v !== null) b.saidaPrev += v;
-      }
-    }
+    const restante =
+      num(p.valor_previsto) - num(p.valor_realizado) - num(p.desconto);
+    if (restante <= 0) continue;
+    const v = fatiaBu(p.id, p.bu_id, restante, rateiosPrev);
+    if (v !== null) b.saidaPrev += v;
   }
 
-  // Entradas (fin_receita_snapshot)
+  // --- Saída REALIZADO: cada baixa, na sua própria data --------------------- //
+  for (const bx of baixaRows) {
+    if (!dentro(bx.data)) continue;
+    const b = porChave.get(bucketKey(modo, bx.data));
+    if (!b) continue;
+    const parcelaBuId = buPorParcela.get(bx.parcela_id) ?? null;
+    const v = fatiaBu(bx.parcela_id, parcelaBuId, num(bx.valor), rateiosBaixa);
+    if (v !== null) b.saidaReal += v;
+  }
+
+  // --- Entradas (fin_receita_snapshot) -------------------------------------- //
   let sincronizadoEm: string | null = null;
   for (const r of recRows) {
     if (r.sincronizado_em && (!sincronizadoEm || r.sincronizado_em > sincronizadoEm))
@@ -266,7 +344,15 @@ export async function getFluxoCaixa(
   const usaPrev = incluir !== "realizado";
   const usaReal = incluir !== "previsto";
   let acc = 0;
-  const totais = { entrada: 0, saida: 0, liquido: 0 };
+  const totais = {
+    entrada: 0,
+    saida: 0,
+    liquido: 0,
+    entradaPrev: 0,
+    entradaReal: 0,
+    saidaPrev: 0,
+    saidaReal: 0,
+  };
   for (const b of buckets) {
     b.entrada = (usaPrev ? b.entradaPrev : 0) + (usaReal ? b.entradaReal : 0);
     b.saida = (usaPrev ? b.saidaPrev : 0) + (usaReal ? b.saidaReal : 0);
@@ -275,6 +361,10 @@ export async function getFluxoCaixa(
     b.acumulado = acc;
     totais.entrada += b.entrada;
     totais.saida += b.saida;
+    totais.entradaPrev += b.entradaPrev;
+    totais.entradaReal += b.entradaReal;
+    totais.saidaPrev += b.saidaPrev;
+    totais.saidaReal += b.saidaReal;
   }
   totais.liquido = totais.entrada - totais.saida;
 

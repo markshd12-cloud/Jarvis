@@ -56,6 +56,13 @@ export interface BotaoExtrairProps {
   fonte: "contas-pagar" | "dre";
   /** Competência inicial sugerida ('AAAA-MM') — normalmente a da tela. */
   competencia: string;
+  /**
+   * Competência final sugerida. Ausente = igual à inicial (um mês).
+   *
+   * Existe para o diálogo abrir no MESMO recorte que está na tela: quem está
+   * olhando o ano de 2026 e clica em Extrair espera o ano, não o mês corrente.
+   */
+  ate?: string;
   /** Params extras da fonte (regime, bu, buNome). */
   extra?: Record<string, string | undefined>;
   /** Contas a pagar: oferece o seletor de formato de rateio. */
@@ -66,6 +73,7 @@ export interface BotaoExtrairProps {
 export function BotaoExtrair({
   fonte,
   competencia,
+  ate: ateSugerido,
   extra,
   comRateio = false,
   className,
@@ -86,7 +94,7 @@ export function BotaoExtrair({
    */
   const abrir = () => {
     setDe(competencia);
-    setAte(competencia);
+    setAte(ateSugerido ?? competencia);
     setPrevia(null);
     setAberto(true);
   };

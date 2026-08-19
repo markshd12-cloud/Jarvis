@@ -62,8 +62,6 @@ function VsIdeal({ centro, pct }: { centro: string; pct: number }) {
   );
 }
 
-type Base = "realizado" | "previsto";
-
 function anosDisponiveis(): number[] {
   const y = new Date().getFullYear();
   return [y, y - 1, y - 2, y - 3];
@@ -82,7 +80,6 @@ function fmtCarimbo(iso: string): string {
 
 export function CentroCustoPanel() {
   const [ano, setAno] = useState<number>(() => new Date().getFullYear());
-  const [base, setBase] = useState<Base>("realizado");
   const [data, setData] = useState<CentrosCustoResumo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -118,12 +115,18 @@ export function CentroCustoPanel() {
     void refetch();
   }, [refetch]);
 
-  const totalBase = data?.totais[base] ?? 0;
+  /**
+   * O % SEMPRE sai do realizado — a faixa ideal (MLG) fala do dinheiro que de
+   * fato saiu, não do que está agendado. O previsto continua na coluna ao lado
+   * para comparação; era o alternador Realizado/Previsto que existia aqui e
+   * duplicava, num filtro, o que a tabela já mostra lado a lado.
+   */
+  const totalBase = data?.totais.realizado ?? 0;
   const linhas = useMemo(() => {
     const ls = [...(data?.linhas ?? [])];
-    ls.sort((a, b) => b[base] - a[base]);
+    ls.sort((a, b) => b.realizado - a.realizado);
     return ls;
-  }, [data, base]);
+  }, [data]);
 
   return (
     <section className="flex flex-col gap-4">
@@ -164,23 +167,6 @@ export function CentroCustoPanel() {
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
-
-        <div className="flex items-center gap-1">
-          <Button
-            variant={base === "realizado" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setBase("realizado")}
-          >
-            Realizado
-          </Button>
-          <Button
-            variant={base === "previsto" ? "default" : "outline"}
-            size="sm"
-            onClick={() => setBase("previsto")}
-          >
-            Previsto
-          </Button>
-        </div>
       </div>
 
       {data && !data.connected && (
@@ -197,7 +183,7 @@ export function CentroCustoPanel() {
               <th className="px-3 py-2 text-right font-medium">Previsto</th>
               <th className="px-3 py-2 text-right font-medium">Realizado</th>
               <th className="px-3 py-2 text-right font-medium">
-                % ({base === "realizado" ? "realizado" : "previsto"})
+                % (realizado)
               </th>
               <th className="px-3 py-2 text-right font-medium">vs. ideal</th>
               <th className="px-3 py-2 font-medium">Distribuição</th>
@@ -205,7 +191,7 @@ export function CentroCustoPanel() {
           </thead>
           <tbody>
             {linhas.map((l) => {
-              const pct = totalBase > 0 ? (l[base] / totalBase) * 100 : 0;
+              const pct = totalBase > 0 ? (l.realizado / totalBase) * 100 : 0;
               return (
                 <tr key={l.centroId ?? "__sem__"} className="border-b border-border last:border-0">
                   <td className="px-3 py-2">{l.centro}</td>
